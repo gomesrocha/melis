@@ -9,13 +9,17 @@
 # ---------------------------------------------------------------------------
 FROM rust:1.86-bookworm AS builder
 
-# Install musl tools for static linking
+# Install musl tools and C++ compiler for static linking
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends musl-tools && \
+    apt-get install -y --no-install-recommends musl-tools musl-dev g++ && \
     rm -rf /var/lib/apt/lists/*
 
 # Add musl target
 RUN rustup target add x86_64-unknown-linux-musl
+
+# Set musl C++ compiler so crates like esaxx-rs can compile
+ENV CXX=g++
+ENV CC=musl-gcc
 
 WORKDIR /app
 
