@@ -7,7 +7,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Builder - Compile static binary with musl
 # ---------------------------------------------------------------------------
-FROM rust:1.83-bookworm AS builder
+FROM rust:1.86-bookworm AS builder
 
 # Install musl tools for static linking
 RUN apt-get update && \
