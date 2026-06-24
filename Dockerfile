@@ -43,8 +43,9 @@ FROM gcr.io/distroless/static-debian12:nonroot
 # Copy the statically linked binary
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/melis-gateway /app/melis-gateway
 
-# Copy default configuration files
-COPY routes.yaml /app/routes.yaml
+# Copy default configuration files (from examples)
+COPY config.yaml.example /app/config.yaml
+COPY routes.yaml.example /app/routes.yaml
 
 WORKDIR /app
 

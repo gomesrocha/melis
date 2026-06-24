@@ -19,6 +19,7 @@ docker-compose.yml
 
 # Documentation
 *.md
+!README.md
 LICENSE
 
 # OS files

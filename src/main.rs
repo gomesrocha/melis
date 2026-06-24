@@ -95,22 +95,33 @@ async fn main() {
 
     let app = router::build_router(app_state);
 
-    // Graceful shutdown: listen for SIGTERM and SIGINT (Ctrl+C)
+    // Graceful shutdown: listen for SIGTERM (Unix) and SIGINT (Ctrl+C)
     let shutdown_signal = async move {
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .expect("Failed to install SIGTERM handler");
+        #[cfg(unix)]
+        {
+            let mut sigterm = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            )
+            .expect("Failed to install SIGTERM handler");
 
-        let ctrl_c = tokio::signal::ctrl_c();
+            let ctrl_c = tokio::signal::ctrl_c();
 
-        tokio::select! {
-            _ = sigterm.recv() => {
-                tracing::info!("Received SIGTERM, initiating graceful shutdown...");
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    tracing::info!("Received SIGTERM, initiating graceful shutdown...");
+                }
+                _ = ctrl_c => {
+                    tracing::info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+                }
             }
-            _ = ctrl_c => {
-                tracing::info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
-            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to listen for Ctrl+C");
+            tracing::info!("Received Ctrl+C, initiating graceful shutdown...");
         }
 
         tracing::info!(
