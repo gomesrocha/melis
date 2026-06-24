@@ -1,0 +1,124 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Requests por Segundo (por rota e status)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(melis_gateway_requests_total[1m])",
+          "legendFormat": "{{route}} [{{status}}] - {{client}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "title": "Tokens Consumidos por Modelo (acumulado)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(melis_llm_tokens_total[5m])",
+          "legendFormat": "{{model}} [{{direction}}] - {{client_id}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "title": "Total de Tokens por Modelo",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(melis_llm_tokens_total) by (model, direction)",
+          "legendFormat": "{{model}} ({{direction}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "title": "Gateway Overhead (p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, rate(melis_gateway_overhead_seconds_bucket[5m]))",
+          "legendFormat": "p99 overhead"
+        },
+        {
+          "expr": "histogram_quantile(0.50, rate(melis_gateway_overhead_seconds_bucket[5m]))",
+          "legendFormat": "p50 overhead"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "Backend Latency por Provedor (p95)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(melis_backend_latency_seconds_bucket[5m]))",
+          "legendFormat": "{{provider}} p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "Context Compression Ratio",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(melis_context_compression_ratio_bucket[5m]))",
+          "legendFormat": "median compression ratio"
+        }
+      ]
+    },
+    {
+      "title": "Total Requests (counter)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 12, "y": 22 },
+      "targets": [
+        {
+          "expr": "sum(melis_gateway_requests_total)",
+          "legendFormat": "total"
+        }
+      ]
+    },
+    {
+      "title": "Requests por Status",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 22 },
+      "targets": [
+        {
+          "expr": "sum(melis_gateway_requests_total) by (status)",
+          "legendFormat": "HTTP {{status}}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["melis", "ai-gateway", "llm"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "Melis AI Gateway",
+  "uid": "melis-gateway-dashboard",
+  "version": 1
+}

@@ -1,0 +1,208 @@
+# Melis AI Gateway - CI/CD Release Pipeline
+# Triggers:
+#   - On tag push (v*): builds all platforms and creates GitHub Release
+#   - Manual dispatch: same workflow, triggered manually
+#
+# Produces:
+#   - Linux x86_64 (musl static)
+#   - Linux ARM64 (musl static)
+#   - macOS x86_64
+#   - macOS ARM64 (Apple Silicon)
+#   - Windows x86_64
+#   - Docker image (multi-arch)
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: melis-gateway
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross
+        run: cargo install cross --version 0.2.5
+      - name: Build
+        run: cross build --release --target ${{ matrix.target }}
+      - name: Strip binary
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            strip target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
+          fi
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} dist/
+          cp config.yaml.example dist/
+          cp routes.yaml.example dist/
+          cp docs/GUIDE.md dist/ 2>/dev/null || true
+          cd dist && tar czf ../${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz *
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
+          path: ${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Strip binary
+        run: strip target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} dist/
+          cp config.yaml.example dist/
+          cp routes.yaml.example dist/
+          cd dist && tar czf ../${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz *
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
+          path: ${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/x86_64-pc-windows-msvc/release/${{ env.BINARY_NAME }}.exe dist/
+          cp config.yaml.example dist/
+          cp routes.yaml.example dist/
+          cd dist && 7z a ../${{ env.BINARY_NAME }}-x86_64-pc-windows-msvc.zip *
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-x86_64-pc-windows-msvc
+          path: ${{ env.BINARY_NAME }}-x86_64-pc-windows-msvc.zip
+
+  build-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  create-release:
+    needs: [build-linux, build-macos, build-windows, build-docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Extract version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Melis AI Gateway ${{ steps.version.outputs.version }}
+          body: |
+            ## Melis AI Gateway ${{ steps.version.outputs.version }}
+
+            ### Downloads
+
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | Linux | x86_64 | `melis-gateway-x86_64-unknown-linux-musl.tar.gz` |
+            | Linux | ARM64 | `melis-gateway-aarch64-unknown-linux-musl.tar.gz` |
+            | macOS | Intel | `melis-gateway-x86_64-apple-darwin.tar.gz` |
+            | macOS | Apple Silicon | `melis-gateway-aarch64-apple-darwin.tar.gz` |
+            | Windows | x86_64 | `melis-gateway-x86_64-pc-windows-msvc.zip` |
+
+            ### Docker
+
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            ```
+
+            ### Quick Start
+
+            ```bash
+            # Extrair
+            tar xzf melis-gateway-*.tar.gz
+
+            # Configurar
+            cp config.yaml.example config.yaml
+            cp routes.yaml.example routes.yaml
+            # Editar config.yaml com suas API keys
+
+            # Rodar
+            ./melis-gateway
+            ```
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+          draft: false
+          prerelease: false

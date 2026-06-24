@@ -1,0 +1,107 @@
+# Melis AI Gateway - Exemplo de Configuração
+# ============================================
+# Copie este arquivo como config.yaml e ajuste os valores.
+#
+# Variáveis de ambiente disponíveis:
+#   MELIS_SERVER_PORT=9090
+#   MELIS_SERVER_HOST=0.0.0.0
+#   MELIS_ROUTES_CONFIG=./routes.yaml
+#   MELIS_OTLP_ENDPOINT=http://localhost:4317
+
+server:
+  host: "0.0.0.0"
+  port: 9090
+  max_payload_size: 10485760  # 10MB
+  graceful_shutdown_timeout_secs: 30
+  max_concurrent_connections: 5000
+
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+  pool_size: 10
+  connect_timeout_secs: 5
+  command_timeout_secs: 2
+
+# Provedores LLM — adicione seus provedores aqui
+providers:
+  # Ollama (local)
+  - id: "ollama"
+    provider_type: "ollama"
+    base_url: "http://localhost:11434"
+    api_key: "ollama"
+    weight: 1
+    timeout_secs: 120
+    models: ["llama3.2", "mistral", "codellama"]
+
+  # OpenAI — descomente e insira sua chave
+  # - id: "openai"
+  #   provider_type: "openai"
+  #   base_url: "https://api.openai.com/v1"
+  #   api_key: "sk-proj-SUA_CHAVE_AQUI"
+  #   weight: 1
+  #   timeout_secs: 60
+  #   models: ["gpt-4o", "gpt-4o-mini"]
+
+  # Anthropic Claude — descomente e insira sua chave
+  # - id: "anthropic"
+  #   provider_type: "anthropic"
+  #   base_url: "https://api.anthropic.com/v1"
+  #   api_key: "sk-ant-SUA_CHAVE_AQUI"
+  #   weight: 1
+  #   timeout_secs: 60
+  #   models: ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+
+  # Google Gemini — descomente e insira sua chave
+  # - id: "gemini"
+  #   provider_type: "google_vertex_ai"
+  #   base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+  #   api_key: "AIzaSy-SUA_CHAVE_AQUI"
+  #   weight: 1
+  #   timeout_secs: 60
+  #   models: ["gemini-2.0-flash"]
+
+  # Grok (x.ai) — descomente e insira sua chave
+  # - id: "grok"
+  #   provider_type: "openai"
+  #   base_url: "https://api.x.ai/v1"
+  #   api_key: "xai-SUA_CHAVE_AQUI"
+  #   weight: 1
+  #   timeout_secs: 60
+  #   models: ["grok-3-mini"]
+
+  # DeepSeek — descomente e insira sua chave
+  # - id: "deepseek"
+  #   provider_type: "openai"
+  #   base_url: "https://api.deepseek.com/v1"
+  #   api_key: "sk-SUA_CHAVE_AQUI"
+  #   weight: 1
+  #   timeout_secs: 90
+  #   models: ["deepseek-chat", "deepseek-reasoner"]
+
+rate_limit:
+  burst_capacity: 100
+  refill_rate: 10.0
+
+compactor:
+  token_threshold: 4096
+  stop_words: []
+  tokenizer_name: "cl100k_base"
+
+circuit_breaker:
+  failure_threshold_percent: 50.0
+  window_duration_secs: 60
+  min_requests_in_window: 5
+  open_ttl_secs: 30
+  max_ttl_secs: 300
+  backoff_factor: 2.0
+
+observability:
+  otlp_endpoint: "http://localhost:4317"
+  service_name: "melis-gateway"
+  enabled: false
+
+auth:
+  enabled: false
+  api_keys: []
+
+routes_config_path: "./routes.yaml"

@@ -1,0 +1,26 @@
+# Build artifacts
+target/
+
+# Version control
+.git/
+.gitignore
+
+# IDE and editor files
+.kiro/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker files (avoid recursive builds)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+LICENSE
+
+# OS files
+.DS_Store
+Thumbs.db

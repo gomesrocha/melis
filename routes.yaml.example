@@ -1,0 +1,44 @@
+# Melis AI Gateway - Exemplo de Rotas
+# =====================================
+# Copie este arquivo como routes.yaml e ajuste.
+# Hot-reload: alterações são detectadas em ~5 segundos sem reiniciar.
+#
+# Cada rota define:
+#   path     - URL que o cliente chama (ex: /v1/chat/completions)
+#   method   - Método HTTP (POST)
+#   provider - Nome do provedor (deve existir no config.yaml ou custom_providers)
+#   model    - Modelo padrão (override do payload do cliente)
+#   token_optimization - Configuração de compressão (opcional)
+
+# Provedores customizados (não são os 5 built-in)
+# Registre aqui qualquer provedor OpenAI-compatible
+custom_providers:
+  # - name: "grok"
+  #   base_url: "https://api.x.ai/v1"
+  #   api_format: "openai_compatible"
+  # - name: "deepseek"
+  #   base_url: "https://api.deepseek.com/v1"
+  #   api_format: "openai_compatible"
+
+routes:
+  # Endpoint padrão (Ollama local)
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "ollama"
+    model: "llama3.2"
+    token_optimization:
+      strategy: "adaptive_trimming"
+      max_history_messages: 20
+      compress_above_tokens: 4096
+      local_tokenizer: "cl100k_base"
+
+  # Adicione mais rotas conforme necessário:
+  # - path: "/v1/chat/openai"
+  #   method: "POST"
+  #   provider: "openai"
+  #   model: "gpt-4o-mini"
+  #   token_optimization:
+  #     strategy: "adaptive_trimming"
+  #     max_history_messages: 20
+  #     compress_above_tokens: 4096
+  #     local_tokenizer: "cl100k_base"

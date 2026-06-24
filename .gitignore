@@ -1,0 +1,21 @@
+# Rust build output
+/target/
+
+# Local configuration
+config.yaml
+routes.yaml
+**/config.yaml
+**/routes.yaml
+
+# Env files
+.env
+.env.*
+
+# Logs
+*.log
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store

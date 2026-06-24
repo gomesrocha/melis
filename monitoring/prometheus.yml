@@ -1,0 +1,12 @@
+# Prometheus config para scraping do Melis Gateway
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "melis-gateway"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["host.docker.internal:9090"]
+        labels:
+          instance: "melis-local"
