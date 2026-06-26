@@ -299,6 +299,7 @@ impl RouteResolver {
         match &route.token_optimization {
             Some(opt) => CompactorConfig {
                 token_threshold: opt.compress_above_tokens,
+                max_history_messages: opt.max_history_messages,
                 stop_words: global.stop_words.clone(),
                 tokenizer_name: opt.local_tokenizer.clone(),
             },
@@ -846,6 +847,7 @@ routes:
         let resolver = build_resolver();
         let global = CompactorConfig {
             token_threshold: 4096,
+            max_history_messages: 20,
             stop_words: vec!["the".to_string(), "a".to_string()],
             tokenizer_name: "global_tokenizer".to_string(),
         };
@@ -865,6 +867,7 @@ routes:
         let resolver = build_resolver();
         let global = CompactorConfig {
             token_threshold: 4096,
+            max_history_messages: 20,
             stop_words: vec!["the".to_string()],
             tokenizer_name: "global_tokenizer".to_string(),
         };
@@ -881,6 +884,7 @@ routes:
         let resolver = build_resolver();
         let global = CompactorConfig {
             token_threshold: 4096,
+            max_history_messages: 20,
             stop_words: vec![],
             tokenizer_name: "global_tokenizer".to_string(),
         };
@@ -898,6 +902,7 @@ routes:
         let resolver = build_resolver();
         let global = CompactorConfig {
             token_threshold: 4096,
+            max_history_messages: 20,
             stop_words: vec![
                 "the".to_string(),
                 "is".to_string(),
@@ -1599,6 +1604,7 @@ mod property_tests {
 
             let global = CompactorConfig {
                 token_threshold: global_threshold,
+                max_history_messages: 20,
                 stop_words: vec!["the".to_string(), "a".to_string()],
                 tokenizer_name: global_tokenizer,
             };
@@ -1635,6 +1641,7 @@ mod property_tests {
 
             let global = CompactorConfig {
                 token_threshold: global_threshold,
+                max_history_messages: 20,
                 stop_words: vec!["stop".to_string()],
                 tokenizer_name: global_tokenizer.clone(),
             };

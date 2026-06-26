@@ -101,9 +101,12 @@ impl Default for SimpleCompactor {
 impl ContextCompactor for SimpleCompactor {
     fn compact(&self, messages: Vec<CompactMessage>, config: &CompactorConfig) -> CompactionResult {
         let original_tokens = Self::total_tokens(&messages);
+        let original_count = messages.len();
 
-        // Step 1: If below threshold, return unchanged
-        if original_tokens < config.token_threshold {
+        // Step 1: If tokens < threshold AND message count <= max_history_messages → no compression
+        if original_tokens < config.token_threshold
+            && original_count <= config.max_history_messages
+        {
             return CompactionResult {
                 original_tokens,
                 final_tokens: original_tokens,
@@ -114,14 +117,93 @@ impl ContextCompactor for SimpleCompactor {
             };
         }
 
-        // Step 2: Find the index of the last user message
-        let last_user_idx = messages
+        // Step 2: Apply max_history_messages sliding window
+        // Keep all system messages + last N non-system messages
+        let non_system_messages: Vec<(usize, &CompactMessage)> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.role != "system")
+            .collect();
+
+        let windowed_messages: Vec<CompactMessage> = if non_system_messages.len() > config.max_history_messages {
+            // Keep all system messages
+            let system_messages: Vec<CompactMessage> = messages
+                .iter()
+                .filter(|m| m.role == "system")
+                .cloned()
+                .collect();
+
+            // Keep last N non-system messages
+            let keep_non_system: Vec<CompactMessage> = non_system_messages
+                .iter()
+                .rev()
+                .take(config.max_history_messages)
+                .rev()
+                .map(|(_, m)| (*m).clone())
+                .collect();
+
+            // Reconstruct: system messages first (in order), then kept non-system messages
+            // Actually, preserve original interleaving order for system messages
+            // by keeping all system messages at their relative positions among kept messages.
+            // Simpler approach: system messages come first, then the windowed non-system messages.
+            // But this breaks order. Better: iterate original order, keep system + kept non-system.
+            let kept_non_system_start = non_system_messages.len() - config.max_history_messages;
+            let kept_indices: std::collections::HashSet<usize> = non_system_messages
+                .iter()
+                .skip(kept_non_system_start)
+                .map(|(i, _)| *i)
+                .collect();
+
+            messages
+                .iter()
+                .enumerate()
+                .filter(|(i, m)| m.role == "system" || kept_indices.contains(i))
+                .map(|(_, m)| m.clone())
+                .collect()
+        } else {
+            messages.clone()
+        };
+
+        let messages_pruned_by_window = original_count - windowed_messages.len();
+
+        // Step 3: If after windowing, tokens are below threshold → done
+        let tokens_after_window = Self::total_tokens(&windowed_messages);
+        if tokens_after_window < config.token_threshold {
+            // SAFETY: never return empty messages array
+            if windowed_messages.is_empty() {
+                return CompactionResult {
+                    original_tokens,
+                    final_tokens: original_tokens,
+                    messages_pruned: 0,
+                    compression_ratio: 1.0,
+                    was_compressed: false,
+                    messages,
+                };
+            }
+
+            let compression_ratio = if original_tokens > 0 {
+                tokens_after_window as f64 / original_tokens as f64
+            } else {
+                1.0
+            };
+            return CompactionResult {
+                original_tokens,
+                final_tokens: tokens_after_window,
+                messages_pruned: messages_pruned_by_window,
+                compression_ratio,
+                was_compressed: messages_pruned_by_window > 0,
+                messages: windowed_messages,
+            };
+        }
+
+        // Step 4: Still above threshold → apply token-based pruning on eligible messages
+        // Find the index of the last user message in the windowed set
+        let last_user_idx = windowed_messages
             .iter()
             .rposition(|m| m.role == "user");
 
-        // Step 3: Identify eligible messages (not system, not last user)
-        // eligible_indices: indices of messages that can be modified/pruned
-        let eligible_indices: Vec<usize> = messages
+        // Identify eligible messages (not system, not last user)
+        let eligible_indices: Vec<usize> = windowed_messages
             .iter()
             .enumerate()
             .filter(|(i, m)| {
@@ -130,8 +212,8 @@ impl ContextCompactor for SimpleCompactor {
             .map(|(i, _)| i)
             .collect();
 
-        // Step 4: Remove stop-words from eligible message contents
-        let working_messages: Vec<CompactMessage> = messages
+        // Remove stop-words from eligible message contents
+        let working_messages: Vec<CompactMessage> = windowed_messages
             .iter()
             .enumerate()
             .map(|(i, m)| {
@@ -152,6 +234,18 @@ impl ContextCompactor for SimpleCompactor {
         // Check if stop-word removal alone achieved the target
         let tokens_after_stopwords = Self::total_tokens(&working_messages);
         if tokens_after_stopwords <= target_tokens {
+            // SAFETY: never return empty messages array
+            if working_messages.is_empty() {
+                return CompactionResult {
+                    original_tokens,
+                    final_tokens: original_tokens,
+                    messages_pruned: 0,
+                    compression_ratio: 1.0,
+                    was_compressed: false,
+                    messages,
+                };
+            }
+
             let compression_ratio = if original_tokens > 0 {
                 tokens_after_stopwords as f64 / original_tokens as f64
             } else {
@@ -160,21 +254,20 @@ impl ContextCompactor for SimpleCompactor {
             return CompactionResult {
                 original_tokens,
                 final_tokens: tokens_after_stopwords,
-                messages_pruned: 0,
+                messages_pruned: messages_pruned_by_window,
                 compression_ratio,
                 was_compressed: true,
                 messages: working_messages,
             };
         }
 
-        // Step 5: Prune oldest eligible messages until target is reached
-        // eligible_indices are already in ascending order (oldest first)
-        let mut messages_pruned = 0;
+        // Prune oldest eligible messages until target is reached
+        let mut token_messages_pruned = 0;
         let mut indices_to_remove: Vec<usize> = Vec::new();
 
         for &idx in &eligible_indices {
             indices_to_remove.push(idx);
-            messages_pruned += 1;
+            token_messages_pruned += 1;
 
             // Calculate token count without the removed messages
             let remaining_tokens: usize = working_messages
@@ -197,6 +290,24 @@ impl ContextCompactor for SimpleCompactor {
             .map(|(_, m)| m)
             .collect();
 
+        // SAFETY: never return an empty message array — always keep at least the last message
+        let final_messages = if final_messages.is_empty() {
+            if let Some(last) = messages.last() {
+                vec![last.clone()]
+            } else {
+                return CompactionResult {
+                    original_tokens,
+                    final_tokens: original_tokens,
+                    messages_pruned: 0,
+                    compression_ratio: 1.0,
+                    was_compressed: false,
+                    messages,
+                };
+            }
+        } else {
+            final_messages
+        };
+
         let final_tokens = Self::total_tokens(&final_messages);
         let compression_ratio = if original_tokens > 0 {
             final_tokens as f64 / original_tokens as f64
@@ -207,7 +318,7 @@ impl ContextCompactor for SimpleCompactor {
         CompactionResult {
             original_tokens,
             final_tokens,
-            messages_pruned,
+            messages_pruned: messages_pruned_by_window + token_messages_pruned,
             compression_ratio,
             was_compressed: true,
             messages: final_messages,
@@ -262,6 +373,7 @@ mod proptest_tests {
                 // Use a very low threshold to force compression
                 let config = CompactorConfig {
                     token_threshold: 1,
+                    max_history_messages: 20,
                     stop_words: vec![],
                     tokenizer_name: "cl100k_base".to_string(),
                 };
@@ -304,6 +416,7 @@ mod proptest_tests {
                 let compactor = SimpleCompactor::new();
                 let config = CompactorConfig {
                     token_threshold: 1,
+                    max_history_messages: 20,
                     stop_words: vec![],
                     tokenizer_name: "cl100k_base".to_string(),
                 };
@@ -333,6 +446,7 @@ mod proptest_tests {
                 let compactor = SimpleCompactor::new();
                 let config = CompactorConfig {
                     token_threshold: 1,
+                    max_history_messages: 20,
                     stop_words: vec![],
                     tokenizer_name: "cl100k_base".to_string(),
                 };
@@ -423,6 +537,7 @@ mod proptest_tests {
                 let compactor = SimpleCompactor::new();
                 let config = CompactorConfig {
                     token_threshold: 1, // Always trigger compression
+                    max_history_messages: 100, // High limit so window doesn't interfere
                     stop_words: vec![],
                     tokenizer_name: "cl100k_base".to_string(),
                 };
@@ -531,6 +646,7 @@ mod proptest_tests {
                 let stop_words = stop_word_list();
                 let config = CompactorConfig {
                     token_threshold: 1, // Always trigger compression
+                    max_history_messages: 100, // High limit so window doesn't interfere
                     stop_words: stop_words.clone(),
                     tokenizer_name: "cl100k_base".to_string(),
                 };
@@ -604,6 +720,7 @@ mod proptest_tests {
                 // Very high threshold guarantees we stay below it
                 let config = CompactorConfig {
                     token_threshold: 100_000,
+                    max_history_messages: 100,
                     stop_words: vec!["the".to_string(), "a".to_string()],
                     tokenizer_name: "cl100k_base".to_string(),
                 };
@@ -638,6 +755,7 @@ mod tests {
     fn config_with_threshold(threshold: usize) -> CompactorConfig {
         CompactorConfig {
             token_threshold: threshold,
+            max_history_messages: 20,
             stop_words: Vec::new(),
             tokenizer_name: "cl100k_base".to_string(),
         }
@@ -646,6 +764,7 @@ mod tests {
     fn config_with_stop_words(threshold: usize, stop_words: Vec<&str>) -> CompactorConfig {
         CompactorConfig {
             token_threshold: threshold,
+            max_history_messages: 20,
             stop_words: stop_words.into_iter().map(String::from).collect(),
             tokenizer_name: "cl100k_base".to_string(),
         }

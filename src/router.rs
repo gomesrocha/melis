@@ -21,8 +21,9 @@ use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use crate::circuit_breaker::CallResult;
 use crate::compactor::{SimpleCompactor, ContextCompactor, CompactMessage};
 use crate::config::CompactorConfig;
 use crate::error::GatewayError;
@@ -319,275 +320,325 @@ async fn chat_completions_handler(
     let compaction_elapsed = compaction_start.elapsed().as_secs_f64();
     state.metrics.compaction_duration.observe(compaction_elapsed);
 
-    // ─── Provider Selection via Load Balancer ─────────────────────────────────
-    let selected_provider = state.load_balancer.select_provider(&resolved.providers)
-        .map_err(|e| {
-            state.metrics.provider_errors_total
-                .with_label_values(&["none", "503"])
-                .inc();
-            e
-        })?;
+    // ─── Provider Selection & Failover Loop ──────────────────────────────────
+    let mut excluded_providers: Vec<String> = Vec::new();
+    let max_attempts = resolved.providers.len().min(3);
+    let mut last_error: Option<GatewayError> = None;
+    let mut provider_type_used = String::from("unknown");
 
-    let selected_provider_name = selected_provider.name.clone();
+    let response = 'failover: {
+        for _attempt in 0..max_attempts {
+            // Select provider, excluding previously failed ones
+            let available: Vec<WeightedProvider> = resolved.providers.iter()
+                .filter(|p| !excluded_providers.contains(&p.name))
+                .cloned()
+                .collect();
 
-    // Resolve ProviderConfig from config.yaml based on selected_provider.name
-    let provider_config = state.gateway_config.providers.iter()
-        .find(|p| p.id == selected_provider_name || p.provider_type == selected_provider_name);
-
-    let provider_base_url = provider_config
-        .map(|p| p.base_url.clone())
-        .unwrap_or_else(|| "http://localhost:11434".to_string());
-
-    let provider_api_key = provider_config
-        .map(|p| p.api_key.clone())
-        .unwrap_or_default();
-
-    let provider_type = provider_config
-        .map(|p| p.provider_type.clone())
-        .unwrap_or_else(|| "ollama".to_string());
-
-    let provider_timeout = provider_config
-        .map(|p| p.timeout())
-        .unwrap_or(std::time::Duration::from_secs(120));
-
-    // ─── Circuit Breaker Check ────────────────────────────────────────────────
-    if !state.circuit_breaker.is_available(&selected_provider_name).await {
-        state.metrics.provider_errors_total
-            .with_label_values(&[&provider_type, "circuit_open"])
-            .inc();
-        state.metrics.fallback_mode_total
-            .with_label_values(&[&selected_provider_name, "next", "circuit_open"])
-            .inc();
-        tracing::warn!(provider = %selected_provider_name, "Circuit breaker is open for selected provider");
-        return Err(GatewayError::ServiceUnavailable(
-            format!("Provider {} circuit breaker is open", selected_provider_name),
-        ));
-    }
-
-    // ─── Build Forward URL ────────────────────────────────────────────────────
-    let forward_url = if provider_type == "anthropic" {
-        format!("{}/messages", provider_base_url)
-    } else if provider_base_url.contains("/openai") || provider_base_url.ends_with("/v1") {
-        format!("{}/chat/completions", provider_base_url)
-    } else {
-        format!("{}/v1/chat/completions", provider_base_url)
-    };
-
-    // Build headers for the provider request
-    let mut provider_headers = reqwest::header::HeaderMap::new();
-    provider_headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        "application/json".parse().unwrap(),
-    );
-
-    // Add authentication header based on provider type
-    if !provider_api_key.is_empty() && provider_api_key != "ollama" {
-        if provider_type == "anthropic" {
-            provider_headers.insert(
-                reqwest::header::HeaderName::from_static("x-api-key"),
-                provider_api_key.parse().unwrap(),
-            );
-            provider_headers.insert(
-                reqwest::header::HeaderName::from_static("anthropic-version"),
-                "2023-06-01".parse().unwrap(),
-            );
-        } else {
-            provider_headers.insert(
-                reqwest::header::AUTHORIZATION,
-                format!("Bearer {}", provider_api_key).parse().unwrap(),
-            );
-        }
-    }
-
-    // ─── Payload Translation ──────────────────────────────────────────────────
-    let translation_start = Instant::now();
-    let body_bytes = if provider_type == "anthropic" {
-        let transpiler = crate::transpiler::get_transpiler("anthropic");
-        match transpiler.to_native(&payload) {
-            Ok(native_payload) => bytes::Bytes::from(serde_json::to_vec(&native_payload).unwrap()),
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to translate payload to Anthropic format");
-                return Err(GatewayError::Internal("Payload translation failed".to_string()));
-            }
-        }
-    } else {
-        bytes::Bytes::from(serde_json::to_vec(&payload).unwrap())
-    };
-    let translation_elapsed = translation_start.elapsed().as_secs_f64();
-    state.metrics.payload_translation.observe(translation_elapsed);
-
-    // ─── Forward Request ──────────────────────────────────────────────────────
-    let response = if streaming {
-        let provider_start = Instant::now();
-        let stream = state.http_client.send_stream(
-            &forward_url,
-            provider_headers,
-            body_bytes,
-            provider_timeout,
-        );
-
-        // Record backend latency for the connection phase
-        backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-        state.metrics.backend_latency.with_label_values(&[&provider_type]).observe(backend_elapsed_time);
-
-        // Record circuit breaker success for streaming (connection established)
-        state.circuit_breaker.record_result(
-            &selected_provider_name,
-            crate::circuit_breaker::CallResult::Success,
-        ).await;
-
-        // Transform provider SSE chunks → OpenAI format
-        let transpiler = crate::transpiler::get_transpiler(&provider_type);
-        let transformed = crate::streaming::transform_sse_stream(
-            Box::pin(stream.map(|r| r.map_err(|e| crate::streaming::StreamError::Connection(e.to_string())))),
-            transpiler,
-        );
-
-        Sse::new(transformed).into_response()
-    } else {
-        // Forward as non-streaming request
-        let provider_start = Instant::now();
-        match state.http_client.send(&forward_url, provider_headers, body_bytes, provider_timeout).await {
-            Ok(response_bytes) => {
-                backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-                state.metrics.backend_latency.with_label_values(&[&provider_type]).observe(backend_elapsed_time);
-
-                // Record circuit breaker success
-                state.circuit_breaker.record_result(
-                    &selected_provider_name,
-                    crate::circuit_breaker::CallResult::Success,
-                ).await;
-
-                // Parse provider response
-                match serde_json::from_slice::<Value>(&response_bytes) {
-                    Ok(json_response) => {
-                        let final_response = if provider_type == "anthropic" {
-                            let transpiler = crate::transpiler::get_transpiler("anthropic");
-                            match transpiler.from_native(&json_response) {
-                                Ok(openai_response) => openai_response,
-                                Err(e) => {
-                                    tracing::error!(error = %e, "Failed to translate Anthropic response");
-                                    json_response
-                                }
-                            }
-                        } else {
-                            json_response
-                        };
-
-                        // Record token metrics from usage field
-                        if let Some(usage) = final_response.get("usage") {
-                            let prompt_tokens = usage.get("prompt_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let completion_tokens = usage.get("completion_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-
-                            let model_name = final_response.get("model")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or(&effective_model);
-
-                            state.metrics.llm_tokens_total
-                                .with_label_values(&["input", model_name, "unknown"])
-                                .inc_by(prompt_tokens);
-                            state.metrics.llm_tokens_total
-                                .with_label_values(&["output", model_name, "unknown"])
-                                .inc_by(completion_tokens);
-                        }
-
-                        Json(final_response).into_response()
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to parse provider response");
-                        return Err(GatewayError::ProviderError(
-                            "Invalid response from provider".to_string(),
-                        ));
-                    }
-                }
-            }
-            Err(crate::client::ClientError::HttpError { status, body }) => {
-                backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-                state.metrics.backend_latency.with_label_values(&[&provider_type]).observe(backend_elapsed_time);
-
-                // Record provider error
-                state.metrics.provider_errors_total
-                    .with_label_values(&[&provider_type, &status.to_string()])
-                    .inc();
-
-                match status {
-                    400 => return Err(GatewayError::BadRequest(format!("Provider error: {}", body))),
-                    401 | 403 => return Err(GatewayError::Unauthorized(format!("Provider auth error: {}", body))),
-                    404 => {
-                        // Model not found - record fallback metrics
-                        let fallback_model = "llama3.2";
-                        let fallback_provider = "ollama";
-
-                        state.metrics.model_substitution_total
-                            .with_label_values(&[&effective_model, fallback_model, "unknown_model"])
-                            .inc();
-                        state.metrics.fallback_mode_total
-                            .with_label_values(&[&selected_provider_name, fallback_provider, "model_not_found"])
-                            .inc();
-
-                        tracing::warn!(
-                            original_model = %effective_model,
-                            fallback_model = %fallback_model,
-                            "Model not found, falling back to default"
-                        );
-
-                        return Err(GatewayError::BadRequest(
-                            format!("Model '{}' not found at provider. Consider using fallback model '{}'", effective_model, fallback_model)
-                        ));
-                    }
-                    429 => {
-                        state.circuit_breaker.record_result(
-                            &selected_provider_name,
-                            crate::circuit_breaker::CallResult::RateLimited,
-                        ).await;
-                        return Err(GatewayError::RateLimited { retry_after_secs: 30 });
-                    }
-                    s if s >= 500 => {
-                        state.circuit_breaker.record_result(
-                            &selected_provider_name,
-                            crate::circuit_breaker::CallResult::Failure,
-                        ).await;
-                        return Err(GatewayError::ServiceUnavailable(format!("Provider error {}: {}", status, body)));
-                    }
-                    _ => return Err(GatewayError::ProviderError(format!("HTTP {}: {}", status, body))),
-                }
-            }
-            Err(crate::client::ClientError::Timeout) => {
-                backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-                state.metrics.backend_latency.with_label_values(&[&provider_type]).observe(backend_elapsed_time);
-
-                state.circuit_breaker.record_result(
-                    &selected_provider_name,
-                    crate::circuit_breaker::CallResult::Timeout,
-                ).await;
-                state.metrics.provider_errors_total
-                    .with_label_values(&[&provider_type, "timeout"])
-                    .inc();
-                return Err(GatewayError::ServiceUnavailable("Provider timeout".to_string()));
-            }
-            Err(e) => {
-                backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-                state.metrics.backend_latency.with_label_values(&[&provider_type]).observe(backend_elapsed_time);
-
-                state.circuit_breaker.record_result(
-                    &selected_provider_name,
-                    crate::circuit_breaker::CallResult::Failure,
-                ).await;
-                state.metrics.provider_errors_total
-                    .with_label_values(&[&provider_type, "network_error"])
-                    .inc();
-
-                tracing::error!(error = %e, provider_url = %forward_url, "Provider request failed");
-                return Err(GatewayError::ServiceUnavailable(
-                    format!("Provider unavailable: {}", e),
+            if available.is_empty() {
+                break 'failover Err(last_error.unwrap_or(
+                    GatewayError::ServiceUnavailable("All providers exhausted".to_string())
                 ));
             }
+
+            let selected = match state.load_balancer.select_provider(&available) {
+                Ok(p) => p,
+                Err(e) => break 'failover Err(e),
+            };
+            let selected_name = selected.name.clone();
+
+            // Check circuit breaker
+            if !state.circuit_breaker.is_available(&selected_name).await {
+                state.metrics.failover_total
+                    .with_label_values(&[&selected_name, "circuit_open"])
+                    .inc();
+                state.metrics.fallback_mode_total
+                    .with_label_values(&[&selected_name, "next", "circuit_open"])
+                    .inc();
+                excluded_providers.push(selected_name);
+                continue;
+            }
+
+            // Resolve provider config
+            let pconfig = state.gateway_config.providers.iter()
+                .find(|p| p.id == selected_name || p.provider_type == selected_name);
+
+            let base_url = pconfig
+                .map(|p| p.base_url.clone())
+                .unwrap_or_else(|| "http://localhost:11434".to_string());
+            let api_key = pconfig
+                .map(|p| p.api_key.clone())
+                .unwrap_or_default();
+            let ptype = pconfig
+                .map(|p| p.provider_type.clone())
+                .unwrap_or_else(|| "ollama".to_string());
+            let timeout = pconfig
+                .map(|p| p.timeout())
+                .unwrap_or(Duration::from_secs(120));
+            provider_type_used = ptype.clone();
+
+            // Build forward URL
+            let url = if ptype == "anthropic" {
+                format!("{}/messages", base_url)
+            } else if base_url.contains("/openai") || base_url.ends_with("/v1") {
+                format!("{}/chat/completions", base_url)
+            } else {
+                format!("{}/v1/chat/completions", base_url)
+            };
+
+            // Build headers
+            let mut provider_headers = reqwest::header::HeaderMap::new();
+            provider_headers.insert(
+                reqwest::header::CONTENT_TYPE,
+                "application/json".parse().unwrap(),
+            );
+            if !api_key.is_empty() && api_key != "ollama" {
+                if ptype == "anthropic" {
+                    provider_headers.insert(
+                        reqwest::header::HeaderName::from_static("x-api-key"),
+                        api_key.parse().unwrap(),
+                    );
+                    provider_headers.insert(
+                        reqwest::header::HeaderName::from_static("anthropic-version"),
+                        "2023-06-01".parse().unwrap(),
+                    );
+                } else {
+                    provider_headers.insert(
+                        reqwest::header::AUTHORIZATION,
+                        format!("Bearer {}", api_key).parse().unwrap(),
+                    );
+                }
+            }
+
+            // Translate payload
+            let translation_start = Instant::now();
+            let body = if ptype == "anthropic" {
+                let transpiler = crate::transpiler::get_transpiler("anthropic");
+                match transpiler.to_native(&payload) {
+                    Ok(native) => bytes::Bytes::from(serde_json::to_vec(&native).unwrap()),
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to translate payload to Anthropic format");
+                        break 'failover Err(GatewayError::Internal(
+                            "Payload translation failed".to_string(),
+                        ));
+                    }
+                }
+            } else {
+                bytes::Bytes::from(serde_json::to_vec(&payload).unwrap())
+            };
+            let translation_elapsed = translation_start.elapsed().as_secs_f64();
+            state.metrics.payload_translation.observe(translation_elapsed);
+
+            // ─── Streaming: attempt once (can't retry mid-stream) ─────────────
+            if streaming {
+                let provider_start = Instant::now();
+                let stream = state.http_client.send_stream(
+                    &url,
+                    provider_headers,
+                    body,
+                    timeout,
+                );
+
+                backend_elapsed_time = provider_start.elapsed().as_secs_f64();
+                state.metrics.backend_latency
+                    .with_label_values(&[&ptype])
+                    .observe(backend_elapsed_time);
+
+                state.circuit_breaker.record_result(
+                    &selected_name,
+                    CallResult::Success,
+                ).await;
+
+                let transpiler = crate::transpiler::get_transpiler(&ptype);
+                let transformed = crate::streaming::transform_sse_stream(
+                    Box::pin(stream.map(|r| r.map_err(|e| {
+                        crate::streaming::StreamError::Connection(e.to_string())
+                    }))),
+                    transpiler,
+                );
+
+                break 'failover Ok(Sse::new(transformed).into_response());
+            }
+
+            // ─── Non-streaming: try and handle errors ─────────────────────────
+            let provider_start = Instant::now();
+            match state.http_client.send(&url, provider_headers, body, timeout).await {
+                Ok(response_bytes) => {
+                    backend_elapsed_time = provider_start.elapsed().as_secs_f64();
+                    state.metrics.backend_latency
+                        .with_label_values(&[&ptype])
+                        .observe(backend_elapsed_time);
+
+                    state.circuit_breaker.record_result(
+                        &selected_name,
+                        CallResult::Success,
+                    ).await;
+
+                    match serde_json::from_slice::<Value>(&response_bytes) {
+                        Ok(json_response) => {
+                            let final_response = if ptype == "anthropic" {
+                                let transpiler = crate::transpiler::get_transpiler("anthropic");
+                                match transpiler.from_native(&json_response) {
+                                    Ok(openai_response) => openai_response,
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "Failed to translate Anthropic response");
+                                        json_response
+                                    }
+                                }
+                            } else {
+                                json_response
+                            };
+
+                            // Record token metrics
+                            if let Some(usage) = final_response.get("usage") {
+                                let prompt_tokens = usage.get("prompt_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                let completion_tokens = usage.get("completion_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                let model_name = final_response.get("model")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&effective_model);
+                                state.metrics.llm_tokens_total
+                                    .with_label_values(&["input", model_name, "unknown"])
+                                    .inc_by(prompt_tokens);
+                                state.metrics.llm_tokens_total
+                                    .with_label_values(&["output", model_name, "unknown"])
+                                    .inc_by(completion_tokens);
+                            }
+
+                            break 'failover Ok(Json(final_response).into_response());
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to parse provider response");
+                            break 'failover Err(GatewayError::ProviderError(
+                                "Invalid response from provider".to_string(),
+                            ));
+                        }
+                    }
+                }
+                Err(crate::client::ClientError::HttpError { status, body: err_body }) => {
+                    backend_elapsed_time = provider_start.elapsed().as_secs_f64();
+                    state.metrics.backend_latency
+                        .with_label_values(&[&ptype])
+                        .observe(backend_elapsed_time);
+                    state.metrics.provider_errors_total
+                        .with_label_values(&[&ptype, &status.to_string()])
+                        .inc();
+
+                    match status {
+                        // Non-retryable errors — return immediately
+                        400 => {
+                            break 'failover Err(GatewayError::BadRequest(
+                                format!("Provider error: {}", err_body),
+                            ));
+                        }
+                        401 | 403 => {
+                            break 'failover Err(GatewayError::Unauthorized(
+                                format!("Provider auth error: {}", err_body),
+                            ));
+                        }
+                        404 => {
+                            break 'failover Err(GatewayError::BadRequest(
+                                format!("Model '{}' not found at provider", effective_model),
+                            ));
+                        }
+                        // Retryable — record failure and try next provider
+                        429 => {
+                            state.circuit_breaker.record_result(
+                                &selected_name,
+                                CallResult::RateLimited,
+                            ).await;
+                            state.metrics.failover_total
+                                .with_label_values(&[&selected_name, "429"])
+                                .inc();
+                            excluded_providers.push(selected_name);
+                            last_error = Some(GatewayError::RateLimited { retry_after_secs: 30 });
+                        }
+                        s if s >= 500 => {
+                            state.circuit_breaker.record_result(
+                                &selected_name,
+                                CallResult::Failure,
+                            ).await;
+                            state.metrics.failover_total
+                                .with_label_values(&[&selected_name, "5xx"])
+                                .inc();
+                            excluded_providers.push(selected_name);
+                            last_error = Some(GatewayError::ServiceUnavailable(
+                                format!("Provider error {}: {}", status, err_body),
+                            ));
+                        }
+                        _ => {
+                            excluded_providers.push(selected_name);
+                            last_error = Some(GatewayError::ProviderError(
+                                format!("HTTP {}: {}", status, err_body),
+                            ));
+                        }
+                    }
+                }
+                Err(crate::client::ClientError::Timeout) => {
+                    backend_elapsed_time = provider_start.elapsed().as_secs_f64();
+                    state.metrics.backend_latency
+                        .with_label_values(&[&ptype])
+                        .observe(backend_elapsed_time);
+                    state.circuit_breaker.record_result(
+                        &selected_name,
+                        CallResult::Timeout,
+                    ).await;
+                    state.metrics.provider_errors_total
+                        .with_label_values(&[&ptype, "timeout"])
+                        .inc();
+                    state.metrics.failover_total
+                        .with_label_values(&[&selected_name, "timeout"])
+                        .inc();
+                    excluded_providers.push(selected_name);
+                    last_error = Some(GatewayError::ServiceUnavailable(
+                        "Provider timeout".to_string(),
+                    ));
+                }
+                Err(e) => {
+                    backend_elapsed_time = provider_start.elapsed().as_secs_f64();
+                    state.metrics.backend_latency
+                        .with_label_values(&[&ptype])
+                        .observe(backend_elapsed_time);
+                    state.circuit_breaker.record_result(
+                        &selected_name,
+                        CallResult::Failure,
+                    ).await;
+                    state.metrics.provider_errors_total
+                        .with_label_values(&[&ptype, "network_error"])
+                        .inc();
+                    state.metrics.failover_total
+                        .with_label_values(&[&selected_name, "network"])
+                        .inc();
+                    excluded_providers.push(selected_name);
+                    last_error = Some(GatewayError::ServiceUnavailable(
+                        format!("Provider unavailable: {}", e),
+                    ));
+                }
+            }
         }
+
+        // All attempts exhausted
+        Err(last_error.unwrap_or(
+            GatewayError::ServiceUnavailable("All providers exhausted".to_string()),
+        ))
     };
+
+    // Record fallback success metric if we had failures but ultimately succeeded
+    if !excluded_providers.is_empty() {
+        if response.is_ok() {
+            state.metrics.fallback_mode_total
+                .with_label_values(&[
+                    excluded_providers.first().map(|s| s.as_str()).unwrap_or("unknown"),
+                    &provider_type_used,
+                    "failover_success",
+                ])
+                .inc();
+        }
+    }
+
+    let response = response?;
 
     // ─── Record Metrics ───────────────────────────────────────────────────────
     let total_elapsed = request_start.elapsed().as_secs_f64();
@@ -598,7 +649,7 @@ async fn chat_completions_handler(
         .with_label_values(&[request_path, "unknown", &status])
         .inc();
     state.metrics.request_duration
-        .with_label_values(&[request_path, &provider_type])
+        .with_label_values(&[request_path, &provider_type_used])
         .observe(total_elapsed);
     state.metrics.internal_overhead.observe(internal_overhead);
     state.metrics.gateway_overhead.observe(total_elapsed);
@@ -833,6 +884,7 @@ routes:
     fn global_compactor() -> CompactorConfig {
         CompactorConfig {
             token_threshold: 4096,
+            max_history_messages: 20,
             stop_words: vec!["the".to_string(), "a".to_string()],
             tokenizer_name: "cl100k_base".to_string(),
         }

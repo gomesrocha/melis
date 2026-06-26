@@ -184,6 +184,8 @@ fn default_refill_rate() -> f64 {
 pub struct CompactorConfig {
     #[serde(default = "default_token_threshold")]
     pub token_threshold: usize,
+    #[serde(default = "default_max_history_messages")]
+    pub max_history_messages: usize,
     #[serde(default)]
     pub stop_words: Vec<String>,
     #[serde(default = "default_tokenizer_name")]
@@ -194,6 +196,7 @@ impl Default for CompactorConfig {
     fn default() -> Self {
         Self {
             token_threshold: default_token_threshold(),
+            max_history_messages: default_max_history_messages(),
             stop_words: Vec::new(),
             tokenizer_name: default_tokenizer_name(),
         }
@@ -202,6 +205,10 @@ impl Default for CompactorConfig {
 
 fn default_token_threshold() -> usize {
     4096
+}
+
+fn default_max_history_messages() -> usize {
+    20
 }
 
 fn default_tokenizer_name() -> String {
