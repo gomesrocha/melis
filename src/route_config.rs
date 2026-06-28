@@ -44,7 +44,7 @@ pub enum RoutesConfigError {
     #[error("Provedor inválido '{provider}' na rota {route_index}. Valores aceitos: openai, anthropic, google_vertex_ai, oci_genai, ollama ou custom_providers registrados")]
     InvalidProvider { route_index: usize, provider: String },
 
-    #[error("Estratégia inválida '{strategy}' na rota {route_index}. Valores aceitos: adaptive_trimming, sliding_window, none")]
+    #[error("Estratégia inválida '{strategy}' na rota {route_index}. Valores aceitos: adaptive_trimming, sliding_window, semantic_guarded_trimming, none")]
     InvalidStrategy { route_index: usize, strategy: String },
 
     #[error("Rota duplicada: {path} {method} (rotas {first} e {second})")]
@@ -75,6 +75,7 @@ pub enum ProviderType {
 pub enum TokenOptimizationStrategy {
     AdaptiveTrimming,
     SlidingWindow,
+    SemanticGuardedTrimming,
     None,
 }
 
@@ -88,6 +89,15 @@ pub struct TokenOptimizationConfig {
     pub compress_above_tokens: usize,
     #[serde(default = "default_local_tokenizer")]
     pub local_tokenizer: String,
+    /// Target ratio for semantic_guarded_trimming (overrides global).
+    #[serde(default)]
+    pub target_token_ratio: Option<f64>,
+    /// Minimum number of tokens to preserve (overrides global).
+    #[serde(default)]
+    pub min_final_tokens: Option<usize>,
+    /// Critical markers for semantic_guarded_trimming (overrides global).
+    #[serde(default)]
+    pub critical_markers: Option<Vec<String>>,
 }
 
 fn default_max_history_messages() -> usize {
@@ -297,12 +307,25 @@ impl RouteResolver {
         global: &CompactorConfig,
     ) -> CompactorConfig {
         match &route.token_optimization {
-            Some(opt) => CompactorConfig {
-                token_threshold: opt.compress_above_tokens,
-                max_history_messages: opt.max_history_messages,
-                stop_words: global.stop_words.clone(),
-                tokenizer_name: opt.local_tokenizer.clone(),
-            },
+            Some(opt) => {
+                let strategy = match &opt.strategy {
+                    TokenOptimizationStrategy::AdaptiveTrimming => "adaptive_trimming".to_string(),
+                    TokenOptimizationStrategy::SlidingWindow => "sliding_window".to_string(),
+                    TokenOptimizationStrategy::SemanticGuardedTrimming => "semantic_guarded_trimming".to_string(),
+                    TokenOptimizationStrategy::None => "none".to_string(),
+                };
+                CompactorConfig {
+                    token_threshold: opt.compress_above_tokens,
+                    max_history_messages: opt.max_history_messages,
+                    stop_words: global.stop_words.clone(),
+                    tokenizer_name: opt.local_tokenizer.clone(),
+                    target_token_ratio: opt.target_token_ratio.unwrap_or(global.target_token_ratio),
+                    min_final_tokens: opt.min_final_tokens.unwrap_or(global.min_final_tokens),
+                    critical_markers: opt.critical_markers.clone().unwrap_or_else(|| global.critical_markers.clone()),
+                    preserve_critical_markers: global.preserve_critical_markers,
+                    strategy,
+                }
+            }
             None => global.clone(),
         }
     }
@@ -719,6 +742,10 @@ routes:
         let s: TokenOptimizationStrategy = serde_yaml::from_str(yaml_sw).unwrap();
         assert_eq!(s, TokenOptimizationStrategy::SlidingWindow);
 
+        let yaml_sgt = r#""semantic_guarded_trimming""#;
+        let s: TokenOptimizationStrategy = serde_yaml::from_str(yaml_sgt).unwrap();
+        assert_eq!(s, TokenOptimizationStrategy::SemanticGuardedTrimming);
+
         let yaml_none = r#""none""#;
         let s: TokenOptimizationStrategy = serde_yaml::from_str(yaml_none).unwrap();
         assert_eq!(s, TokenOptimizationStrategy::None);
@@ -850,6 +877,7 @@ routes:
             max_history_messages: 20,
             stop_words: vec!["the".to_string(), "a".to_string()],
             tokenizer_name: "global_tokenizer".to_string(),
+            ..Default::default()
         };
 
         // /v1/chat/agent has token_optimization with compress_above_tokens: 4000
@@ -870,6 +898,7 @@ routes:
             max_history_messages: 20,
             stop_words: vec!["the".to_string()],
             tokenizer_name: "global_tokenizer".to_string(),
+            ..Default::default()
         };
 
         // /v1/chat/raw has no token_optimization
@@ -887,6 +916,7 @@ routes:
             max_history_messages: 20,
             stop_words: vec![],
             tokenizer_name: "global_tokenizer".to_string(),
+            ..Default::default()
         };
 
         // /v1/chat/support has sliding_window with compress_above_tokens: 8000
@@ -909,6 +939,7 @@ routes:
                 "at".to_string(),
             ],
             tokenizer_name: "global_tokenizer".to_string(),
+            ..Default::default()
         };
 
         // Per-route config should inherit stop_words from global
@@ -1349,6 +1380,7 @@ mod property_tests {
             prop_oneof![
                 Just(TokenOptimizationStrategy::AdaptiveTrimming),
                 Just(TokenOptimizationStrategy::SlidingWindow),
+                Just(TokenOptimizationStrategy::SemanticGuardedTrimming),
                 Just(TokenOptimizationStrategy::None),
             ],
             1usize..100,
@@ -1359,6 +1391,9 @@ mod property_tests {
                 max_history_messages: max_hist,
                 compress_above_tokens: compress_above,
                 local_tokenizer: "cl100k_base".to_string(),
+                target_token_ratio: None,
+                min_final_tokens: None,
+                critical_markers: None,
             })
     }
 
@@ -1599,6 +1634,9 @@ mod property_tests {
                     max_history_messages: 20,
                     compress_above_tokens: route_threshold,
                     local_tokenizer: route_tokenizer.clone(),
+                    target_token_ratio: None,
+                    min_final_tokens: None,
+                    critical_markers: None,
                 }),
             };
 
@@ -1607,6 +1645,7 @@ mod property_tests {
                 max_history_messages: 20,
                 stop_words: vec!["the".to_string(), "a".to_string()],
                 tokenizer_name: global_tokenizer,
+                ..Default::default()
             };
 
             let config = RouteConfigFile {
@@ -1644,6 +1683,7 @@ mod property_tests {
                 max_history_messages: 20,
                 stop_words: vec!["stop".to_string()],
                 tokenizer_name: global_tokenizer.clone(),
+                ..Default::default()
             };
 
             let config = RouteConfigFile {

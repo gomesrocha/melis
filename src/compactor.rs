@@ -53,7 +53,7 @@ impl SimpleCompactor {
     }
 
     /// Approximate token count for a string (4 chars ≈ 1 token).
-    fn count_tokens(text: &str) -> usize {
+    pub fn count_tokens(text: &str) -> usize {
         // Minimum 1 token for non-empty text
         let chars = text.len();
         if chars == 0 {
@@ -64,7 +64,7 @@ impl SimpleCompactor {
     }
 
     /// Count total tokens across all messages (role + content).
-    fn total_tokens(messages: &[CompactMessage]) -> usize {
+    pub fn total_tokens(messages: &[CompactMessage]) -> usize {
         messages
             .iter()
             .map(|m| Self::count_tokens(&m.role) + Self::count_tokens(&m.content))
@@ -326,6 +326,298 @@ impl ContextCompactor for SimpleCompactor {
     }
 }
 
+// ─── Semantic Guarded Trimming Compactor ──────────────────────────────────────
+
+/// Semantic Guarded Trimming compactor.
+///
+/// Uses importance scoring to preserve semantically critical messages
+/// while removing low-value messages to meet token budget.
+pub struct SemanticGuardedCompactor;
+
+/// Importance score for a message.
+#[derive(Debug, Clone)]
+struct ScoredMessage {
+    index: usize,
+    message: CompactMessage,
+    score: i32,
+    is_protected: bool,
+    token_count: usize,
+}
+
+/// Simple check for date-like patterns (YYYY-MM-DD or DD/MM/YYYY).
+fn regex_lite_date_check(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() < 10 {
+        return false;
+    }
+    for window in chars.windows(10) {
+        // Check YYYY-MM-DD pattern
+        if window[4] == '-' && window[7] == '-'
+            && window[0].is_ascii_digit()
+            && window[1].is_ascii_digit()
+            && window[2].is_ascii_digit()
+            && window[3].is_ascii_digit()
+            && window[5].is_ascii_digit()
+            && window[6].is_ascii_digit()
+            && window[8].is_ascii_digit()
+            && window[9].is_ascii_digit()
+        {
+            return true;
+        }
+        // Check DD/MM/YYYY pattern
+        if window[2] == '/' && window[5] == '/'
+            && window[0].is_ascii_digit()
+            && window[1].is_ascii_digit()
+            && window[3].is_ascii_digit()
+            && window[4].is_ascii_digit()
+            && window[6].is_ascii_digit()
+            && window[7].is_ascii_digit()
+            && window[8].is_ascii_digit()
+            && window[9].is_ascii_digit()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+impl SemanticGuardedCompactor {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Calculate importance score for a message.
+    fn calculate_score(
+        msg: &CompactMessage,
+        is_last_user: bool,
+        last_user_terms: &[String],
+        critical_markers: &[String],
+    ) -> i32 {
+        let mut score: i32 = 0;
+        let content_lower = msg.content.to_lowercase();
+
+        // Role-based scoring
+        if msg.role == "system" {
+            score += 100;
+        }
+        if is_last_user {
+            score += 100;
+        }
+
+        // Critical markers
+        for marker in critical_markers {
+            if content_lower.contains(&marker.to_lowercase()) {
+                score += 80;
+            }
+        }
+
+        // Technical content indicators (numbers, ports, percentages, dates, routes)
+        let has_numbers = content_lower.chars().any(|c| c.is_ascii_digit());
+        let has_routes = content_lower.contains("/v1/")
+            || content_lower.contains("http://")
+            || content_lower.contains("https://");
+        let has_percentages = content_lower.contains('%');
+        let has_dates = regex_lite_date_check(&content_lower);
+
+        if has_numbers || has_percentages {
+            score += 30;
+        }
+        if has_routes {
+            score += 30;
+        }
+        if has_dates {
+            score += 20;
+        }
+
+        // Terms from the last user question (semantic relevance)
+        let terms_found = last_user_terms
+            .iter()
+            .filter(|term| content_lower.contains(&term.to_lowercase()))
+            .count();
+        score += (terms_found as i32) * 20;
+
+        // Technical keywords
+        let tech_keywords = [
+            "api", "endpoint", "token", "error", "config", "deploy",
+            "database", "server", "port", "latency", "timeout", "cluster",
+        ];
+        let tech_count = tech_keywords
+            .iter()
+            .filter(|kw| content_lower.contains(*kw))
+            .count();
+        score += (tech_count as i32) * 15;
+
+        // Negative signals (low-value content)
+        if content_lower.contains("contexto auxiliar") {
+            score -= 30;
+        }
+        if content_lower.contains("serve apenas para aumentar") {
+            score -= 20;
+        }
+        // Short assistant responses like "Entendido", "Ok", "Certo"
+        if msg.role == "assistant" && msg.content.len() < 30 {
+            score -= 20;
+        }
+
+        score
+    }
+
+    /// Extract meaningful terms from the last user message for relevance scoring.
+    fn extract_query_terms(content: &str) -> Vec<String> {
+        let stop_words = [
+            "o", "a", "de", "do", "da", "em", "no", "na", "que", "é",
+            "the", "is", "of", "in", "to", "and", "for", "it", "on",
+            "um", "uma", "com", "por", "para", "se", "como", "mais",
+        ];
+
+        content
+            .split_whitespace()
+            .map(|w| {
+                w.to_lowercase()
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .collect::<String>()
+            })
+            .filter(|w| w.len() > 3 && !stop_words.contains(&w.as_str()))
+            .collect()
+    }
+}
+
+impl Default for SemanticGuardedCompactor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ContextCompactor for SemanticGuardedCompactor {
+    fn compact(&self, messages: Vec<CompactMessage>, config: &CompactorConfig) -> CompactionResult {
+        let original_tokens = SimpleCompactor::total_tokens(&messages);
+        let original_count = messages.len();
+
+        // Step 1: If below threshold, return unchanged
+        if original_tokens < config.token_threshold {
+            return CompactionResult {
+                original_tokens,
+                final_tokens: original_tokens,
+                messages_pruned: 0,
+                compression_ratio: 1.0,
+                was_compressed: false,
+                messages,
+            };
+        }
+
+        // Step 2: Calculate target budget
+        let target_tokens = ((original_tokens as f64) * config.target_token_ratio) as usize;
+        let target_tokens = target_tokens.max(config.min_final_tokens);
+
+        // Step 3: Find last user message and extract query terms
+        let last_user_idx = messages.iter().rposition(|m| m.role == "user");
+        let last_user_terms = last_user_idx
+            .map(|idx| Self::extract_query_terms(&messages[idx].content))
+            .unwrap_or_default();
+
+        // Step 4: Score all messages
+        let scored: Vec<ScoredMessage> = messages
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| {
+                let is_last_user = Some(i) == last_user_idx;
+                let score = Self::calculate_score(
+                    msg,
+                    is_last_user,
+                    &last_user_terms,
+                    &config.critical_markers,
+                );
+                let token_count =
+                    SimpleCompactor::count_tokens(&msg.role) + SimpleCompactor::count_tokens(&msg.content);
+                let is_protected = msg.role == "system"
+                    || is_last_user
+                    || (config.preserve_critical_markers
+                        && config.critical_markers.iter().any(|m| {
+                            msg.content.to_lowercase().contains(&m.to_lowercase())
+                        }));
+
+                ScoredMessage {
+                    index: i,
+                    message: msg.clone(),
+                    score,
+                    is_protected,
+                    token_count,
+                }
+            })
+            .collect();
+
+        // Step 5: Calculate protected tokens
+        let protected_tokens: usize = scored
+            .iter()
+            .filter(|s| s.is_protected)
+            .map(|s| s.token_count)
+            .sum();
+
+        // If protected alone exceeds budget, just keep protected messages
+        if protected_tokens >= target_tokens {
+            let final_messages: Vec<CompactMessage> = scored
+                .iter()
+                .filter(|s| s.is_protected)
+                .map(|s| s.message.clone())
+                .collect();
+            let final_tokens = SimpleCompactor::total_tokens(&final_messages);
+            return CompactionResult {
+                original_tokens,
+                final_tokens,
+                messages_pruned: original_count - final_messages.len(),
+                compression_ratio: if original_tokens > 0 {
+                    final_tokens as f64 / original_tokens as f64
+                } else {
+                    1.0
+                },
+                was_compressed: true,
+                messages: final_messages,
+            };
+        }
+
+        // Step 6: Sort non-protected by score (ascending) to remove lowest first
+        let mut removable: Vec<&ScoredMessage> = scored.iter().filter(|s| !s.is_protected).collect();
+        removable.sort_by_key(|s| s.score);
+
+        // Step 7: Remove lowest-scoring messages until within budget
+        let mut removed_indices: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        let mut current_tokens = original_tokens;
+
+        for sm in &removable {
+            if current_tokens <= target_tokens {
+                break;
+            }
+            removed_indices.insert(sm.index);
+            current_tokens -= sm.token_count;
+        }
+
+        // Step 8: Build final message list preserving original order
+        let final_messages: Vec<CompactMessage> = scored
+            .iter()
+            .filter(|s| !removed_indices.contains(&s.index))
+            .map(|s| s.message.clone())
+            .collect();
+
+        let final_tokens = SimpleCompactor::total_tokens(&final_messages);
+        let messages_pruned = original_count - final_messages.len();
+
+        CompactionResult {
+            original_tokens,
+            final_tokens,
+            messages_pruned,
+            compression_ratio: if original_tokens > 0 {
+                final_tokens as f64 / original_tokens as f64
+            } else {
+                1.0
+            },
+            was_compressed: true,
+            messages: final_messages,
+        }
+    }
+}
+
 #[cfg(test)]
 mod proptest_tests {
     use super::*;
@@ -376,6 +668,7 @@ mod proptest_tests {
                     max_history_messages: 20,
                     stop_words: vec![],
                     tokenizer_name: "cl100k_base".to_string(),
+                    ..Default::default()
                 };
 
                 let original_system_messages: Vec<&CompactMessage> = messages
@@ -419,6 +712,7 @@ mod proptest_tests {
                     max_history_messages: 20,
                     stop_words: vec![],
                     tokenizer_name: "cl100k_base".to_string(),
+                    ..Default::default()
                 };
 
                 let last_user = messages.iter().rposition(|m| m.role == "user");
@@ -449,6 +743,7 @@ mod proptest_tests {
                     max_history_messages: 20,
                     stop_words: vec![],
                     tokenizer_name: "cl100k_base".to_string(),
+                    ..Default::default()
                 };
 
                 let result = compactor.compact(messages.clone(), &config);
@@ -540,6 +835,7 @@ mod proptest_tests {
                     max_history_messages: 100, // High limit so window doesn't interfere
                     stop_words: vec![],
                     tokenizer_name: "cl100k_base".to_string(),
+                    ..Default::default()
                 };
 
                 let original_tokens = SimpleCompactor::total_tokens(&messages);
@@ -649,6 +945,7 @@ mod proptest_tests {
                     max_history_messages: 100, // High limit so window doesn't interfere
                     stop_words: stop_words.clone(),
                     tokenizer_name: "cl100k_base".to_string(),
+                    ..Default::default()
                 };
 
                 let result = compactor.compact(messages.clone(), &config);
@@ -723,6 +1020,7 @@ mod proptest_tests {
                     max_history_messages: 100,
                     stop_words: vec!["the".to_string(), "a".to_string()],
                     tokenizer_name: "cl100k_base".to_string(),
+                    ..Default::default()
                 };
 
                 let result = compactor.compact(messages.clone(), &config);
@@ -758,6 +1056,7 @@ mod tests {
             max_history_messages: 20,
             stop_words: Vec::new(),
             tokenizer_name: "cl100k_base".to_string(),
+            ..Default::default()
         }
     }
 
@@ -767,6 +1066,7 @@ mod tests {
             max_history_messages: 20,
             stop_words: stop_words.into_iter().map(String::from).collect(),
             tokenizer_name: "cl100k_base".to_string(),
+            ..Default::default()
         }
     }
 

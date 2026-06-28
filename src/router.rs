@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::circuit_breaker::CallResult;
-use crate::compactor::{SimpleCompactor, ContextCompactor, CompactMessage};
+use crate::compactor::{SimpleCompactor, SemanticGuardedCompactor, ContextCompactor, CompactMessage};
 use crate::config::CompactorConfig;
 use crate::error::GatewayError;
 use crate::middleware::auth::{auth_middleware, AuthValidator, ConfigAuthValidator};
@@ -296,7 +296,11 @@ async fn chat_completions_handler(
             })
             .collect();
 
-        let compactor = SimpleCompactor::new();
+        let compactor: Box<dyn ContextCompactor> = if resolved.effective_token_config.strategy == "semantic_guarded_trimming" {
+            Box::new(SemanticGuardedCompactor::new())
+        } else {
+            Box::new(SimpleCompactor::new())
+        };
         let result = compactor.compact(compact_messages, &resolved.effective_token_config);
 
         if result.was_compressed {
@@ -887,6 +891,7 @@ routes:
             max_history_messages: 20,
             stop_words: vec!["the".to_string(), "a".to_string()],
             tokenizer_name: "cl100k_base".to_string(),
+            ..Default::default()
         }
     }
 

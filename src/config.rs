@@ -190,6 +190,21 @@ pub struct CompactorConfig {
     pub stop_words: Vec<String>,
     #[serde(default = "default_tokenizer_name")]
     pub tokenizer_name: String,
+    /// Target ratio for semantic_guarded_trimming (e.g., 0.45 = keep 45% of tokens).
+    #[serde(default = "default_target_token_ratio")]
+    pub target_token_ratio: f64,
+    /// Minimum number of tokens to preserve after compaction.
+    #[serde(default = "default_min_final_tokens")]
+    pub min_final_tokens: usize,
+    /// Markers that flag a message as critical (e.g., "FATOS CRÍTICOS").
+    #[serde(default)]
+    pub critical_markers: Vec<String>,
+    /// Whether to protect messages containing critical markers from removal.
+    #[serde(default = "default_preserve_critical_markers")]
+    pub preserve_critical_markers: bool,
+    /// The active compaction strategy name (e.g., "adaptive_trimming", "semantic_guarded_trimming").
+    #[serde(default = "default_strategy")]
+    pub strategy: String,
 }
 
 impl Default for CompactorConfig {
@@ -199,6 +214,11 @@ impl Default for CompactorConfig {
             max_history_messages: default_max_history_messages(),
             stop_words: Vec::new(),
             tokenizer_name: default_tokenizer_name(),
+            target_token_ratio: default_target_token_ratio(),
+            min_final_tokens: default_min_final_tokens(),
+            critical_markers: Vec::new(),
+            preserve_critical_markers: default_preserve_critical_markers(),
+            strategy: default_strategy(),
         }
     }
 }
@@ -213,6 +233,22 @@ fn default_max_history_messages() -> usize {
 
 fn default_tokenizer_name() -> String {
     "cl100k_base".to_string()
+}
+
+fn default_target_token_ratio() -> f64 {
+    0.45
+}
+
+fn default_min_final_tokens() -> usize {
+    200
+}
+
+fn default_preserve_critical_markers() -> bool {
+    true
+}
+
+fn default_strategy() -> String {
+    "adaptive_trimming".to_string()
 }
 
 /// Circuit breaker configuration.
