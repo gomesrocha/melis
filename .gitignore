@@ -19,3 +19,4 @@ routes.yaml
 .vscode/
 *.swp
 .DS_Store
+.kiro/
