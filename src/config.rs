@@ -399,15 +399,12 @@ impl GatewayConfig {
     pub fn load(path: Option<&str>) -> Result<Self, ConfigError> {
         let config_path = path.unwrap_or("./config.yaml");
 
-        let contents = std::fs::read_to_string(config_path).map_err(|e| {
-            ConfigError::IoError {
-                path: config_path.to_string(),
-                source: e,
-            }
+        let contents = std::fs::read_to_string(config_path).map_err(|e| ConfigError::IoError {
+            path: config_path.to_string(),
+            source: e,
         })?;
 
-        let mut config: GatewayConfig =
-            serde_yaml::from_str(&contents)?;
+        let mut config: GatewayConfig = serde_yaml::from_str(&contents)?;
 
         // Apply environment variable overrides
         config.apply_env_overrides();
@@ -459,23 +456,16 @@ impl GatewayConfig {
             errors.push("server.max_payload_size must be > 0".to_string());
         }
         if self.server.max_concurrent_connections == 0 {
-            errors.push(
-                "server.max_concurrent_connections must be > 0".to_string(),
-            );
+            errors.push("server.max_concurrent_connections must be > 0".to_string());
         }
 
         // Redis validation
         if self.redis.cluster_urls.is_empty() {
-            errors.push(
-                "redis.cluster_urls must contain at least one URL".to_string(),
-            );
+            errors.push("redis.cluster_urls must contain at least one URL".to_string());
         }
         for (i, url) in self.redis.cluster_urls.iter().enumerate() {
             if url.trim().is_empty() {
-                errors.push(format!(
-                    "redis.cluster_urls[{}] must not be empty",
-                    i
-                ));
+                errors.push(format!("redis.cluster_urls[{}] must not be empty", i));
             }
         }
         if self.redis.pool_size == 0 {
@@ -488,22 +478,13 @@ impl GatewayConfig {
                 errors.push(format!("providers[{}].id must not be empty", i));
             }
             if provider.base_url.trim().is_empty() {
-                errors.push(format!(
-                    "providers[{}].base_url must not be empty",
-                    i
-                ));
+                errors.push(format!("providers[{}].base_url must not be empty", i));
             }
             if provider.api_key.trim().is_empty() {
-                errors.push(format!(
-                    "providers[{}].api_key must not be empty",
-                    i
-                ));
+                errors.push(format!("providers[{}].api_key must not be empty", i));
             }
             if provider.weight == 0 {
-                errors.push(format!(
-                    "providers[{}].weight must be > 0",
-                    i
-                ));
+                errors.push(format!("providers[{}].weight must be > 0", i));
             }
             let valid_types = [
                 "openai",
@@ -523,30 +504,22 @@ impl GatewayConfig {
         }
 
         // Compactor validation: token_threshold between 512–128000
-        if self.compactor.token_threshold < 512
-            || self.compactor.token_threshold > 128_000
-        {
+        if self.compactor.token_threshold < 512 || self.compactor.token_threshold > 128_000 {
             errors.push(format!(
                 "compactor.token_threshold must be between 512 and 128000, got {}",
                 self.compactor.token_threshold
             ));
         }
         if self.compactor.tokenizer_name.trim().is_empty() {
-            errors.push(
-                "compactor.tokenizer_name must not be empty".to_string(),
-            );
+            errors.push("compactor.tokenizer_name must not be empty".to_string());
         }
 
         // Rate limit validation
         if self.rate_limit.burst_capacity == 0 {
-            errors.push(
-                "rate_limit.burst_capacity must be > 0".to_string(),
-            );
+            errors.push("rate_limit.burst_capacity must be > 0".to_string());
         }
         if self.rate_limit.refill_rate <= 0.0 {
-            errors.push(
-                "rate_limit.refill_rate must be > 0.0".to_string(),
-            );
+            errors.push("rate_limit.refill_rate must be > 0.0".to_string());
         }
 
         // Circuit breaker validation
@@ -559,22 +532,15 @@ impl GatewayConfig {
             ));
         }
         if self.circuit_breaker.window_duration_secs == 0 {
-            errors.push(
-                "circuit_breaker.window_duration_secs must be > 0".to_string(),
-            );
+            errors.push("circuit_breaker.window_duration_secs must be > 0".to_string());
         }
         if self.circuit_breaker.open_ttl_secs == 0 {
-            errors.push(
-                "circuit_breaker.open_ttl_secs must be > 0".to_string(),
-            );
+            errors.push("circuit_breaker.open_ttl_secs must be > 0".to_string());
         }
-        if self.circuit_breaker.max_ttl_secs
-            < self.circuit_breaker.open_ttl_secs
-        {
+        if self.circuit_breaker.max_ttl_secs < self.circuit_breaker.open_ttl_secs {
             errors.push(format!(
                 "circuit_breaker.max_ttl_secs ({}) must be >= open_ttl_secs ({})",
-                self.circuit_breaker.max_ttl_secs,
-                self.circuit_breaker.open_ttl_secs
+                self.circuit_breaker.max_ttl_secs, self.circuit_breaker.open_ttl_secs
             ));
         }
         if self.circuit_breaker.backoff_factor < 1.0 {
@@ -592,16 +558,10 @@ impl GatewayConfig {
         }
         for (i, key_entry) in self.auth.api_keys.iter().enumerate() {
             if key_entry.key.trim().is_empty() {
-                errors.push(format!(
-                    "auth.api_keys[{}].key must not be empty",
-                    i
-                ));
+                errors.push(format!("auth.api_keys[{}].key must not be empty", i));
             }
             if key_entry.client_id.trim().is_empty() {
-                errors.push(format!(
-                    "auth.api_keys[{}].client_id must not be empty",
-                    i
-                ));
+                errors.push(format!("auth.api_keys[{}].client_id must not be empty", i));
             }
         }
 
@@ -645,10 +605,7 @@ providers:
         assert_eq!(config.redis.cluster_urls.len(), 1);
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.providers[0].id, "openai-1");
-        assert_eq!(
-            config.routes_config_path,
-            PathBuf::from("./routes.yaml")
-        );
+        assert_eq!(config.routes_config_path, PathBuf::from("./routes.yaml"));
     }
 
     #[test]
@@ -824,15 +781,13 @@ circuit_breaker:
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yaml");
         std::fs::write(&path, minimal_valid_yaml()).unwrap();
-        let config =
-            GatewayConfig::load(Some(path.to_str().unwrap())).unwrap();
+        let config = GatewayConfig::load(Some(path.to_str().unwrap())).unwrap();
         assert_eq!(config.server.port, 8080);
     }
 
     #[test]
     fn test_load_missing_file() {
-        let err =
-            GatewayConfig::load(Some("/nonexistent/config.yaml")).unwrap_err();
+        let err = GatewayConfig::load(Some("/nonexistent/config.yaml")).unwrap_err();
         assert!(matches!(err, ConfigError::IoError { .. }));
     }
 }

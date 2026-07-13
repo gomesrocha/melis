@@ -3,6 +3,7 @@ pub mod circuit_breaker;
 pub mod client;
 mod compactor;
 mod config;
+pub mod embeddings;
 mod error;
 mod models;
 pub mod observability;
@@ -42,7 +43,10 @@ async fn main() {
 
     // Initialize tracing (console + optional OTLP based on config)
     if let Err(e) = init_tracing(&gateway_config.observability) {
-        eprintln!("Failed to initialize tracing: {}. Falling back to basic fmt.", e);
+        eprintln!(
+            "Failed to initialize tracing: {}. Falling back to basic fmt.",
+            e
+        );
         // Fallback: basic fmt subscriber so the process can still run
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -56,10 +60,7 @@ async fn main() {
 
     let graceful_shutdown_timeout = gateway_config.server.graceful_shutdown_timeout();
 
-    let addr = std::net::SocketAddr::from((
-        [0, 0, 0, 0],
-        gateway_config.server.port,
-    ));
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], gateway_config.server.port));
 
     // Initialize RouteConfigManager with the routes_config_path from GatewayConfig
     let route_config = RouteConfigManager::new(gateway_config.routes_config_path.clone());
@@ -99,10 +100,9 @@ async fn main() {
     let shutdown_signal = async move {
         #[cfg(unix)]
         {
-            let mut sigterm = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate(),
-            )
-            .expect("Failed to install SIGTERM handler");
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("Failed to install SIGTERM handler");
 
             let ctrl_c = tokio::signal::ctrl_c();
 

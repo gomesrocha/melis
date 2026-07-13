@@ -49,28 +49,39 @@ pub enum GatewayError {
 impl IntoResponse for GatewayError {
     fn into_response(self) -> Response {
         let (status, error_type, message) = match &self {
-            GatewayError::BadRequest(msg) => {
-                (StatusCode::BAD_REQUEST, "invalid_request_error", msg.clone())
-            }
-            GatewayError::Unauthorized(msg) => {
-                (StatusCode::UNAUTHORIZED, "authentication_error", msg.clone())
-            }
+            GatewayError::BadRequest(msg) => (
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                msg.clone(),
+            ),
+            GatewayError::Unauthorized(msg) => (
+                StatusCode::UNAUTHORIZED,
+                "authentication_error",
+                msg.clone(),
+            ),
             GatewayError::RateLimited { retry_after_secs } => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate_limit_error",
-                format!("Rate limit exceeded. Retry after {} seconds.", retry_after_secs),
+                format!(
+                    "Rate limit exceeded. Retry after {} seconds.",
+                    retry_after_secs
+                ),
             ),
             GatewayError::PayloadTooLarge => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "invalid_request_error",
                 "Payload size exceeds 10MB limit.".to_string(),
             ),
-            GatewayError::ServiceUnavailable(msg) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "service_error", msg.clone())
-            }
-            GatewayError::Internal(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", msg.clone())
-            }
+            GatewayError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_error",
+                msg.clone(),
+            ),
+            GatewayError::Internal(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                msg.clone(),
+            ),
             GatewayError::ProviderError(msg) => {
                 (StatusCode::BAD_GATEWAY, "provider_error", msg.clone())
             }
@@ -89,10 +100,9 @@ impl IntoResponse for GatewayError {
 
         // Add Retry-After header for rate-limited responses
         if let GatewayError::RateLimited { retry_after_secs } = &self {
-            response.headers_mut().insert(
-                "Retry-After",
-                retry_after_secs.to_string().parse().unwrap(),
-            );
+            response
+                .headers_mut()
+                .insert("Retry-After", retry_after_secs.to_string().parse().unwrap());
         }
 
         response

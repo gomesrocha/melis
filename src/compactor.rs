@@ -104,8 +104,7 @@ impl ContextCompactor for SimpleCompactor {
         let original_count = messages.len();
 
         // Step 1: If tokens < threshold AND message count <= max_history_messages → no compression
-        if original_tokens < config.token_threshold
-            && original_count <= config.max_history_messages
+        if original_tokens < config.token_threshold && original_count <= config.max_history_messages
         {
             return CompactionResult {
                 original_tokens,
@@ -125,44 +124,45 @@ impl ContextCompactor for SimpleCompactor {
             .filter(|(_, m)| m.role != "system")
             .collect();
 
-        let windowed_messages: Vec<CompactMessage> = if non_system_messages.len() > config.max_history_messages {
-            // Keep all system messages
-            let system_messages: Vec<CompactMessage> = messages
-                .iter()
-                .filter(|m| m.role == "system")
-                .cloned()
-                .collect();
+        let windowed_messages: Vec<CompactMessage> =
+            if non_system_messages.len() > config.max_history_messages {
+                // Keep all system messages
+                let system_messages: Vec<CompactMessage> = messages
+                    .iter()
+                    .filter(|m| m.role == "system")
+                    .cloned()
+                    .collect();
 
-            // Keep last N non-system messages
-            let keep_non_system: Vec<CompactMessage> = non_system_messages
-                .iter()
-                .rev()
-                .take(config.max_history_messages)
-                .rev()
-                .map(|(_, m)| (*m).clone())
-                .collect();
+                // Keep last N non-system messages
+                let keep_non_system: Vec<CompactMessage> = non_system_messages
+                    .iter()
+                    .rev()
+                    .take(config.max_history_messages)
+                    .rev()
+                    .map(|(_, m)| (*m).clone())
+                    .collect();
 
-            // Reconstruct: system messages first (in order), then kept non-system messages
-            // Actually, preserve original interleaving order for system messages
-            // by keeping all system messages at their relative positions among kept messages.
-            // Simpler approach: system messages come first, then the windowed non-system messages.
-            // But this breaks order. Better: iterate original order, keep system + kept non-system.
-            let kept_non_system_start = non_system_messages.len() - config.max_history_messages;
-            let kept_indices: std::collections::HashSet<usize> = non_system_messages
-                .iter()
-                .skip(kept_non_system_start)
-                .map(|(i, _)| *i)
-                .collect();
+                // Reconstruct: system messages first (in order), then kept non-system messages
+                // Actually, preserve original interleaving order for system messages
+                // by keeping all system messages at their relative positions among kept messages.
+                // Simpler approach: system messages come first, then the windowed non-system messages.
+                // But this breaks order. Better: iterate original order, keep system + kept non-system.
+                let kept_non_system_start = non_system_messages.len() - config.max_history_messages;
+                let kept_indices: std::collections::HashSet<usize> = non_system_messages
+                    .iter()
+                    .skip(kept_non_system_start)
+                    .map(|(i, _)| *i)
+                    .collect();
 
-            messages
-                .iter()
-                .enumerate()
-                .filter(|(i, m)| m.role == "system" || kept_indices.contains(i))
-                .map(|(_, m)| m.clone())
-                .collect()
-        } else {
-            messages.clone()
-        };
+                messages
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, m)| m.role == "system" || kept_indices.contains(i))
+                    .map(|(_, m)| m.clone())
+                    .collect()
+            } else {
+                messages.clone()
+            };
 
         let messages_pruned_by_window = original_count - windowed_messages.len();
 
@@ -198,17 +198,13 @@ impl ContextCompactor for SimpleCompactor {
 
         // Step 4: Still above threshold → apply token-based pruning on eligible messages
         // Find the index of the last user message in the windowed set
-        let last_user_idx = windowed_messages
-            .iter()
-            .rposition(|m| m.role == "user");
+        let last_user_idx = windowed_messages.iter().rposition(|m| m.role == "user");
 
         // Identify eligible messages (not system, not last user)
         let eligible_indices: Vec<usize> = windowed_messages
             .iter()
             .enumerate()
-            .filter(|(i, m)| {
-                m.role != "system" && Some(*i) != last_user_idx
-            })
+            .filter(|(i, m)| m.role != "system" && Some(*i) != last_user_idx)
             .map(|(i, _)| i)
             .collect();
 
@@ -352,7 +348,8 @@ fn regex_lite_date_check(text: &str) -> bool {
     }
     for window in chars.windows(10) {
         // Check YYYY-MM-DD pattern
-        if window[4] == '-' && window[7] == '-'
+        if window[4] == '-'
+            && window[7] == '-'
             && window[0].is_ascii_digit()
             && window[1].is_ascii_digit()
             && window[2].is_ascii_digit()
@@ -365,7 +362,8 @@ fn regex_lite_date_check(text: &str) -> bool {
             return true;
         }
         // Check DD/MM/YYYY pattern
-        if window[2] == '/' && window[5] == '/'
+        if window[2] == '/'
+            && window[5] == '/'
             && window[0].is_ascii_digit()
             && window[1].is_ascii_digit()
             && window[3].is_ascii_digit()
@@ -438,8 +436,8 @@ impl SemanticGuardedCompactor {
 
         // Technical keywords
         let tech_keywords = [
-            "api", "endpoint", "token", "error", "config", "deploy",
-            "database", "server", "port", "latency", "timeout", "cluster",
+            "api", "endpoint", "token", "error", "config", "deploy", "database", "server", "port",
+            "latency", "timeout", "cluster",
         ];
         let tech_count = tech_keywords
             .iter()
@@ -465,9 +463,9 @@ impl SemanticGuardedCompactor {
     /// Extract meaningful terms from the last user message for relevance scoring.
     fn extract_query_terms(content: &str) -> Vec<String> {
         let stop_words = [
-            "o", "a", "de", "do", "da", "em", "no", "na", "que", "é",
-            "the", "is", "of", "in", "to", "and", "for", "it", "on",
-            "um", "uma", "com", "por", "para", "se", "como", "mais",
+            "o", "a", "de", "do", "da", "em", "no", "na", "que", "é", "the", "is", "of", "in",
+            "to", "and", "for", "it", "on", "um", "uma", "com", "por", "para", "se", "como",
+            "mais",
         ];
 
         content
@@ -528,14 +526,15 @@ impl ContextCompactor for SemanticGuardedCompactor {
                     &last_user_terms,
                     &config.critical_markers,
                 );
-                let token_count =
-                    SimpleCompactor::count_tokens(&msg.role) + SimpleCompactor::count_tokens(&msg.content);
+                let token_count = SimpleCompactor::count_tokens(&msg.role)
+                    + SimpleCompactor::count_tokens(&msg.content);
                 let is_protected = msg.role == "system"
                     || is_last_user
                     || (config.preserve_critical_markers
-                        && config.critical_markers.iter().any(|m| {
-                            msg.content.to_lowercase().contains(&m.to_lowercase())
-                        }));
+                        && config
+                            .critical_markers
+                            .iter()
+                            .any(|m| msg.content.to_lowercase().contains(&m.to_lowercase())));
 
                 ScoredMessage {
                     index: i,
@@ -577,7 +576,8 @@ impl ContextCompactor for SemanticGuardedCompactor {
         }
 
         // Step 6: Sort non-protected by score (ascending) to remove lowest first
-        let mut removable: Vec<&ScoredMessage> = scored.iter().filter(|s| !s.is_protected).collect();
+        let mut removable: Vec<&ScoredMessage> =
+            scored.iter().filter(|s| !s.is_protected).collect();
         removable.sort_by_key(|s| s.score);
 
         // Step 7: Remove lowest-scoring messages until within budget
@@ -643,10 +643,8 @@ mod proptest_tests {
             // Generate content long enough to contribute meaningful tokens
             let content_strategy = "[a-zA-Z ]{10,80}";
 
-            (role_strategy, content_strategy).prop_map(|(role, content)| CompactMessage {
-                role,
-                content,
-            })
+            (role_strategy, content_strategy)
+                .prop_map(|(role, content)| CompactMessage { role, content })
         }
 
         /// Strategy to generate a message history that will exceed a low threshold.
@@ -790,10 +788,8 @@ mod proptest_tests {
             // Generate content that is 100-300 chars (25-75 tokens each)
             let content_strategy = "[a-zA-Z ]{100,300}";
 
-            (role_strategy, content_strategy).prop_map(|(role, content)| CompactMessage {
-                role,
-                content,
-            })
+            (role_strategy, content_strategy)
+                .prop_map(|(role, content)| CompactMessage { role, content })
         }
 
         /// Strategy to generate a large history guaranteed to have many eligible messages.
@@ -809,10 +805,13 @@ mod proptest_tests {
             );
             eligible_msgs.prop_map(|mut msgs| {
                 // Prepend a system message
-                msgs.insert(0, CompactMessage {
-                    role: "system".to_string(),
-                    content: "System prompt.".to_string(),
-                });
+                msgs.insert(
+                    0,
+                    CompactMessage {
+                        role: "system".to_string(),
+                        content: "System prompt.".to_string(),
+                    },
+                );
                 // Append a final user message
                 msgs.push(CompactMessage {
                     role: "user".to_string(),
@@ -905,23 +904,25 @@ mod proptest_tests {
         fn history_with_stop_words() -> impl Strategy<Value = Vec<CompactMessage>> {
             let eligible_msgs = proptest::collection::vec(
                 content_with_stop_words().prop_flat_map(|content| {
-                    prop_oneof![
-                        Just("assistant".to_string()),
-                        Just("user".to_string()),
-                    ].prop_map(move |role| CompactMessage {
-                        role,
-                        content: content.clone(),
-                    })
+                    prop_oneof![Just("assistant".to_string()), Just("user".to_string()),].prop_map(
+                        move |role| CompactMessage {
+                            role,
+                            content: content.clone(),
+                        },
+                    )
                 }),
                 4..10,
             );
 
             eligible_msgs.prop_map(|mut msgs| {
                 // Prepend system message (exempt from stop-word removal)
-                msgs.insert(0, CompactMessage {
-                    role: "system".to_string(),
-                    content: "The system is a helpful assistant.".to_string(),
-                });
+                msgs.insert(
+                    0,
+                    CompactMessage {
+                        role: "system".to_string(),
+                        content: "The system is a helpful assistant.".to_string(),
+                    },
+                );
                 // Append final user message (exempt from stop-word removal)
                 msgs.push(CompactMessage {
                     role: "user".to_string(),
@@ -995,10 +996,8 @@ mod proptest_tests {
             // Short content: 5-30 chars, so total tokens across all messages stays small
             let content_strategy = "[a-zA-Z ]{5,30}";
 
-            (role_strategy, content_strategy).prop_map(|(role, content)| CompactMessage {
-                role,
-                content,
-            })
+            (role_strategy, content_strategy)
+                .prop_map(|(role, content)| CompactMessage { role, content })
         }
 
         /// Strategy to generate short message histories.
@@ -1095,7 +1094,10 @@ mod tests {
         // Create enough content to exceed a low threshold
         let long_content = "a".repeat(200); // ~50 tokens
         let messages = vec![
-            make_msg("system", "Critical system instructions that must be preserved intact."),
+            make_msg(
+                "system",
+                "Critical system instructions that must be preserved intact.",
+            ),
             make_msg("assistant", &long_content),
             make_msg("user", "Old user message with content"),
             make_msg("assistant", &long_content),
@@ -1108,7 +1110,9 @@ mod tests {
 
         assert!(result.was_compressed);
         // System message must be preserved
-        let system_msgs: Vec<&CompactMessage> = result.messages.iter()
+        let system_msgs: Vec<&CompactMessage> = result
+            .messages
+            .iter()
             .filter(|m| m.role == "system")
             .collect();
         assert_eq!(system_msgs.len(), 1);
@@ -1126,7 +1130,10 @@ mod tests {
             make_msg("system", "System prompt."),
             make_msg("user", &long_content),
             make_msg("assistant", &long_content),
-            make_msg("user", "This is the last user message and must be preserved"),
+            make_msg(
+                "user",
+                "This is the last user message and must be preserved",
+            ),
         ];
 
         let config = config_with_threshold(20);
@@ -1136,7 +1143,10 @@ mod tests {
         // The last user message must be present unchanged
         let last_msg = result.messages.last().unwrap();
         assert_eq!(last_msg.role, "user");
-        assert_eq!(last_msg.content, "This is the last user message and must be preserved");
+        assert_eq!(
+            last_msg.content,
+            "This is the last user message and must be preserved"
+        );
     }
 
     #[test]
@@ -1146,8 +1156,14 @@ mod tests {
         let padding = "content ".repeat(50); // ~100 tokens
         let messages = vec![
             make_msg("system", "System prompt."),
-            make_msg("user", &format!("the quick brown fox jumps over the lazy dog {}", padding)),
-            make_msg("assistant", &format!("here is a response with the word the in it {}", padding)),
+            make_msg(
+                "user",
+                &format!("the quick brown fox jumps over the lazy dog {}", padding),
+            ),
+            make_msg(
+                "assistant",
+                &format!("here is a response with the word the in it {}", padding),
+            ),
             make_msg("user", "final user message the end"),
         ];
 
@@ -1171,7 +1187,11 @@ mod tests {
             if msg.role != "system" && msg != result.messages.last().unwrap() {
                 let words: Vec<&str> = msg.content.split_whitespace().collect();
                 for word in &words {
-                    let clean: String = word.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
+                    let clean: String = word
+                        .to_lowercase()
+                        .chars()
+                        .filter(|c| c.is_alphanumeric())
+                        .collect();
                     assert!(
                         !["the", "a", "is", "in", "it"].contains(&clean.as_str()),
                         "Stop-word '{}' found in eligible message content: {}",
@@ -1190,11 +1210,11 @@ mod tests {
         let chunk = "abcdefgh ".repeat(50); // ~112 tokens per message (450 chars / 4)
         let messages = vec![
             make_msg("system", "sys"),
-            make_msg("user", &chunk),       // oldest eligible
-            make_msg("assistant", &chunk),   // second oldest eligible
-            make_msg("user", &chunk),        // third oldest eligible
-            make_msg("assistant", &chunk),   // fourth oldest eligible
-            make_msg("user", "last user"),   // last user - protected
+            make_msg("user", &chunk),      // oldest eligible
+            make_msg("assistant", &chunk), // second oldest eligible
+            make_msg("user", &chunk),      // third oldest eligible
+            make_msg("assistant", &chunk), // fourth oldest eligible
+            make_msg("user", "last user"), // last user - protected
         ];
 
         let config = config_with_threshold(20);
@@ -1246,11 +1266,11 @@ mod tests {
         let chunk = "abcdefghij ".repeat(40); // ~110 tokens per message
         let messages = vec![
             make_msg("system", "First system"),
-            make_msg("user", &chunk),         // eligible, oldest
-            make_msg("assistant", &chunk),     // eligible
+            make_msg("user", &chunk),      // eligible, oldest
+            make_msg("assistant", &chunk), // eligible
             make_msg("system", "Second system"),
-            make_msg("user", &chunk),          // eligible
-            make_msg("assistant", &chunk),     // eligible
+            make_msg("user", &chunk),           // eligible
+            make_msg("assistant", &chunk),      // eligible
             make_msg("user", "final question"), // last user, protected
         ];
 
@@ -1261,7 +1281,9 @@ mod tests {
         // Verify order: system messages should remain in their relative positions
         let roles: Vec<&str> = result.messages.iter().map(|m| m.role.as_str()).collect();
         // System messages must appear before any non-system messages that were originally after them
-        let sys_indices: Vec<usize> = roles.iter().enumerate()
+        let sys_indices: Vec<usize> = roles
+            .iter()
+            .enumerate()
             .filter(|(_, r)| **r == "system")
             .map(|(i, _)| i)
             .collect();

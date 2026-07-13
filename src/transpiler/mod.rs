@@ -107,9 +107,8 @@ mod proptest_tests {
 
     /// Strategy to generate a list of messages (at least 1 user message).
     fn messages_strategy() -> impl Strategy<Value = Vec<Value>> {
-        let msg_strategy = (role_strategy(), content_strategy()).prop_map(|(role, content)| {
-            json!({ "role": role, "content": content })
-        });
+        let msg_strategy = (role_strategy(), content_strategy())
+            .prop_map(|(role, content)| json!({ "role": role, "content": content }));
 
         proptest::collection::vec(msg_strategy, 1..6).prop_map(|mut msgs| {
             // Ensure at least one user message exists

@@ -42,10 +42,16 @@ pub enum RoutesConfigError {
     MissingField { route_index: usize, field: String },
 
     #[error("Provedor inválido '{provider}' na rota {route_index}. Valores aceitos: openai, anthropic, google_vertex_ai, oci_genai, ollama ou custom_providers registrados")]
-    InvalidProvider { route_index: usize, provider: String },
+    InvalidProvider {
+        route_index: usize,
+        provider: String,
+    },
 
     #[error("Estratégia inválida '{strategy}' na rota {route_index}. Valores aceitos: adaptive_trimming, sliding_window, semantic_guarded_trimming, none")]
-    InvalidStrategy { route_index: usize, strategy: String },
+    InvalidStrategy {
+        route_index: usize,
+        strategy: String,
+    },
 
     #[error("Rota duplicada: {path} {method} (rotas {first} e {second})")]
     DuplicateRoute {
@@ -311,7 +317,9 @@ impl RouteResolver {
                 let strategy = match &opt.strategy {
                     TokenOptimizationStrategy::AdaptiveTrimming => "adaptive_trimming".to_string(),
                     TokenOptimizationStrategy::SlidingWindow => "sliding_window".to_string(),
-                    TokenOptimizationStrategy::SemanticGuardedTrimming => "semantic_guarded_trimming".to_string(),
+                    TokenOptimizationStrategy::SemanticGuardedTrimming => {
+                        "semantic_guarded_trimming".to_string()
+                    }
                     TokenOptimizationStrategy::None => "none".to_string(),
                 };
                 CompactorConfig {
@@ -321,7 +329,10 @@ impl RouteResolver {
                     tokenizer_name: opt.local_tokenizer.clone(),
                     target_token_ratio: opt.target_token_ratio.unwrap_or(global.target_token_ratio),
                     min_final_tokens: opt.min_final_tokens.unwrap_or(global.min_final_tokens),
-                    critical_markers: opt.critical_markers.clone().unwrap_or_else(|| global.critical_markers.clone()),
+                    critical_markers: opt
+                        .critical_markers
+                        .clone()
+                        .unwrap_or_else(|| global.critical_markers.clone()),
                     preserve_critical_markers: global.preserve_critical_markers,
                     strategy,
                 }
@@ -402,10 +413,7 @@ impl RouteConfigManager {
             }
         })
         .unwrap_or_else(|e| {
-            panic!(
-                "Failed to create file watcher for route config: {}",
-                e
-            );
+            panic!("Failed to create file watcher for route config: {}", e);
         });
 
         watcher
@@ -421,12 +429,8 @@ impl RouteConfigManager {
         // 3. Spawn Tokio task to process file change events with debouncing
         let config_clone = Arc::clone(&config);
         let reload_path = config_path;
-        let watcher_handle = tokio::spawn(Self::reload_loop(
-            rx,
-            config_clone,
-            reload_path,
-            watcher,
-        ));
+        let watcher_handle =
+            tokio::spawn(Self::reload_loop(rx, config_clone, reload_path, watcher));
 
         RouteConfigManager {
             config,
@@ -498,7 +502,10 @@ impl RouteConfigManager {
                 Ok(()) => {
                     let new_resolver = RouteResolver::new(new_config_file);
                     config.store(Arc::new(new_resolver));
-                    tracing::info!("Route config reloaded successfully from '{}'", config_path.display());
+                    tracing::info!(
+                        "Route config reloaded successfully from '{}'",
+                        config_path.display()
+                    );
                 }
                 Err(errors) => {
                     let error_msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
@@ -775,7 +782,10 @@ routes:
 
         let result = load_routes(file.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), RoutesConfigError::ParseError(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            RoutesConfigError::ParseError(_)
+        ));
     }
 
     // ─── RouteResolver Tests ──────────────────────────────────────────────────
@@ -839,9 +849,13 @@ routes:
         // All 5 routes from sample_yaml should be resolvable
         assert!(resolver.resolve_route("/v1/chat/agent", "POST").is_some());
         assert!(resolver.resolve_route("/v1/chat/support", "POST").is_some());
-        assert!(resolver.resolve_route("/v1/chat/completions", "POST").is_some());
+        assert!(resolver
+            .resolve_route("/v1/chat/completions", "POST")
+            .is_some());
         assert!(resolver.resolve_route("/v1/chat/raw", "POST").is_some());
-        assert!(resolver.resolve_route("/v1/chat/internal", "POST").is_some());
+        assert!(resolver
+            .resolve_route("/v1/chat/internal", "POST")
+            .is_some());
     }
 
     #[test]
@@ -933,11 +947,7 @@ routes:
         let global = CompactorConfig {
             token_threshold: 4096,
             max_history_messages: 20,
-            stop_words: vec![
-                "the".to_string(),
-                "is".to_string(),
-                "at".to_string(),
-            ],
+            stop_words: vec!["the".to_string(), "is".to_string(), "at".to_string()],
             tokenizer_name: "global_tokenizer".to_string(),
             ..Default::default()
         };
@@ -1087,8 +1097,13 @@ routes:
 "#;
         let config: RouteConfigFile = serde_yaml::from_str(yaml).unwrap();
         let errors = validate(&config).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e,
-            RoutesConfigError::DuplicateRoute { first: 0, second: 1, .. }
+        assert!(errors.iter().any(|e| matches!(
+            e,
+            RoutesConfigError::DuplicateRoute {
+                first: 0,
+                second: 1,
+                ..
+            }
         )));
     }
 
@@ -1199,9 +1214,13 @@ routes:
 
         // Verify all 5 routes are resolvable
         assert!(resolver.resolve_route("/v1/chat/support", "POST").is_some());
-        assert!(resolver.resolve_route("/v1/chat/completions", "POST").is_some());
+        assert!(resolver
+            .resolve_route("/v1/chat/completions", "POST")
+            .is_some());
         assert!(resolver.resolve_route("/v1/chat/raw", "POST").is_some());
-        assert!(resolver.resolve_route("/v1/chat/internal", "POST").is_some());
+        assert!(resolver
+            .resolve_route("/v1/chat/internal", "POST")
+            .is_some());
     }
 
     #[test]
@@ -1386,28 +1405,38 @@ mod property_tests {
             1usize..100,
             512usize..32000,
         )
-            .prop_map(|(strategy, max_hist, compress_above)| TokenOptimizationConfig {
-                strategy,
-                max_history_messages: max_hist,
-                compress_above_tokens: compress_above,
-                local_tokenizer: "cl100k_base".to_string(),
-                target_token_ratio: None,
-                min_final_tokens: None,
-                critical_markers: None,
-            })
+            .prop_map(
+                |(strategy, max_hist, compress_above)| TokenOptimizationConfig {
+                    strategy,
+                    max_history_messages: max_hist,
+                    compress_above_tokens: compress_above,
+                    local_tokenizer: "cl100k_base".to_string(),
+                    target_token_ratio: None,
+                    min_final_tokens: None,
+                    critical_markers: None,
+                },
+            )
     }
 
     /// Generate a valid RouteDefinition.
     fn arb_valid_route() -> impl Strategy<Value = RouteDefinition> {
-        (arb_path(), arb_http_method(), arb_known_provider(), arb_model(), proptest::option::of(arb_token_optimization()))
-            .prop_map(|(path, method, provider, model, token_opt)| RouteDefinition {
-                path,
-                method,
-                provider: Some(provider),
-                model: Some(model),
-                providers: None,
-                token_optimization: token_opt,
-            })
+        (
+            arb_path(),
+            arb_http_method(),
+            arb_known_provider(),
+            arb_model(),
+            proptest::option::of(arb_token_optimization()),
+        )
+            .prop_map(
+                |(path, method, provider, model, token_opt)| RouteDefinition {
+                    path,
+                    method,
+                    provider: Some(provider),
+                    model: Some(model),
+                    providers: None,
+                    token_optimization: token_opt,
+                },
+            )
     }
 
     /// Generate a valid RouteConfigFile with unique (path, method) pairs.

@@ -35,8 +35,9 @@ RUN mkdir src && \
 # Copy actual source code
 COPY src/ src/
 
-# Build the final binary
-RUN cargo build --release --target x86_64-unknown-linux-musl && \
+# Touch main.rs to invalidate the cached dummy binary and force recompilation
+RUN touch src/main.rs && \
+    cargo build --release --target x86_64-unknown-linux-musl && \
     strip /app/target/x86_64-unknown-linux-musl/release/melis-gateway
 
 # ---------------------------------------------------------------------------

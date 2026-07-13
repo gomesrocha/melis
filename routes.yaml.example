@@ -21,6 +21,12 @@ custom_providers:
   #   api_format: "openai_compatible"
 
 routes:
+  # ─── Embeddings (Ollama local) ──────────────────────────────────
+  - path: "/v1/embeddings"
+    method: "POST"
+    provider: "ollama"
+    model: "nomic-embed-text:latest"
+
   # Endpoint padrão (Ollama local)
   - path: "/v1/chat/completions"
     method: "POST"

@@ -24,10 +24,7 @@ pub enum ClientError {
 
     /// The provider returned a non-2xx HTTP status code.
     #[error("HTTP error {status}: {body}")]
-    HttpError {
-        status: u16,
-        body: String,
-    },
+    HttpError { status: u16, body: String },
 
     /// A network-level error occurred (DNS resolution, connection refused, etc.).
     #[error("Network error: {0}")]
@@ -223,11 +220,7 @@ fn async_stream(
                 let sse_stream = SseChunkSplitter::new(byte_stream);
                 Either::Left(sse_stream)
             }
-            Err(e) => {
-                Either::Right(futures_util::stream::once(async move {
-                    Err(e)
-                }))
-            }
+            Err(e) => Either::Right(futures_util::stream::once(async move { Err(e) })),
         }
     })
 }
