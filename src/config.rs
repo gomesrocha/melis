@@ -116,7 +116,7 @@ fn default_weight() -> u32 {
 }
 
 fn default_provider_timeout_secs() -> u64 {
-    30
+    120
 }
 
 /// Redis cluster configuration.
@@ -501,6 +501,15 @@ impl GatewayConfig {
                     valid_types.join(", ")
                 ));
             }
+            if provider.timeout_secs == 0 {
+                errors.push(format!("providers[{}].timeout_secs must be > 0", i));
+            }
+            if provider.timeout_secs > 600 {
+                errors.push(format!(
+                    "providers[{}].timeout_secs must be <= 600 (10 minutes), got {}",
+                    i, provider.timeout_secs
+                ));
+            }
         }
 
         // Compactor validation: token_threshold between 512–128000
@@ -789,5 +798,114 @@ circuit_breaker:
     fn test_load_missing_file() {
         let err = GatewayConfig::load(Some("/nonexistent/config.yaml")).unwrap_err();
         assert!(matches!(err, ConfigError::IoError { .. }));
+    }
+
+    #[test]
+    fn test_provider_timeout_default() {
+        let config = GatewayConfig::from_yaml(&minimal_valid_yaml()).unwrap();
+        // Default timeout_secs should be 120 when not specified
+        assert_eq!(config.providers[0].timeout_secs, 120);
+        assert_eq!(config.providers[0].timeout(), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_provider_timeout_custom_value() {
+        let yaml = r#"
+server:
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+providers:
+  - id: "ollama"
+    provider_type: "ollama"
+    base_url: "http://localhost:11434"
+    api_key: "ollama"
+    timeout_secs: 240
+    models: ["llama3.2"]
+"#;
+        let config = GatewayConfig::from_yaml(yaml).unwrap();
+        assert_eq!(config.providers[0].timeout_secs, 240);
+        assert_eq!(config.providers[0].timeout(), Duration::from_secs(240));
+    }
+
+    #[test]
+    fn test_provider_timeout_zero_rejected() {
+        let yaml = r#"
+server:
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+providers:
+  - id: "ollama"
+    provider_type: "ollama"
+    base_url: "http://localhost:11434"
+    api_key: "ollama"
+    timeout_secs: 0
+    models: ["llama3.2"]
+"#;
+        let err = GatewayConfig::from_yaml(yaml).unwrap_err();
+        match err {
+            ConfigError::ValidationError(msgs) => {
+                let joined = msgs.join("\n");
+                assert!(
+                    joined.contains("timeout_secs must be > 0"),
+                    "Expected timeout validation error, got: {}",
+                    joined
+                );
+            }
+            _ => panic!("Expected ValidationError, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_provider_timeout_exceeds_max_rejected() {
+        let yaml = r#"
+server:
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+providers:
+  - id: "ollama"
+    provider_type: "ollama"
+    base_url: "http://localhost:11434"
+    api_key: "ollama"
+    timeout_secs: 601
+    models: ["llama3.2"]
+"#;
+        let err = GatewayConfig::from_yaml(yaml).unwrap_err();
+        match err {
+            ConfigError::ValidationError(msgs) => {
+                let joined = msgs.join("\n");
+                assert!(
+                    joined.contains("timeout_secs must be <= 600"),
+                    "Expected timeout max validation error, got: {}",
+                    joined
+                );
+            }
+            _ => panic!("Expected ValidationError, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_provider_timeout_at_max_accepted() {
+        let yaml = r#"
+server:
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+providers:
+  - id: "ollama"
+    provider_type: "ollama"
+    base_url: "http://localhost:11434"
+    api_key: "ollama"
+    timeout_secs: 600
+    models: ["llama3.2"]
+"#;
+        let config = GatewayConfig::from_yaml(yaml).unwrap();
+        assert_eq!(config.providers[0].timeout_secs, 600);
     }
 }
