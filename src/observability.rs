@@ -40,8 +40,7 @@ pub enum TracingError {
 ///
 /// This function should be called once at startup before any spans are created.
 pub fn init_tracing(config: &OtelConfig) -> Result<(), TracingError> {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     if config.enabled {
         // Build OTLP exporter using gRPC (tonic) pointing to the configured endpoint
@@ -152,10 +151,7 @@ impl Metrics {
         .expect("failed to create melis_gateway_requests_total metric");
 
         let llm_tokens_total = IntCounterVec::new(
-            Opts::new(
-                "melis_llm_tokens_total",
-                "Total LLM tokens processed",
-            ),
+            Opts::new("melis_llm_tokens_total", "Total LLM tokens processed"),
             &["direction", "model", "client_id"],
         )
         .expect("failed to create melis_llm_tokens_total metric");
@@ -228,10 +224,7 @@ impl Metrics {
         .expect("failed to create melis_compaction_duration_seconds metric");
 
         let failover_total = IntCounterVec::new(
-            Opts::new(
-                "melis_failover_total",
-                "Total number of failover events",
-            ),
+            Opts::new("melis_failover_total", "Total number of failover events"),
             &["provider", "reason"],
         )
         .expect("failed to create melis_failover_total metric");
@@ -364,13 +357,25 @@ impl Metrics {
             .expect("failed to register melis_fallback_mode_total");
 
         // Initialize metrics with known labels so they appear in /metrics even before first use
-        provider_errors_total.with_label_values(&["ollama", "none"]).inc_by(0);
-        provider_errors_total.with_label_values(&["openai", "none"]).inc_by(0);
-        failover_total.with_label_values(&["none", "none"]).inc_by(0);
+        provider_errors_total
+            .with_label_values(&["ollama", "none"])
+            .inc_by(0);
+        provider_errors_total
+            .with_label_values(&["openai", "none"])
+            .inc_by(0);
+        failover_total
+            .with_label_values(&["none", "none"])
+            .inc_by(0);
         circuit_breaker_state.with_label_values(&["ollama"]).set(0);
-        compaction_skipped_total.with_label_values(&["below_threshold"]).inc_by(0);
-        model_substitution_total.with_label_values(&["none", "none", "none"]).inc_by(0);
-        fallback_mode_total.with_label_values(&["none", "none", "none"]).inc_by(0);
+        compaction_skipped_total
+            .with_label_values(&["below_threshold"])
+            .inc_by(0);
+        model_substitution_total
+            .with_label_values(&["none", "none", "none"])
+            .inc_by(0);
+        fallback_mode_total
+            .with_label_values(&["none", "none", "none"])
+            .inc_by(0);
 
         Self {
             requests_total,

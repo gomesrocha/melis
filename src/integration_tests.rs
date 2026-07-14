@@ -239,7 +239,10 @@ auth:
 
         let body = body_to_string(response.into_body()).await;
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(json["error"]["message"].as_str().unwrap().contains("messages"));
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("messages"));
     }
 
     #[tokio::test]
@@ -439,7 +442,10 @@ auth:
             .requests_total
             .with_label_values(&["/v1/chat/completions", "unknown", "200"])
             .get();
-        assert_eq!(counter_value, 1, "requests_total should be incremented after a successful request");
+        assert_eq!(
+            counter_value, 1,
+            "requests_total should be incremented after a successful request"
+        );
     }
 
     // ─── Test: Readiness state toggle ────────────────────────────────────────
@@ -469,5 +475,140 @@ auth:
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ─── Embeddings Tests ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_embeddings_missing_model_returns_400() {
+        let state = build_test_app_state();
+        let app = build_router(state);
+
+        let payload = serde_json::json!({
+            "input": "Hello world"
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = body_to_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(json["error"]["message"].as_str().unwrap().contains("model"));
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_missing_input_returns_400() {
+        let state = build_test_app_state();
+        let app = build_router(state);
+
+        let payload = serde_json::json!({
+            "model": "nomic-embed-text:latest"
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = body_to_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(json["error"]["message"].as_str().unwrap().contains("input"));
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_empty_input_returns_400() {
+        let state = build_test_app_state();
+        let app = build_router(state);
+
+        let payload = serde_json::json!({
+            "model": "nomic-embed-text:latest",
+            "input": []
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_route_registered_separately_from_chat() {
+        let state = build_test_app_state();
+        let app = build_router(state);
+
+        // Verify that /v1/embeddings returns a proper embeddings error (not chat validation error)
+        let payload = serde_json::json!({
+            "model": "nomic-embed-text:latest",
+            "input": "test"
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        // Should NOT return 400 with "messages" error (that would mean it hit chat handler)
+        // It should either succeed (if Ollama available) or return 503 (provider unavailable)
+        let status = response.status();
+        assert!(
+            status == StatusCode::OK
+                || status == StatusCode::SERVICE_UNAVAILABLE
+                || status == StatusCode::BAD_GATEWAY,
+            "Expected 200, 503, or 502 from embeddings handler, got: {}",
+            status
+        );
+
+        // Verify it's NOT a chat validation error
+        if status == StatusCode::BAD_REQUEST {
+            let body = body_to_string(response.into_body()).await;
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let msg = json["error"]["message"].as_str().unwrap_or("");
+            assert!(
+                !msg.contains("messages"),
+                "Should not get chat validation error on /v1/embeddings"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_chat_completions_still_works() {
+        let state = build_test_app_state();
+        let app = build_router(state);
+
+        let payload = serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello!"}]
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        // Should be 200 (mock/default behavior) or at least not 404
+        assert_ne!(response.status(), StatusCode::NOT_FOUND);
     }
 }

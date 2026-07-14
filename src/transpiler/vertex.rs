@@ -42,7 +42,10 @@ impl VertexTranspiler {
             "model" => "assistant",
             "user" => "user",
             other => {
-                warn!(role = other, "Unknown Vertex role encountered, mapping to assistant");
+                warn!(
+                    role = other,
+                    "Unknown Vertex role encountered, mapping to assistant"
+                );
                 "assistant"
             }
         }
@@ -56,7 +59,10 @@ impl VertexTranspiler {
             "SAFETY" => "content_filter",
             "RECITATION" => "content_filter",
             other => {
-                warn!(reason = other, "Unknown Vertex finish reason, mapping to stop");
+                warn!(
+                    reason = other,
+                    "Unknown Vertex finish reason, mapping to stop"
+                );
                 "stop"
             }
         }
@@ -110,14 +116,8 @@ impl PayloadTranspiler for VertexTranspiler {
         let mut system_parts: Vec<Value> = Vec::new();
 
         for msg in messages {
-            let role = msg
-                .get("role")
-                .and_then(|v| v.as_str())
-                .unwrap_or("user");
-            let content = msg
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+            let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
             if role == "system" {
                 // System messages go into systemInstruction

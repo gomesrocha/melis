@@ -118,7 +118,9 @@ impl RateLimiter for RedisTokenBucket {
             .map_err(|e| {
                 tracing::warn!("Redis rate limiter error, failing open: {}", e);
                 // Fail-open: allow request if Redis is unavailable
-                return RateLimitExceeded { retry_after_secs: 0 };
+                return RateLimitExceeded {
+                    retry_after_secs: 0,
+                };
             })?;
 
         if result.len() >= 2 && result[0] == 1 {
@@ -227,10 +229,7 @@ pub async fn rate_limit_middleware(
     next: Next,
 ) -> Result<Response, GatewayError> {
     // Extract client identity (set by auth middleware earlier in the pipeline)
-    let identity = request
-        .extensions()
-        .get::<ClientIdentity>()
-        .cloned();
+    let identity = request.extensions().get::<ClientIdentity>().cloned();
 
     let identity = match identity {
         Some(id) => id,
@@ -254,7 +253,11 @@ pub async fn rate_limit_middleware(
     };
 
     // Attempt to acquire a token
-    match state.rate_limiter.try_acquire(&identity.client_id, &config).await {
+    match state
+        .rate_limiter
+        .try_acquire(&identity.client_id, &config)
+        .await
+    {
         Ok(remaining) => {
             // Request allowed — proceed and add informational header
             let mut response = next.run(request).await;
@@ -454,7 +457,9 @@ mod tests {
             gateway_config,
             rate_limiter: limiter,
             load_balancer: Arc::new(crate::balancer::WeightedRoundRobin::new()),
-            circuit_breaker: Arc::new(crate::circuit_breaker::LocalCircuitBreaker::new(Default::default())),
+            circuit_breaker: Arc::new(crate::circuit_breaker::LocalCircuitBreaker::new(
+                Default::default(),
+            )),
             http_client: Arc::new(crate::client::ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -489,7 +494,10 @@ rate_limit:
     }
 
     /// Helper to create a request with ClientIdentity extension.
-    fn request_with_identity(client_id: &str, rate_limit: Option<ClientRateLimit>) -> HttpRequest<Body> {
+    fn request_with_identity(
+        client_id: &str,
+        rate_limit: Option<ClientRateLimit>,
+    ) -> HttpRequest<Body> {
         let mut req = HttpRequest::builder()
             .uri("/test")
             .body(Body::empty())
@@ -598,7 +606,9 @@ rate_limit:
                 _client_id: &str,
                 _config: &RateLimitConfig,
             ) -> Result<u64, RateLimitExceeded> {
-                Err(RateLimitExceeded { retry_after_secs: 0 })
+                Err(RateLimitExceeded {
+                    retry_after_secs: 0,
+                })
             }
         }
 
@@ -610,7 +620,9 @@ rate_limit:
             gateway_config,
             rate_limiter: Arc::new(FailOpenLimiter),
             load_balancer: Arc::new(crate::balancer::WeightedRoundRobin::new()),
-            circuit_breaker: Arc::new(crate::circuit_breaker::LocalCircuitBreaker::new(Default::default())),
+            circuit_breaker: Arc::new(crate::circuit_breaker::LocalCircuitBreaker::new(
+                Default::default(),
+            )),
             http_client: Arc::new(crate::client::ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -777,8 +789,14 @@ rate_limit:
         }
 
         // Low capacity client gets limited quickly
-        limiter.try_acquire("low-client", &low_config).await.unwrap();
-        limiter.try_acquire("low-client", &low_config).await.unwrap();
+        limiter
+            .try_acquire("low-client", &low_config)
+            .await
+            .unwrap();
+        limiter
+            .try_acquire("low-client", &low_config)
+            .await
+            .unwrap();
         let result = limiter.try_acquire("low-client", &low_config).await;
         assert!(result.is_err());
     }

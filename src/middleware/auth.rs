@@ -4,12 +4,7 @@
 //! Implements Bearer token authentication with API key lookup from configuration.
 
 use async_trait::async_trait;
-use axum::{
-    extract::Request,
-    http::header::AUTHORIZATION,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::header::AUTHORIZATION, middleware::Next, response::Response};
 use std::sync::Arc;
 
 use crate::config::{AuthConfig, ClientRateLimit};
@@ -65,10 +60,7 @@ impl AuthValidator for ConfigAuthValidator {
 /// validates it using the provided `AuthValidator`, and inserts `ClientIdentity` as a
 /// request extension on success.
 #[tracing::instrument(skip(request, next), fields(middleware = "auth"))]
-pub async fn auth_middleware(
-    request: Request,
-    next: Next,
-) -> Result<Response, GatewayError> {
+pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, GatewayError> {
     let validator = request
         .extensions()
         .get::<Arc<dyn AuthValidator>>()
@@ -88,8 +80,7 @@ pub async fn auth_middleware(
         }
         Some(header_value) => {
             let parts: Vec<&str> = header_value.splitn(2, ' ').collect();
-            if parts.len() != 2 || !parts[0].eq_ignore_ascii_case("Bearer") || parts[1].is_empty()
-            {
+            if parts.len() != 2 || !parts[0].eq_ignore_ascii_case("Bearer") || parts[1].is_empty() {
                 return Err(GatewayError::Unauthorized(
                     "Invalid Authorization format. Expected 'Bearer <token>'".to_string(),
                 ));
@@ -213,7 +204,10 @@ mod tests {
                 ApiKeyEntry {
                     key: "sk-valid-key-123".to_string(),
                     client_id: "client-alpha".to_string(),
-                    allowed_models: vec!["gpt-4o".to_string(), "claude-sonnet-4-20250514".to_string()],
+                    allowed_models: vec![
+                        "gpt-4o".to_string(),
+                        "claude-sonnet-4-20250514".to_string(),
+                    ],
                     rate_limit: Some(ClientRateLimit {
                         burst_capacity: 50,
                         refill_rate: 5.0,
@@ -239,9 +233,7 @@ mod tests {
             .layer(axum::Extension(validator))
     }
 
-    async fn handler(
-        axum::Extension(identity): axum::Extension<ClientIdentity>,
-    ) -> String {
+    async fn handler(axum::Extension(identity): axum::Extension<ClientIdentity>) -> String {
         identity.client_id
     }
 

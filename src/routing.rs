@@ -75,9 +75,9 @@ fn find_provider_in_routes(model: &str, route_config: &RouteConfigFile) -> Optio
 #[cfg(test)]
 mod proptest_tests {
     use super::*;
-    use proptest::prelude::*;
     use crate::config::ProviderConfig;
     use crate::route_config::RouteConfigFile;
+    use proptest::prelude::*;
 
     /// **Validates: Requirements 7.4**
     ///
@@ -92,7 +92,7 @@ mod proptest_tests {
         fn providers_strategy() -> impl Strategy<Value = Vec<ProviderConfig>> {
             proptest::collection::vec(
                 (
-                    "[a-z]{3,8}-[0-9]{1,2}",  // provider id
+                    "[a-z]{3,8}-[0-9]{1,2}",                                     // provider id
                     proptest::collection::vec("[a-z]{2,6}-[0-9]\\.[0-9]", 1..4), // models
                 ),
                 1..4,

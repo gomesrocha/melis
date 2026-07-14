@@ -600,6 +600,75 @@ curl -X POST http://localhost:9090/v1/chat/completions \
   }'
 ```
 
+### Embeddings (OpenAI-compatible)
+
+Melis supports `POST /v1/embeddings` using Ollama as backend. The endpoint is fully compatible with the OpenAI embeddings API format.
+
+**Single input:**
+
+```bash
+curl -X POST http://localhost:9090/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nomic-embed-text:latest",
+    "input": "Cadastro de cliente com CPF e CNPJ"
+  }'
+```
+
+**Multiple inputs (batch):**
+
+```bash
+curl -X POST http://localhost:9090/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nomic-embed-text:latest",
+    "input": [
+      "Cadastro de pessoa física com CPF",
+      "Cadastro de pessoa jurídica com CNPJ"
+    ]
+  }'
+```
+
+**Response format:**
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "object": "embedding",
+      "index": 0,
+      "embedding": [0.01, 0.02, 0.03, ...]
+    }
+  ],
+  "model": "nomic-embed-text:latest",
+  "usage": {
+    "prompt_tokens": 0,
+    "total_tokens": 0
+  }
+}
+```
+
+**Docker with Ollama (host.docker.internal):**
+
+```bash
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -p 9090:8080 \
+  -v "$PWD/config.yaml:/app/config.yaml:ro" \
+  -v "$PWD/routes.yaml:/app/routes.yaml:ro" \
+  melis-gateway:latest
+
+# Then from another terminal:
+curl http://localhost:9090/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model": "nomic-embed-text:latest", "input": "Test embedding via Docker"}'
+```
+
+> **Note:** The `nomic-embed-text:latest` model produces 768-dimensional embeddings by default.
+> Ollama must be running with the model pulled (`ollama pull nomic-embed-text`).
+> The gateway tries `/api/embed` first (modern Ollama), then falls back to `/api/embeddings` (legacy).
+
 ### Python with OpenAI SDK
 
 Since Melis is OpenAI-compatible, you can use the official OpenAI Python SDK:

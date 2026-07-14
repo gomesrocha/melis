@@ -24,8 +24,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::circuit_breaker::CallResult;
-use crate::compactor::{SimpleCompactor, SemanticGuardedCompactor, ContextCompactor, CompactMessage};
+use crate::compactor::{
+    CompactMessage, ContextCompactor, SemanticGuardedCompactor, SimpleCompactor,
+};
 use crate::config::CompactorConfig;
+use crate::embeddings::embeddings_handler;
 use crate::error::GatewayError;
 use crate::middleware::auth::{auth_middleware, AuthValidator, ConfigAuthValidator};
 use crate::middleware::rate_limiter::rate_limit_middleware;
@@ -68,13 +71,16 @@ pub fn build_router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/metrics", get(metrics_handler))
         .route("/healthz", get(healthz_handler))
-        .route("/readyz", get(readyz_handler));
+        .route("/readyz", get(readyz_handler))
+        .route("/v1/embeddings", post(embeddings_handler));
 
     // Dynamically register routes from RouteConfigManager
     // This ensures all paths defined in routes.yaml are reachable
     {
         let resolver = state.route_config.current();
         let mut registered_paths = std::collections::HashSet::new();
+        // /v1/embeddings is already registered above with its own handler
+        registered_paths.insert("/v1/embeddings".to_string());
         for route in &resolver.config().routes {
             if registered_paths.insert(route.path.clone()) {
                 router = router.route(&route.path, post(chat_completions_handler));
@@ -271,10 +277,7 @@ async fn chat_completions_handler(
     // Apply model override by replacing in the JSON value
     let effective_model = resolved.model.clone();
     if let Some(obj) = payload.as_object_mut() {
-        obj.insert(
-            "model".to_string(),
-            Value::String(effective_model.clone()),
-        );
+        obj.insert("model".to_string(), Value::String(effective_model.clone()));
     }
 
     tracing::debug!(
@@ -288,41 +291,73 @@ async fn chat_completions_handler(
     // ─── Context Compaction ───────────────────────────────────────────────────
     let compaction_start = Instant::now();
     if let Some(messages_arr) = payload.get("messages").and_then(|m| m.as_array()) {
-        let compact_messages: Vec<CompactMessage> = messages_arr.iter()
+        let compact_messages: Vec<CompactMessage> = messages_arr
+            .iter()
             .filter_map(|m| {
                 let role = m.get("role")?.as_str()?;
                 let content = m.get("content")?.as_str()?;
-                Some(CompactMessage { role: role.to_string(), content: content.to_string() })
+                Some(CompactMessage {
+                    role: role.to_string(),
+                    content: content.to_string(),
+                })
             })
             .collect();
 
-        let compactor: Box<dyn ContextCompactor> = if resolved.effective_token_config.strategy == "semantic_guarded_trimming" {
-            Box::new(SemanticGuardedCompactor::new())
-        } else {
-            Box::new(SimpleCompactor::new())
-        };
+        let compactor: Box<dyn ContextCompactor> =
+            if resolved.effective_token_config.strategy == "semantic_guarded_trimming" {
+                Box::new(SemanticGuardedCompactor::new())
+            } else {
+                Box::new(SimpleCompactor::new())
+            };
         let result = compactor.compact(compact_messages, &resolved.effective_token_config);
 
         if result.was_compressed {
-            let new_messages: Vec<Value> = result.messages.iter()
+            let new_messages: Vec<Value> = result
+                .messages
+                .iter()
                 .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
                 .collect();
             payload["messages"] = Value::Array(new_messages);
             state.metrics.compaction_applied_total.inc();
-            state.metrics.context_original_tokens.inc_by(result.original_tokens as u64);
-            state.metrics.context_final_tokens.inc_by(result.final_tokens as u64);
-            state.metrics.context_saved_tokens_total.inc_by((result.original_tokens - result.final_tokens) as u64);
-            state.metrics.compression_ratio.observe(result.compression_ratio);
+            state
+                .metrics
+                .context_original_tokens
+                .inc_by(result.original_tokens as u64);
+            state
+                .metrics
+                .context_final_tokens
+                .inc_by(result.final_tokens as u64);
+            state
+                .metrics
+                .context_saved_tokens_total
+                .inc_by((result.original_tokens - result.final_tokens) as u64);
+            state
+                .metrics
+                .compression_ratio
+                .observe(result.compression_ratio);
         } else {
             // Still record token counts and ratio even when not compressing
-            state.metrics.context_original_tokens.inc_by(result.original_tokens as u64);
-            state.metrics.context_final_tokens.inc_by(result.final_tokens as u64);
+            state
+                .metrics
+                .context_original_tokens
+                .inc_by(result.original_tokens as u64);
+            state
+                .metrics
+                .context_final_tokens
+                .inc_by(result.final_tokens as u64);
             state.metrics.compression_ratio.observe(1.0);
-            state.metrics.compaction_skipped_total.with_label_values(&["below_threshold"]).inc();
+            state
+                .metrics
+                .compaction_skipped_total
+                .with_label_values(&["below_threshold"])
+                .inc();
         }
     }
     let compaction_elapsed = compaction_start.elapsed().as_secs_f64();
-    state.metrics.compaction_duration.observe(compaction_elapsed);
+    state
+        .metrics
+        .compaction_duration
+        .observe(compaction_elapsed);
 
     // ─── Provider Selection & Failover Loop ──────────────────────────────────
     let mut excluded_providers: Vec<String> = Vec::new();
@@ -333,15 +368,17 @@ async fn chat_completions_handler(
     let response = 'failover: {
         for _attempt in 0..max_attempts {
             // Select provider, excluding previously failed ones
-            let available: Vec<WeightedProvider> = resolved.providers.iter()
+            let available: Vec<WeightedProvider> = resolved
+                .providers
+                .iter()
                 .filter(|p| !excluded_providers.contains(&p.name))
                 .cloned()
                 .collect();
 
             if available.is_empty() {
-                break 'failover Err(last_error.unwrap_or(
-                    GatewayError::ServiceUnavailable("All providers exhausted".to_string())
-                ));
+                break 'failover Err(last_error.unwrap_or(GatewayError::ServiceUnavailable(
+                    "All providers exhausted".to_string(),
+                )));
             }
 
             let selected = match state.load_balancer.select_provider(&available) {
@@ -352,10 +389,14 @@ async fn chat_completions_handler(
 
             // Check circuit breaker
             if !state.circuit_breaker.is_available(&selected_name).await {
-                state.metrics.failover_total
+                state
+                    .metrics
+                    .failover_total
                     .with_label_values(&[&selected_name, "circuit_open"])
                     .inc();
-                state.metrics.fallback_mode_total
+                state
+                    .metrics
+                    .fallback_mode_total
                     .with_label_values(&[&selected_name, "next", "circuit_open"])
                     .inc();
                 excluded_providers.push(selected_name);
@@ -363,15 +404,16 @@ async fn chat_completions_handler(
             }
 
             // Resolve provider config
-            let pconfig = state.gateway_config.providers.iter()
+            let pconfig = state
+                .gateway_config
+                .providers
+                .iter()
                 .find(|p| p.id == selected_name || p.provider_type == selected_name);
 
             let base_url = pconfig
                 .map(|p| p.base_url.clone())
                 .unwrap_or_else(|| "http://localhost:11434".to_string());
-            let api_key = pconfig
-                .map(|p| p.api_key.clone())
-                .unwrap_or_default();
+            let api_key = pconfig.map(|p| p.api_key.clone()).unwrap_or_default();
             let ptype = pconfig
                 .map(|p| p.provider_type.clone())
                 .unwrap_or_else(|| "ollama".to_string());
@@ -430,33 +472,35 @@ async fn chat_completions_handler(
                 bytes::Bytes::from(serde_json::to_vec(&payload).unwrap())
             };
             let translation_elapsed = translation_start.elapsed().as_secs_f64();
-            state.metrics.payload_translation.observe(translation_elapsed);
+            state
+                .metrics
+                .payload_translation
+                .observe(translation_elapsed);
 
             // ─── Streaming: attempt once (can't retry mid-stream) ─────────────
             if streaming {
                 let provider_start = Instant::now();
-                let stream = state.http_client.send_stream(
-                    &url,
-                    provider_headers,
-                    body,
-                    timeout,
-                );
+                let stream = state
+                    .http_client
+                    .send_stream(&url, provider_headers, body, timeout);
 
                 backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-                state.metrics.backend_latency
+                state
+                    .metrics
+                    .backend_latency
                     .with_label_values(&[&ptype])
                     .observe(backend_elapsed_time);
 
-                state.circuit_breaker.record_result(
-                    &selected_name,
-                    CallResult::Success,
-                ).await;
+                state
+                    .circuit_breaker
+                    .record_result(&selected_name, CallResult::Success)
+                    .await;
 
                 let transpiler = crate::transpiler::get_transpiler(&ptype);
                 let transformed = crate::streaming::transform_sse_stream(
-                    Box::pin(stream.map(|r| r.map_err(|e| {
-                        crate::streaming::StreamError::Connection(e.to_string())
-                    }))),
+                    Box::pin(stream.map(|r| {
+                        r.map_err(|e| crate::streaming::StreamError::Connection(e.to_string()))
+                    })),
                     transpiler,
                 );
 
@@ -465,17 +509,23 @@ async fn chat_completions_handler(
 
             // ─── Non-streaming: try and handle errors ─────────────────────────
             let provider_start = Instant::now();
-            match state.http_client.send(&url, provider_headers, body, timeout).await {
+            match state
+                .http_client
+                .send(&url, provider_headers, body, timeout)
+                .await
+            {
                 Ok(response_bytes) => {
                     backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-                    state.metrics.backend_latency
+                    state
+                        .metrics
+                        .backend_latency
                         .with_label_values(&[&ptype])
                         .observe(backend_elapsed_time);
 
-                    state.circuit_breaker.record_result(
-                        &selected_name,
-                        CallResult::Success,
-                    ).await;
+                    state
+                        .circuit_breaker
+                        .record_result(&selected_name, CallResult::Success)
+                        .await;
 
                     match serde_json::from_slice::<Value>(&response_bytes) {
                         Ok(json_response) => {
@@ -494,19 +544,26 @@ async fn chat_completions_handler(
 
                             // Record token metrics
                             if let Some(usage) = final_response.get("usage") {
-                                let prompt_tokens = usage.get("prompt_tokens")
+                                let prompt_tokens = usage
+                                    .get("prompt_tokens")
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0);
-                                let completion_tokens = usage.get("completion_tokens")
+                                let completion_tokens = usage
+                                    .get("completion_tokens")
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0);
-                                let model_name = final_response.get("model")
+                                let model_name = final_response
+                                    .get("model")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or(&effective_model);
-                                state.metrics.llm_tokens_total
+                                state
+                                    .metrics
+                                    .llm_tokens_total
                                     .with_label_values(&["input", model_name, "unknown"])
                                     .inc_by(prompt_tokens);
-                                state.metrics.llm_tokens_total
+                                state
+                                    .metrics
+                                    .llm_tokens_total
                                     .with_label_values(&["output", model_name, "unknown"])
                                     .inc_by(completion_tokens);
                             }
@@ -521,78 +578,102 @@ async fn chat_completions_handler(
                         }
                     }
                 }
-                Err(crate::client::ClientError::HttpError { status, body: err_body }) => {
+                Err(crate::client::ClientError::HttpError {
+                    status,
+                    body: err_body,
+                }) => {
                     backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-                    state.metrics.backend_latency
+                    state
+                        .metrics
+                        .backend_latency
                         .with_label_values(&[&ptype])
                         .observe(backend_elapsed_time);
-                    state.metrics.provider_errors_total
+                    state
+                        .metrics
+                        .provider_errors_total
                         .with_label_values(&[&ptype, &status.to_string()])
                         .inc();
 
                     match status {
                         // Non-retryable errors — return immediately
                         400 => {
-                            break 'failover Err(GatewayError::BadRequest(
-                                format!("Provider error: {}", err_body),
-                            ));
+                            break 'failover Err(GatewayError::BadRequest(format!(
+                                "Provider error: {}",
+                                err_body
+                            )));
                         }
                         401 | 403 => {
-                            break 'failover Err(GatewayError::Unauthorized(
-                                format!("Provider auth error: {}", err_body),
-                            ));
+                            break 'failover Err(GatewayError::Unauthorized(format!(
+                                "Provider auth error: {}",
+                                err_body
+                            )));
                         }
                         404 => {
-                            break 'failover Err(GatewayError::BadRequest(
-                                format!("Model '{}' not found at provider", effective_model),
-                            ));
+                            break 'failover Err(GatewayError::BadRequest(format!(
+                                "Model '{}' not found at provider",
+                                effective_model
+                            )));
                         }
                         // Retryable — record failure and try next provider
                         429 => {
-                            state.circuit_breaker.record_result(
-                                &selected_name,
-                                CallResult::RateLimited,
-                            ).await;
-                            state.metrics.failover_total
+                            state
+                                .circuit_breaker
+                                .record_result(&selected_name, CallResult::RateLimited)
+                                .await;
+                            state
+                                .metrics
+                                .failover_total
                                 .with_label_values(&[&selected_name, "429"])
                                 .inc();
                             excluded_providers.push(selected_name);
-                            last_error = Some(GatewayError::RateLimited { retry_after_secs: 30 });
+                            last_error = Some(GatewayError::RateLimited {
+                                retry_after_secs: 30,
+                            });
                         }
                         s if s >= 500 => {
-                            state.circuit_breaker.record_result(
-                                &selected_name,
-                                CallResult::Failure,
-                            ).await;
-                            state.metrics.failover_total
+                            state
+                                .circuit_breaker
+                                .record_result(&selected_name, CallResult::Failure)
+                                .await;
+                            state
+                                .metrics
+                                .failover_total
                                 .with_label_values(&[&selected_name, "5xx"])
                                 .inc();
                             excluded_providers.push(selected_name);
-                            last_error = Some(GatewayError::ServiceUnavailable(
-                                format!("Provider error {}: {}", status, err_body),
-                            ));
+                            last_error = Some(GatewayError::ServiceUnavailable(format!(
+                                "Provider error {}: {}",
+                                status, err_body
+                            )));
                         }
                         _ => {
                             excluded_providers.push(selected_name);
-                            last_error = Some(GatewayError::ProviderError(
-                                format!("HTTP {}: {}", status, err_body),
-                            ));
+                            last_error = Some(GatewayError::ProviderError(format!(
+                                "HTTP {}: {}",
+                                status, err_body
+                            )));
                         }
                     }
                 }
                 Err(crate::client::ClientError::Timeout) => {
                     backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-                    state.metrics.backend_latency
+                    state
+                        .metrics
+                        .backend_latency
                         .with_label_values(&[&ptype])
                         .observe(backend_elapsed_time);
-                    state.circuit_breaker.record_result(
-                        &selected_name,
-                        CallResult::Timeout,
-                    ).await;
-                    state.metrics.provider_errors_total
+                    state
+                        .circuit_breaker
+                        .record_result(&selected_name, CallResult::Timeout)
+                        .await;
+                    state
+                        .metrics
+                        .provider_errors_total
                         .with_label_values(&[&ptype, "timeout"])
                         .inc();
-                    state.metrics.failover_total
+                    state
+                        .metrics
+                        .failover_total
                         .with_label_values(&[&selected_name, "timeout"])
                         .inc();
                     excluded_providers.push(selected_name);
@@ -602,39 +683,51 @@ async fn chat_completions_handler(
                 }
                 Err(e) => {
                     backend_elapsed_time = provider_start.elapsed().as_secs_f64();
-                    state.metrics.backend_latency
+                    state
+                        .metrics
+                        .backend_latency
                         .with_label_values(&[&ptype])
                         .observe(backend_elapsed_time);
-                    state.circuit_breaker.record_result(
-                        &selected_name,
-                        CallResult::Failure,
-                    ).await;
-                    state.metrics.provider_errors_total
+                    state
+                        .circuit_breaker
+                        .record_result(&selected_name, CallResult::Failure)
+                        .await;
+                    state
+                        .metrics
+                        .provider_errors_total
                         .with_label_values(&[&ptype, "network_error"])
                         .inc();
-                    state.metrics.failover_total
+                    state
+                        .metrics
+                        .failover_total
                         .with_label_values(&[&selected_name, "network"])
                         .inc();
                     excluded_providers.push(selected_name);
-                    last_error = Some(GatewayError::ServiceUnavailable(
-                        format!("Provider unavailable: {}", e),
-                    ));
+                    last_error = Some(GatewayError::ServiceUnavailable(format!(
+                        "Provider unavailable: {}",
+                        e
+                    )));
                 }
             }
         }
 
         // All attempts exhausted
-        Err(last_error.unwrap_or(
-            GatewayError::ServiceUnavailable("All providers exhausted".to_string()),
-        ))
+        Err(last_error.unwrap_or(GatewayError::ServiceUnavailable(
+            "All providers exhausted".to_string(),
+        )))
     };
 
     // Record fallback success metric if we had failures but ultimately succeeded
     if !excluded_providers.is_empty() {
         if response.is_ok() {
-            state.metrics.fallback_mode_total
+            state
+                .metrics
+                .fallback_mode_total
                 .with_label_values(&[
-                    excluded_providers.first().map(|s| s.as_str()).unwrap_or("unknown"),
+                    excluded_providers
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or("unknown"),
                     &provider_type_used,
                     "failover_success",
                 ])
@@ -649,10 +742,14 @@ async fn chat_completions_handler(
     let internal_overhead = total_elapsed - backend_elapsed_time;
     let status = response.status().as_u16().to_string();
 
-    state.metrics.requests_total
+    state
+        .metrics
+        .requests_total
         .with_label_values(&[request_path, "unknown", &status])
         .inc();
-    state.metrics.request_duration
+    state
+        .metrics
+        .request_duration
         .with_label_values(&[request_path, &provider_type_used])
         .observe(total_elapsed);
     state.metrics.internal_overhead.observe(internal_overhead);
@@ -675,15 +772,10 @@ fn resolve_route_config(
     match resolver.resolve_route(path, method) {
         Some(route) => {
             // Model override: use route.model if defined, otherwise keep payload model
-            let effective_model = route
-                .model
-                .as_deref()
-                .unwrap_or(payload_model)
-                .to_string();
+            let effective_model = route.model.as_deref().unwrap_or(payload_model).to_string();
 
             // Effective token config: per-route if defined, otherwise global
-            let effective_token_config =
-                resolver.effective_token_config(route, global_compactor);
+            let effective_token_config = resolver.effective_token_config(route, global_compactor);
 
             // Provider list for load balancer
             let providers = extract_providers(route);
@@ -808,17 +900,14 @@ mod proptest_tests {
 
             (
                 model_strategy,
-                proptest::collection::vec(
-                    (role_strategy, content_strategy),
-                    1..5,
-                ),
+                proptest::collection::vec((role_strategy, content_strategy), 1..5),
             )
                 .prop_map(|(model, messages)| {
                     let msgs: Vec<serde_json::Value> = messages
                         .into_iter()
-                        .map(|(role, content)| {
-                            serde_json::json!({"role": role, "content": content})
-                        })
+                        .map(
+                            |(role, content)| serde_json::json!({"role": role, "content": content}),
+                        )
                         .collect();
                     serde_json::json!({
                         "model": model,
@@ -1038,13 +1127,7 @@ routes:
         let global = global_compactor();
 
         // /v1/chat/raw has no model defined in route
-        let resolved = resolve_route_config(
-            &resolver,
-            "/v1/chat/raw",
-            "POST",
-            "llama3",
-            &global,
-        );
+        let resolved = resolve_route_config(&resolver, "/v1/chat/raw", "POST", "llama3", &global);
 
         // No route model override — should keep payload model
         assert_eq!(resolved.model, "llama3");
@@ -1055,19 +1138,20 @@ routes:
         let resolver = RouteResolver::new(sample_config());
         let global = global_compactor();
 
-        let resolved = resolve_route_config(
-            &resolver,
-            "/v1/chat/completions",
-            "POST",
-            "gpt-4o",
-            &global,
-        );
+        let resolved =
+            resolve_route_config(&resolver, "/v1/chat/completions", "POST", "gpt-4o", &global);
 
         // Route has token_optimization with compress_above_tokens: 4000
         assert_eq!(resolved.effective_token_config.token_threshold, 4000);
-        assert_eq!(resolved.effective_token_config.tokenizer_name, "cl100k_base");
+        assert_eq!(
+            resolved.effective_token_config.tokenizer_name,
+            "cl100k_base"
+        );
         // stop_words come from global
-        assert_eq!(resolved.effective_token_config.stop_words, global.stop_words);
+        assert_eq!(
+            resolved.effective_token_config.stop_words,
+            global.stop_words
+        );
     }
 
     #[test]
@@ -1076,13 +1160,7 @@ routes:
         let global = global_compactor();
 
         // /v1/chat/raw has no token_optimization
-        let resolved = resolve_route_config(
-            &resolver,
-            "/v1/chat/raw",
-            "POST",
-            "llama3",
-            &global,
-        );
+        let resolved = resolve_route_config(&resolver, "/v1/chat/raw", "POST", "llama3", &global);
 
         assert_eq!(resolved.effective_token_config, global);
     }
@@ -1092,13 +1170,7 @@ routes:
         let resolver = RouteResolver::new(sample_config());
         let global = global_compactor();
 
-        let resolved = resolve_route_config(
-            &resolver,
-            "/v1/chat/multi",
-            "POST",
-            "gpt-4o",
-            &global,
-        );
+        let resolved = resolve_route_config(&resolver, "/v1/chat/multi", "POST", "gpt-4o", &global);
 
         assert_eq!(resolved.providers.len(), 2);
         assert_eq!(resolved.providers[0].name, "openai");
@@ -1112,13 +1184,8 @@ routes:
         let resolver = RouteResolver::new(sample_config());
         let global = global_compactor();
 
-        let resolved = resolve_route_config(
-            &resolver,
-            "/v1/chat/completions",
-            "POST",
-            "gpt-4o",
-            &global,
-        );
+        let resolved =
+            resolve_route_config(&resolver, "/v1/chat/completions", "POST", "gpt-4o", &global);
 
         // Single provider "openai" should be wrapped as a 1-element list
         assert_eq!(resolved.providers.len(), 1);
@@ -1132,13 +1199,8 @@ routes:
         let resolver = RouteResolver::new(sample_config());
         let global = global_compactor();
 
-        let resolved = resolve_route_config(
-            &resolver,
-            "/v1/chat/unknown",
-            "POST",
-            "my-model",
-            &global,
-        );
+        let resolved =
+            resolve_route_config(&resolver, "/v1/chat/unknown", "POST", "my-model", &global);
 
         // No match — falls back to payload model and global config
         assert_eq!(resolved.model, "my-model");

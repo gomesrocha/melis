@@ -38,7 +38,10 @@ pub enum CircuitState {
     /// Normal operation: requests are forwarded.
     Closed,
     /// Circuit is open: requests are blocked until `until` instant.
-    Open { until: Instant, backoff_ttl: Duration },
+    Open {
+        until: Instant,
+        backoff_ttl: Duration,
+    },
     /// Testing recovery: one probe request is allowed.
     HalfOpen,
 }
@@ -200,8 +203,7 @@ impl CircuitBreaker for LocalCircuitBreaker {
                 } else {
                     // Still failing → re-open with exponential backoff
                     let base_secs = provider.current_backoff.as_secs().max(1);
-                    let new_ttl_secs = (base_secs as f64
-                        * self.config.backoff_factor) as u64;
+                    let new_ttl_secs = (base_secs as f64 * self.config.backoff_factor) as u64;
                     let max_ttl_secs = self.config.max_ttl_secs;
                     let capped_ttl = Duration::from_secs(new_ttl_secs.min(max_ttl_secs));
 
@@ -305,7 +307,8 @@ mod tests {
         let cb = LocalCircuitBreaker::new(test_config());
 
         // A single 429 should open the circuit immediately
-        cb.record_result("provider-1", CallResult::RateLimited).await;
+        cb.record_result("provider-1", CallResult::RateLimited)
+            .await;
 
         assert!(!cb.is_available("provider-1").await);
     }
@@ -379,7 +382,8 @@ mod tests {
         let cb = LocalCircuitBreaker::new(config);
 
         // Open the circuit
-        cb.record_result("provider-1", CallResult::RateLimited).await;
+        cb.record_result("provider-1", CallResult::RateLimited)
+            .await;
         // With TTL=0, is_available will transition to HalfOpen
         assert!(cb.is_available("provider-1").await);
 
@@ -401,7 +405,8 @@ mod tests {
         let cb = LocalCircuitBreaker::new(config);
 
         // Open the circuit
-        cb.record_result("provider-1", CallResult::RateLimited).await;
+        cb.record_result("provider-1", CallResult::RateLimited)
+            .await;
         // Transition to HalfOpen (TTL=0 expired immediately)
         assert!(cb.is_available("provider-1").await);
 
@@ -447,7 +452,8 @@ mod tests {
         let cb = LocalCircuitBreaker::new(config);
 
         // Open circuit for provider-1
-        cb.record_result("provider-1", CallResult::RateLimited).await;
+        cb.record_result("provider-1", CallResult::RateLimited)
+            .await;
 
         // provider-1 should be unavailable
         assert!(!cb.is_available("provider-1").await);
@@ -472,16 +478,13 @@ mod proptest_tests {
 
         /// Strategy: generate a threshold (20-80%), a total request count (min 10-50),
         /// and a failure count that either exceeds or is below the threshold.
-        fn circuit_breaker_scenario_strategy()
-            -> impl Strategy<Value = (f64, u64, u64, bool)>
-        {
+        fn circuit_breaker_scenario_strategy() -> impl Strategy<Value = (f64, u64, u64, bool)> {
             // threshold between 20% and 80%
             (20.0f64..=80.0f64, 10u64..=50u64, proptest::bool::ANY).prop_flat_map(
                 |(threshold, total, should_exceed)| {
                     let max_failures_below = ((threshold / 100.0) * total as f64).floor() as u64;
                     let max_failures_below = max_failures_below.saturating_sub(1);
-                    let min_failures_above =
-                        ((threshold / 100.0) * total as f64).ceil() as u64 + 1;
+                    let min_failures_above = ((threshold / 100.0) * total as f64).ceil() as u64 + 1;
                     let min_failures_above = min_failures_above.min(total);
 
                     if should_exceed {
@@ -568,10 +571,10 @@ mod proptest_tests {
         /// Strategy: generate initial_ttl (1-60s), backoff_factor (1.5-4.0), max_ttl (60-600s)
         fn backoff_scenario_strategy() -> impl Strategy<Value = (u64, f64, u64)> {
             (
-                1u64..=60u64,         // initial_ttl_secs
+                1u64..=60u64, // initial_ttl_secs
                 // Use integers 15..=40 mapped to f64 / 10.0 to get 1.5..=4.0
                 (15u32..=40u32).prop_map(|v| v as f64 / 10.0),
-                60u64..=600u64,       // max_ttl_secs
+                60u64..=600u64, // max_ttl_secs
             )
         }
 

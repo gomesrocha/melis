@@ -224,13 +224,11 @@ where
     }
 
     // All attempts exhausted
-    Err(GatewayError::ServiceUnavailable(
-        format!(
-            "All providers exhausted after {} failover attempts. Last error: {}",
-            MAX_RETRIES,
-            last_error.unwrap_or_else(|| "unknown".to_string())
-        ),
-    ))
+    Err(GatewayError::ServiceUnavailable(format!(
+        "All providers exhausted after {} failover attempts. Last error: {}",
+        MAX_RETRIES,
+        last_error.unwrap_or_else(|| "unknown".to_string())
+    )))
 }
 
 #[cfg(test)]
@@ -338,10 +336,7 @@ mod tests {
     #[test]
     fn zero_total_weight_returns_service_unavailable() {
         let balancer = WeightedRoundRobin::new();
-        let providers = vec![
-            make_provider("a", 0),
-            make_provider("b", 0),
-        ];
+        let providers = vec![make_provider("a", 0), make_provider("b", 0)];
 
         let result = balancer.select_provider(&providers);
         assert!(result.is_err());
@@ -357,10 +352,7 @@ mod tests {
     #[test]
     fn two_providers_weighted_distribution() {
         let balancer = WeightedRoundRobin::new();
-        let providers = vec![
-            make_provider("primary", 80),
-            make_provider("secondary", 20),
-        ];
+        let providers = vec![make_provider("primary", 80), make_provider("secondary", 20)];
 
         let total_iterations = 1000u64;
         let mut counts: HashMap<String, u64> = HashMap::new();
@@ -401,22 +393,17 @@ mod tests {
         ];
 
         let exclude = vec!["openai".to_string()];
-        let selected =
-            super::select_with_failover(&balancer, &providers, &exclude).unwrap();
+        let selected = super::select_with_failover(&balancer, &providers, &exclude).unwrap();
         assert_ne!(selected.name, "openai");
     }
 
     #[test]
     fn select_with_failover_all_excluded_returns_service_unavailable() {
         let balancer = WeightedRoundRobin::new();
-        let providers = vec![
-            make_provider("openai", 60),
-            make_provider("anthropic", 30),
-        ];
+        let providers = vec![make_provider("openai", 60), make_provider("anthropic", 30)];
 
         let exclude = vec!["openai".to_string(), "anthropic".to_string()];
-        let result =
-            super::select_with_failover(&balancer, &providers, &exclude);
+        let result = super::select_with_failover(&balancer, &providers, &exclude);
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -430,13 +417,10 @@ mod tests {
     #[test]
     fn select_with_failover_empty_exclude_selects_normally() {
         let balancer = WeightedRoundRobin::new();
-        let providers = vec![
-            make_provider("openai", 100),
-        ];
+        let providers = vec![make_provider("openai", 100)];
 
         let exclude: Vec<String> = vec![];
-        let selected =
-            super::select_with_failover(&balancer, &providers, &exclude).unwrap();
+        let selected = super::select_with_failover(&balancer, &providers, &exclude).unwrap();
         assert_eq!(selected.name, "openai");
     }
 
@@ -449,14 +433,10 @@ mod tests {
             make_provider("vertex", 10),
         ];
 
-        let result = super::execute_with_failover(
-            &balancer,
-            &providers,
-            |provider| async move {
-                // All providers succeed
-                super::RequestOutcome::Success(format!("response from {}", provider.name))
-            },
-        )
+        let result = super::execute_with_failover(&balancer, &providers, |provider| async move {
+            // All providers succeed
+            super::RequestOutcome::Success(format!("response from {}", provider.name))
+        })
         .await;
 
         assert!(result.is_ok());
@@ -469,30 +449,23 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let balancer = WeightedRoundRobin::new();
-        let providers = vec![
-            make_provider("openai", 50),
-            make_provider("anthropic", 50),
-        ];
+        let providers = vec![make_provider("openai", 50), make_provider("anthropic", 50)];
 
         let attempts = Arc::new(Mutex::new(Vec::new()));
         let attempts_clone = attempts.clone();
 
-        let result = super::execute_with_failover(
-            &balancer,
-            &providers,
-            |provider| {
-                let attempts = attempts_clone.clone();
-                async move {
-                    let name = provider.name.clone();
-                    attempts.lock().unwrap().push(name.clone());
-                    if name == "openai" {
-                        super::RequestOutcome::Retryable("500 Internal Server Error".to_string())
-                    } else {
-                        super::RequestOutcome::Success(format!("response from {}", name))
-                    }
+        let result = super::execute_with_failover(&balancer, &providers, |provider| {
+            let attempts = attempts_clone.clone();
+            async move {
+                let name = provider.name.clone();
+                attempts.lock().unwrap().push(name.clone());
+                if name == "openai" {
+                    super::RequestOutcome::Retryable("500 Internal Server Error".to_string())
+                } else {
+                    super::RequestOutcome::Success(format!("response from {}", name))
                 }
-            },
-        )
+            }
+        })
         .await;
 
         assert!(result.is_ok());
@@ -520,19 +493,16 @@ mod tests {
         let attempts = Arc::new(Mutex::new(Vec::new()));
         let attempts_clone = attempts.clone();
 
-        let result: Result<String, GatewayError> = super::execute_with_failover(
-            &balancer,
-            &providers,
-            |provider| {
+        let result: Result<String, GatewayError> =
+            super::execute_with_failover(&balancer, &providers, |provider| {
                 let attempts = attempts_clone.clone();
                 async move {
                     attempts.lock().unwrap().push(provider.name.clone());
                     // All providers fail
                     super::RequestOutcome::Retryable("timeout".to_string())
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -556,29 +526,23 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let balancer = WeightedRoundRobin::new();
-        let providers = vec![
-            make_provider("openai", 50),
-            make_provider("anthropic", 50),
-        ];
+        let providers = vec![make_provider("openai", 50), make_provider("anthropic", 50)];
 
         let attempts = Arc::new(Mutex::new(Vec::new()));
         let attempts_clone = attempts.clone();
 
-        let result: Result<String, GatewayError> = super::execute_with_failover(
-            &balancer,
-            &providers,
-            |provider| {
+        let result: Result<String, GatewayError> =
+            super::execute_with_failover(&balancer, &providers, |provider| {
                 let attempts = attempts_clone.clone();
                 async move {
                     attempts.lock().unwrap().push(provider.name.clone());
                     // Non-retryable error (e.g., 400 Bad Request)
-                    super::RequestOutcome::NonRetryable(
-                        GatewayError::BadRequest("invalid model".to_string()),
-                    )
+                    super::RequestOutcome::NonRetryable(GatewayError::BadRequest(
+                        "invalid model".to_string(),
+                    ))
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -598,21 +562,13 @@ mod tests {
         // When there are only 2 providers and both fail, should return 503
         // even though MAX_RETRIES allows 2 retries (3 total attempts)
         let balancer = WeightedRoundRobin::new();
-        let providers = vec![
-            make_provider("openai", 50),
-            make_provider("anthropic", 50),
-        ];
+        let providers = vec![make_provider("openai", 50), make_provider("anthropic", 50)];
 
-        let result: Result<String, GatewayError> = super::execute_with_failover(
-            &balancer,
-            &providers,
-            |provider| async move {
-                super::RequestOutcome::Retryable(
-                    format!("{} returned 502", provider.name),
-                )
-            },
-        )
-        .await;
+        let result: Result<String, GatewayError> =
+            super::execute_with_failover(&balancer, &providers, |provider| async move {
+                super::RequestOutcome::Retryable(format!("{} returned 502", provider.name))
+            })
+            .await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -712,9 +668,8 @@ mod proptest_tests {
         use super::*;
 
         /// Strategy: generate 2-5 providers and a random subset to exclude
-        fn failover_scenario_strategy()
-            -> impl Strategy<Value = (Vec<WeightedProvider>, Vec<String>)>
-        {
+        fn failover_scenario_strategy(
+        ) -> impl Strategy<Value = (Vec<WeightedProvider>, Vec<String>)> {
             let count = 2usize..=5usize;
             count.prop_flat_map(|n| {
                 let providers = proptest::collection::vec(1u32..=100u32, n).prop_map(|weights| {
@@ -729,16 +684,14 @@ mod proptest_tests {
                     let names: Vec<String> = provs.iter().map(|p| p.name.clone()).collect();
                     let n = names.len();
                     // Generate a random subset of indices to exclude (0 to n-1 items)
-                    proptest::collection::vec(proptest::bool::ANY, n).prop_map(
-                        move |mask| {
-                            let excluded: Vec<String> = mask
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(i, &b)| if b { Some(names[i].clone()) } else { None })
-                                .collect();
-                            (provs.clone(), excluded)
-                        },
-                    )
+                    proptest::collection::vec(proptest::bool::ANY, n).prop_map(move |mask| {
+                        let excluded: Vec<String> = mask
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, &b)| if b { Some(names[i].clone()) } else { None })
+                            .collect();
+                        (provs.clone(), excluded)
+                    })
                 })
             })
         }

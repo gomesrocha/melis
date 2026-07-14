@@ -51,14 +51,9 @@ impl AnthropicTranspiler {
     fn convert_messages_to_native(messages: &[Value]) -> Vec<Value> {
         messages
             .iter()
-            .filter(|msg| {
-                msg.get("role").and_then(|r| r.as_str()) != Some("system")
-            })
+            .filter(|msg| msg.get("role").and_then(|r| r.as_str()) != Some("system"))
             .map(|msg| {
-                let role = msg
-                    .get("role")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("user");
+                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
 
                 // Anthropic only supports "user" and "assistant" roles
                 let mapped_role = match role {
@@ -110,9 +105,11 @@ impl PayloadTranspiler for AnthropicTranspiler {
                 field: "messages".to_string(),
             })?;
 
-        let model = obj.get("model").ok_or_else(|| TranspilerError::MissingField {
-            field: "model".to_string(),
-        })?;
+        let model = obj
+            .get("model")
+            .ok_or_else(|| TranspilerError::MissingField {
+                field: "model".to_string(),
+            })?;
 
         // Build the Anthropic native request
         let mut native = serde_json::Map::new();
