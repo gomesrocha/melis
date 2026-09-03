@@ -14,6 +14,7 @@ use crate::config::GatewayConfig;
 use crate::middleware::rate_limiter::RateLimiter;
 use crate::observability::Metrics;
 use crate::route_config::RouteConfigManager;
+use crate::vertex_auth::VertexTokenCache;
 
 /// Shared application state accessible by all request handlers.
 ///
@@ -38,4 +39,11 @@ pub struct AppState {
     /// Used by the readiness probe (`/readyz`).
     // TODO: Ping Redis connection pool to update this flag periodically.
     pub redis_available: Arc<AtomicBool>,
+    /// feature/catia-vertex-docker-readiness: cached Google ADC bearer
+    /// token source for `provider_type: "vertex_anthropic"` providers.
+    /// Construction is instant/infallible -- ADC discovery itself is
+    /// lazy, only attempted on first real Vertex request (see
+    /// `vertex_auth.rs`), so this never affects startup for
+    /// deployments that don't use Vertex.
+    pub vertex_token_cache: Arc<VertexTokenCache>,
 }

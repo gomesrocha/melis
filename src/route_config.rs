@@ -25,6 +25,12 @@ const KNOWN_PROVIDERS: &[&str] = &[
     "openai",
     "anthropic",
     "google_vertex_ai",
+    // feature/catia-vertex-docker-readiness: Claude on Vertex AI --
+    // must stay in sync with config.rs's own `valid_types` list (kept
+    // as two separate consts on purpose: this one validates a route's
+    // `provider`/`providers[].name` REFERENCE, config.rs's validates a
+    // provider's declared `provider_type` -- see module docs of each).
+    "vertex_anthropic",
     "oci_genai",
     "ollama",
 ];

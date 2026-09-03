@@ -9,6 +9,7 @@
 pub mod anthropic;
 pub mod openai;
 pub mod vertex;
+pub mod vertex_anthropic;
 
 use serde_json::Value;
 use thiserror::Error;
@@ -68,6 +69,10 @@ pub fn get_transpiler(provider_type: &str) -> Box<dyn PayloadTranspiler> {
     match provider_type {
         "anthropic" => Box::new(anthropic::AnthropicTranspiler),
         "google_vertex_ai" => Box::new(vertex::VertexTranspiler),
+        // feature/catia-vertex-docker-readiness: Claude models served
+        // through Vertex AI -- distinct wire format from Gemini-shaped
+        // "google_vertex_ai" above (see vertex_anthropic.rs module doc).
+        "vertex_anthropic" => Box::new(vertex_anthropic::VertexAnthropicTranspiler),
         // OpenAI, Ollama, OCI GenAI, and unknown providers use passthrough
         // since they are typically OpenAI-compatible
         _ => Box::new(openai::OpenAiTranspiler),
@@ -348,8 +353,14 @@ mod proptest_tests {
                 let native = result.unwrap();
                 let native_obj = native.as_object().unwrap();
 
-                // These unsupported fields must NOT appear in native output
-                let unsupported = ["frequency_penalty", "presence_penalty", "logit_bias", "n", "seed", "user", "tools"];
+                // These unsupported fields must NOT appear in native output.
+                // feature/catia-vertex-docker-readiness: "tools" REMOVED
+                // from this list -- it is now a real, correctly-translated
+                // supported field (see AnthropicTranspiler::to_native),
+                // fixing a genuine bug where tool-calling requests were
+                // silently stripped of their tool definitions. This test
+                // previously encoded that bug's behavior as "expected".
+                let unsupported = ["frequency_penalty", "presence_penalty", "logit_bias", "n", "seed", "user"];
                 for field in &unsupported {
                     prop_assert!(
                         !native_obj.contains_key(*field),

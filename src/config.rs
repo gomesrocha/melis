@@ -96,6 +96,10 @@ pub struct ProviderConfig {
     pub id: String,
     pub provider_type: String,
     pub base_url: String,
+    /// Required for every `provider_type` EXCEPT `"vertex_anthropic"`,
+    /// which authenticates via Google ADC instead (see
+    /// `vertex_auth.rs`) -- see `validate()` below for the exemption.
+    #[serde(default)]
     pub api_key: String,
     #[serde(default = "default_weight")]
     pub weight: u32,
@@ -103,6 +107,19 @@ pub struct ProviderConfig {
     pub timeout_secs: u64,
     #[serde(default)]
     pub models: Vec<String>,
+    /// feature/catia-vertex-docker-readiness: Google Cloud project id,
+    /// used only by `provider_type: "vertex_anthropic"` for
+    /// diagnostics/logging (the actual Vertex request URL is built
+    /// entirely from `base_url`, which already embeds project+region+
+    /// publisher path -- see docs/CATIA_VERTEX_DOCKER_READINESS.md).
+    /// Ignored by every other provider type.
+    #[serde(default)]
+    pub project_id: String,
+    /// feature/catia-vertex-docker-readiness: Google Cloud region, used
+    /// only for diagnostics/logging alongside `project_id`. Ignored by
+    /// every other provider type.
+    #[serde(default)]
+    pub region: String,
 }
 
 impl ProviderConfig {
@@ -480,7 +497,12 @@ impl GatewayConfig {
             if provider.base_url.trim().is_empty() {
                 errors.push(format!("providers[{}].base_url must not be empty", i));
             }
-            if provider.api_key.trim().is_empty() {
+            // feature/catia-vertex-docker-readiness: "vertex_anthropic"
+            // authenticates via Google ADC (see vertex_auth.rs), never a
+            // static api_key -- exempted from this check on purpose,
+            // never because the field was merely left blank by mistake.
+            if provider.provider_type != "vertex_anthropic" && provider.api_key.trim().is_empty()
+            {
                 errors.push(format!("providers[{}].api_key must not be empty", i));
             }
             if provider.weight == 0 {
@@ -490,6 +512,7 @@ impl GatewayConfig {
                 "openai",
                 "anthropic",
                 "google_vertex_ai",
+                "vertex_anthropic",
                 "oci_genai",
                 "ollama",
             ];

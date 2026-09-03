@@ -54,8 +54,14 @@ COPY routes.yaml.example /app/routes.yaml
 
 WORKDIR /app
 
-# Expose the gateway port
-EXPOSE 8080
+# Expose the gateway port (feature/catia-vertex-docker-readiness: was
+# stale at 8080 -- the real canonical port is 9090, per
+# config.yaml.example's server.port, baked in below as the image's
+# default /app/config.yaml, and confirmed live via the running
+# container's own "Listening on 0.0.0.0:9090" startup log. Metadata
+# only -- EXPOSE never controls the actual bind, does not affect
+# runtime behavior.)
+EXPOSE 9090
 
 # Run as non-root user (distroless:nonroot UID 65532)
 USER nonroot:nonroot

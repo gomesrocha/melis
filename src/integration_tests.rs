@@ -27,6 +27,7 @@ mod tests {
     use crate::route_config::RouteConfigManager;
     use crate::router::build_router;
     use crate::state::AppState;
+    use crate::vertex_auth::VertexTokenCache;
 
     /// Creates a full AppState with local/in-memory implementations.
     /// Auth is disabled so requests can flow through without Bearer tokens.
@@ -54,6 +55,7 @@ auth:
             http_client: Arc::new(ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(AtomicBool::new(true)),
+            vertex_token_cache: Arc::new(VertexTokenCache::new()),
         }
     }
 

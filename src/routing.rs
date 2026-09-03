@@ -108,6 +108,8 @@ mod proptest_tests {
                         weight: 1,
                         timeout_secs: 30,
                         models,
+                        project_id: String::new(),
+                        region: String::new(),
                     })
                     .collect()
             })
@@ -184,6 +186,8 @@ mod tests {
                 weight: 1,
                 timeout_secs: 30,
                 models: vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()],
+                project_id: String::new(),
+                region: String::new(),
             },
             ProviderConfig {
                 id: "anthropic-1".to_string(),
@@ -193,6 +197,8 @@ mod tests {
                 weight: 1,
                 timeout_secs: 30,
                 models: vec!["claude-sonnet-4-20250514".to_string()],
+                project_id: String::new(),
+                region: String::new(),
             },
         ]
     }
