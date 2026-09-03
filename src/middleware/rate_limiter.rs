@@ -212,6 +212,7 @@ use axum::{extract::Request, middleware::Next, response::Response};
 use crate::error::GatewayError;
 use crate::middleware::auth::ClientIdentity;
 use crate::state::AppState;
+use crate::vertex_auth::VertexTokenCache;
 
 /// Axum middleware that enforces per-client rate limiting.
 ///
@@ -463,6 +464,7 @@ mod tests {
             http_client: Arc::new(crate::client::ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            vertex_token_cache: Arc::new(VertexTokenCache::new()),
         };
 
         Router::new()
@@ -626,6 +628,7 @@ rate_limit:
             http_client: Arc::new(crate::client::ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            vertex_token_cache: Arc::new(VertexTokenCache::new()),
         };
 
         let app = Router::new()

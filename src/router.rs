@@ -35,6 +35,7 @@ use crate::middleware::rate_limiter::rate_limit_middleware;
 use crate::observability::metrics_handler;
 use crate::route_config::{RouteDefinition, WeightedProvider};
 use crate::state::AppState;
+use crate::vertex_auth::VertexTokenCache;
 
 /// Maximum payload size: 10MB.
 const MAX_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
@@ -425,6 +426,24 @@ async fn chat_completions_handler(
             // Build forward URL
             let url = if ptype == "anthropic" {
                 format!("{}/messages", base_url)
+            } else if ptype == "vertex_anthropic" {
+                // feature/catia-vertex-docker-readiness: Claude on
+                // Vertex AI's publisher-model endpoint -- `base_url` is
+                // configured as the full prefix up to and including
+                // `.../publishers/anthropic/models` (project+region
+                // baked into config, never guessed here); model is the
+                // last path segment, never sent in the body (see
+                // VertexAnthropicTranspiler::to_native).
+                format!(
+                    "{}/{}:{}",
+                    base_url,
+                    effective_model,
+                    if streaming {
+                        "streamRawPredict"
+                    } else {
+                        "rawPredict"
+                    }
+                )
             } else if base_url.contains("/openai") || base_url.ends_with("/v1") {
                 format!("{}/chat/completions", base_url)
             } else {
@@ -437,7 +456,37 @@ async fn chat_completions_handler(
                 reqwest::header::CONTENT_TYPE,
                 "application/json".parse().unwrap(),
             );
-            if !api_key.is_empty() && api_key != "ollama" {
+            if ptype == "vertex_anthropic" {
+                // feature/catia-vertex-docker-readiness (Phase 7/11/12):
+                // Google ADC bearer token, never a static api_key. Fail
+                // CLOSED on any ADC error -- never silently falls back
+                // to another provider/header scheme, never echoes the
+                // raw ADC error (which may reference a local credential
+                // file path) back to the HTTP client.
+                match state.vertex_token_cache.bearer_token().await {
+                    Ok(token) => {
+                        provider_headers.insert(
+                            reqwest::header::AUTHORIZATION,
+                            format!("Bearer {}", token).parse().unwrap(),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            provider = %selected_name,
+                            "Vertex ADC token fetch failed"
+                        );
+                        state
+                            .metrics
+                            .provider_errors_total
+                            .with_label_values(&[&ptype, "adc_error"])
+                            .inc();
+                        break 'failover Err(GatewayError::ServiceUnavailable(
+                            "Vertex AI authentication unavailable".to_string(),
+                        ));
+                    }
+                }
+            } else if !api_key.is_empty() && api_key != "ollama" {
                 if ptype == "anthropic" {
                     provider_headers.insert(
                         reqwest::header::HeaderName::from_static("x-api-key"),
@@ -463,6 +512,17 @@ async fn chat_completions_handler(
                     Ok(native) => bytes::Bytes::from(serde_json::to_vec(&native).unwrap()),
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to translate payload to Anthropic format");
+                        break 'failover Err(GatewayError::Internal(
+                            "Payload translation failed".to_string(),
+                        ));
+                    }
+                }
+            } else if ptype == "vertex_anthropic" {
+                let transpiler = crate::transpiler::get_transpiler("vertex_anthropic");
+                match transpiler.to_native(&payload) {
+                    Ok(native) => bytes::Bytes::from(serde_json::to_vec(&native).unwrap()),
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to translate payload to Vertex Anthropic format");
                         break 'failover Err(GatewayError::Internal(
                             "Payload translation failed".to_string(),
                         ));
@@ -535,6 +595,15 @@ async fn chat_completions_handler(
                                     Ok(openai_response) => openai_response,
                                     Err(e) => {
                                         tracing::error!(error = %e, "Failed to translate Anthropic response");
+                                        json_response
+                                    }
+                                }
+                            } else if ptype == "vertex_anthropic" {
+                                let transpiler = crate::transpiler::get_transpiler("vertex_anthropic");
+                                match transpiler.from_native(&json_response) {
+                                    Ok(openai_response) => openai_response,
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "Failed to translate Vertex Anthropic response");
                                         json_response
                                     }
                                 }
@@ -1301,6 +1370,7 @@ routes_config_path: "./routes.yaml"
             http_client: Arc::new(ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(AtomicBool::new(true)),
+            vertex_token_cache: Arc::new(VertexTokenCache::new()),
         };
 
         build_router(app_state)
@@ -1503,6 +1573,7 @@ routes_config_path: "./routes.yaml"
             http_client: Arc::new(ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(AtomicBool::new(false)), // Redis unavailable
+            vertex_token_cache: Arc::new(VertexTokenCache::new()),
         };
 
         let app = build_router(app_state);

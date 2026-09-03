@@ -1,0 +1,50 @@
+name: melis-catia-e2e
+
+# feature/catia-vertex-docker-readiness: stack dedicado de validação
+# local -- Melis sozinho, sem CatIA/Implementation Service (que vivem
+# no repo CatIA_Discovery e não são tocados por este arquivo). Host
+# port 7004 (contrato definido pela feature), interno 9090 (porta
+# CANÔNICA real do binário, ver config.yaml/config.yaml.example --
+# nunca alterada só pra bater com o host).
+#
+# Redis incluído só porque `redis.cluster_urls` é exigido pela
+# validação de config hoje (achado real: nunca é de fato conectado em
+# runtime -- ver docs/CATIA_VERTEX_DOCKER_READINESS.md, "Redis gap
+# pré-existente"), não por uma dependência real desta feature.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: melis-catia-e2e-redis
+    networks:
+      - melis-catia-e2e
+
+  melis:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: melis:${GIT_SHA:-catia-e2e}
+    container_name: melis-catia-e2e
+    restart: unless-stopped
+    depends_on:
+      - redis
+    ports:
+      - "127.0.0.1:7004:9090"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./routes.yaml:/app/routes.yaml:ro
+      # Credencial Google -- LOCAL/E2E APENAS, read-only, nunca copiada
+      # pra dentro da imagem (Dockerfile não referencia isto em nenhuma
+      # camada). Bind condicional: se CATIA_GOOGLE_CREDENTIALS_HOST_PATH
+      # não estiver definida, /dev/null é montado (arquivo inofensivo,
+      # sem credencial real utilizável).
+      - ${CATIA_GOOGLE_CREDENTIALS_HOST_PATH:-/dev/null}:/run/secrets/google/credentials.json:ro
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google/credentials.json
+      RUST_LOG: info
+    networks:
+      - melis-catia-e2e
+
+networks:
+  melis-catia-e2e:
+    name: melis-catia-e2e

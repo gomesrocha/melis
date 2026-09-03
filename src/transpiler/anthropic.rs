@@ -48,6 +48,21 @@ impl AnthropicTranspiler {
     }
 
     /// Filters out system messages and maps roles for the Anthropic messages array.
+    ///
+    /// feature/catia-vertex-docker-readiness: also translates OpenAI-shaped
+    /// tool-calling messages into Anthropic's `tool_use`/`tool_result`
+    /// content blocks (previously dropped entirely -- see module-level
+    /// finding in docs/CATIA_VERTEX_DOCKER_READINESS.md, "tools/tool_choice
+    /// were never forwarded"):
+    /// - an OpenAI `role: "assistant"` message carrying `tool_calls`
+    ///   becomes an Anthropic assistant message whose `content` is an
+    ///   array of `{type: "tool_use", id, name, input}` blocks (plus a
+    ///   leading `{type: "text", text}` block if the message also had
+    ///   non-empty plain content, e.g. reasoning before the call).
+    /// - an OpenAI `role: "tool"` message (a tool RESULT, keyed by
+    ///   `tool_call_id`) becomes an Anthropic `role: "user"` message
+    ///   whose `content` is `[{type: "tool_result", tool_use_id, content}]`
+    ///   -- Anthropic has no separate "tool" role.
     fn convert_messages_to_native(messages: &[Value]) -> Vec<Value> {
         messages
             .iter()
@@ -55,10 +70,60 @@ impl AnthropicTranspiler {
             .map(|msg| {
                 let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
 
+                if role == "tool" {
+                    let tool_use_id = msg
+                        .get("tool_call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let content = msg.get("content").cloned().unwrap_or(Value::Null);
+                    return json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": content,
+                        }]
+                    });
+                }
+
+                if role == "assistant" {
+                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+                        if !tool_calls.is_empty() {
+                            let mut blocks: Vec<Value> = Vec::new();
+                            if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
+                                if !text.is_empty() {
+                                    blocks.push(json!({"type": "text", "text": text}));
+                                }
+                            }
+                            for tc in tool_calls {
+                                let function = tc.get("function").cloned().unwrap_or(Value::Null);
+                                let name = function
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let arguments_raw =
+                                    function.get("arguments").and_then(|v| v.as_str());
+                                let input: Value = arguments_raw
+                                    .and_then(|s| serde_json::from_str(s).ok())
+                                    .unwrap_or_else(|| json!({}));
+                                blocks.push(json!({
+                                    "type": "tool_use",
+                                    "id": tc.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "name": name,
+                                    "input": input,
+                                }));
+                            }
+                            return json!({"role": "assistant", "content": blocks});
+                        }
+                    }
+                }
+
                 // Anthropic only supports "user" and "assistant" roles
                 let mapped_role = match role {
                     "assistant" => "assistant",
-                    _ => "user", // "user", "function", "tool" → "user"
+                    _ => "user", // "user", "function" → "user"
                 };
 
                 json!({
@@ -67,6 +132,50 @@ impl AnthropicTranspiler {
                 })
             })
             .collect()
+    }
+
+    /// OpenAI `tools: [{type:"function", function:{name, description,
+    /// parameters}}]` -> Anthropic `tools: [{name, description,
+    /// input_schema}]`.
+    fn convert_tools_to_native(tools: &[Value]) -> Vec<Value> {
+        tools
+            .iter()
+            .filter_map(|t| {
+                let function = t.get("function")?;
+                Some(json!({
+                    "name": function.get("name").cloned().unwrap_or(Value::Null),
+                    "description": function.get("description").cloned().unwrap_or(json!("")),
+                    "input_schema": function.get("parameters").cloned().unwrap_or(json!({"type": "object", "properties": {}})),
+                }))
+            })
+            .collect()
+    }
+
+    /// OpenAI `tool_choice` (`"auto"` | `"none"` | `{type:"function",
+    /// function:{name}}`) -> Anthropic `tool_choice` (`{type:"auto"}` |
+    /// `{type:"any"}` | `{type:"tool", name}`). Anthropic has no direct
+    /// equivalent of OpenAI's `"none"` (force no tool use) -- mapped to
+    /// `{type:"auto"}` (closest available, logged) rather than silently
+    /// dropped or guessed further.
+    fn convert_tool_choice_to_native(tool_choice: &Value) -> Value {
+        match tool_choice {
+            Value::String(s) if s == "none" => {
+                warn!("Anthropic has no tool_choice=\"none\" equivalent, mapping to \"auto\"");
+                json!({"type": "auto"})
+            }
+            Value::String(_) => json!({"type": "auto"}),
+            Value::Object(_) => {
+                let name = tool_choice
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .cloned();
+                match name {
+                    Some(n) => json!({"type": "tool", "name": n}),
+                    None => json!({"type": "auto"}),
+                }
+            }
+            _ => json!({"type": "auto"}),
+        }
     }
 
     /// Converts OpenAI `stop` field (string or array) into Anthropic `stop_sequences` (array).
@@ -84,7 +193,36 @@ impl AnthropicTranspiler {
             Some("end_turn") => "stop",
             Some("max_tokens") => "length",
             Some("stop_sequence") => "stop",
+            Some("tool_use") => "tool_calls",
             _ => "stop",
+        }
+    }
+
+    /// Extracts `tool_use` content blocks from an Anthropic response into
+    /// OpenAI's `message.tool_calls` array shape
+    /// (`[{id, type:"function", function:{name, arguments: <JSON string>}}]`).
+    /// Returns `None` when there are no tool_use blocks (most responses),
+    /// so callers can omit the key entirely rather than emit `[]`.
+    fn extract_tool_calls(content_blocks: &[Value]) -> Option<Vec<Value>> {
+        let calls: Vec<Value> = content_blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+            .map(|b| {
+                let arguments = b.get("input").cloned().unwrap_or_else(|| json!({}));
+                json!({
+                    "id": b.get("id").cloned().unwrap_or(Value::Null),
+                    "type": "function",
+                    "function": {
+                        "name": b.get("name").cloned().unwrap_or(Value::Null),
+                        "arguments": serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".to_string()),
+                    }
+                })
+            })
+            .collect();
+        if calls.is_empty() {
+            None
+        } else {
+            Some(calls)
         }
     }
 }
@@ -150,6 +288,27 @@ impl PayloadTranspiler for AnthropicTranspiler {
             native.insert("stream".to_string(), stream.clone());
         }
 
+        // feature/catia-vertex-docker-readiness: tools/tool_choice were
+        // previously silently omitted (fell into the "unsupported
+        // field" branch below) -- real finding from an end-to-end run
+        // against Implementation Service's code-generation flow, which
+        // REQUIRES structured tool_call output; see convert_tools_to_native
+        // / convert_tool_choice_to_native docs above.
+        if let Some(tools) = obj.get("tools").and_then(|v| v.as_array()) {
+            if !tools.is_empty() {
+                native.insert(
+                    "tools".to_string(),
+                    Value::Array(Self::convert_tools_to_native(tools)),
+                );
+                if let Some(tool_choice) = obj.get("tool_choice") {
+                    native.insert(
+                        "tool_choice".to_string(),
+                        Self::convert_tool_choice_to_native(tool_choice),
+                    );
+                }
+            }
+        }
+
         // Log warnings for unsupported fields that are being omitted
         let supported_fields = [
             "model",
@@ -158,6 +317,8 @@ impl PayloadTranspiler for AnthropicTranspiler {
             "temperature",
             "stop",
             "stream",
+            "tools",
+            "tool_choice",
         ];
         for key in obj.keys() {
             if !supported_fields.contains(&key.as_str()) {
@@ -215,6 +376,13 @@ impl PayloadTranspiler for AnthropicTranspiler {
         let stop_reason = obj.get("stop_reason").and_then(|s| s.as_str());
         let finish_reason = Self::map_stop_reason(stop_reason);
 
+        // feature/catia-vertex-docker-readiness: tool_use blocks -> OpenAI
+        // message.tool_calls (see extract_tool_calls docs above).
+        let tool_calls = obj
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|blocks| Self::extract_tool_calls(blocks));
+
         // Extract usage
         let usage = obj.get("usage").cloned().unwrap_or_else(|| {
             json!({
@@ -233,6 +401,13 @@ impl PayloadTranspiler for AnthropicTranspiler {
             .unwrap_or(0);
 
         // Build OpenAI format response
+        let mut message = serde_json::Map::new();
+        message.insert("role".to_string(), json!("assistant"));
+        message.insert("content".to_string(), json!(content_text));
+        if let Some(calls) = tool_calls {
+            message.insert("tool_calls".to_string(), Value::Array(calls));
+        }
+
         let openai_response = json!({
             "id": id,
             "object": "chat.completion",
@@ -240,10 +415,7 @@ impl PayloadTranspiler for AnthropicTranspiler {
             "model": model,
             "choices": [{
                 "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": content_text
-                },
+                "message": Value::Object(message),
                 "finish_reason": finish_reason
             }],
             "usage": {
@@ -743,5 +915,144 @@ mod tests {
             openai["choices"][0]["message"]["content"],
             "First part. Second part."
         );
+    }
+
+    // ─── feature/catia-vertex-docker-readiness: tools/tool_choice ────────
+    // Real finding: these fields were previously silently dropped
+    // (fell into "unsupported field, log and omit"), breaking any
+    // tool-calling request -- exactly what CatIA's Implementation
+    // Service sends for code generation (see
+    // apps/catia/app/ai_gateway/melis/adapter.py in the CatIA_Discovery
+    // repo for the exact wire shape these tests mirror).
+
+    #[test]
+    fn test_to_native_tools_and_tool_choice_named_function() {
+        let transpiler = AnthropicTranspiler;
+        let request = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "gere o código"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "emit_code",
+                    "description": "Emite o código gerado",
+                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+                }
+            }],
+            "tool_choice": {"type": "function", "function": {"name": "emit_code"}}
+        });
+
+        let native = transpiler.to_native(&request).unwrap();
+
+        assert_eq!(native["tools"][0]["name"], "emit_code");
+        assert_eq!(native["tools"][0]["description"], "Emite o código gerado");
+        assert_eq!(native["tools"][0]["input_schema"]["type"], "object");
+        assert_eq!(native["tool_choice"], json!({"type": "tool", "name": "emit_code"}));
+    }
+
+    #[test]
+    fn test_to_native_tool_choice_auto_string() {
+        let transpiler = AnthropicTranspiler;
+        let request = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "oi"}],
+            "tools": [{"type": "function", "function": {"name": "x", "description": "", "parameters": {}}}],
+            "tool_choice": "auto"
+        });
+
+        let native = transpiler.to_native(&request).unwrap();
+        assert_eq!(native["tool_choice"], json!({"type": "auto"}));
+    }
+
+    #[test]
+    fn test_to_native_no_tools_means_no_tools_key() {
+        let transpiler = AnthropicTranspiler;
+        let request = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "oi"}]
+        });
+        let native = transpiler.to_native(&request).unwrap();
+        assert!(native.get("tools").is_none());
+        assert!(native.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn test_to_native_assistant_tool_calls_become_tool_use_blocks() {
+        let transpiler = AnthropicTranspiler;
+        let request = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [
+                {"role": "user", "content": "gere o código"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "emit_code", "arguments": "{\"path\": \"app.py\"}"}
+                    }]
+                },
+                {"role": "tool", "content": "arquivo criado", "tool_call_id": "call_1"}
+            ],
+        });
+
+        let native = transpiler.to_native(&request).unwrap();
+        let messages = native["messages"].as_array().unwrap();
+
+        // assistant message -> tool_use block
+        let assistant_msg = &messages[1];
+        assert_eq!(assistant_msg["role"], "assistant");
+        assert_eq!(assistant_msg["content"][0]["type"], "tool_use");
+        assert_eq!(assistant_msg["content"][0]["id"], "call_1");
+        assert_eq!(assistant_msg["content"][0]["name"], "emit_code");
+        assert_eq!(assistant_msg["content"][0]["input"]["path"], "app.py");
+
+        // tool result -> user message with tool_result block
+        let tool_result_msg = &messages[2];
+        assert_eq!(tool_result_msg["role"], "user");
+        assert_eq!(tool_result_msg["content"][0]["type"], "tool_result");
+        assert_eq!(tool_result_msg["content"][0]["tool_use_id"], "call_1");
+        assert_eq!(tool_result_msg["content"][0]["content"], "arquivo criado");
+    }
+
+    #[test]
+    fn test_from_native_tool_use_response_becomes_openai_tool_calls() {
+        let transpiler = AnthropicTranspiler;
+        let response = json!({
+            "id": "msg_1",
+            "model": "claude-sonnet-4-6",
+            "content": [
+                {"type": "tool_use", "id": "call_1", "name": "emit_code", "input": {"path": "app.py"}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 50, "output_tokens": 20}
+        });
+
+        let openai = transpiler.from_native(&response).unwrap();
+        let message = &openai["choices"][0]["message"];
+
+        assert_eq!(message["tool_calls"][0]["id"], "call_1");
+        assert_eq!(message["tool_calls"][0]["type"], "function");
+        assert_eq!(message["tool_calls"][0]["function"]["name"], "emit_code");
+        let args: serde_json::Value =
+            serde_json::from_str(message["tool_calls"][0]["function"]["arguments"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(args["path"], "app.py");
+        assert_eq!(openai["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[test]
+    fn test_from_native_text_only_response_has_no_tool_calls_key() {
+        let transpiler = AnthropicTranspiler;
+        let response = json!({
+            "id": "msg_1",
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "oi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 2}
+        });
+
+        let openai = transpiler.from_native(&response).unwrap();
+        assert!(openai["choices"][0]["message"].get("tool_calls").is_none());
     }
 }

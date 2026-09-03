@@ -10,6 +10,10 @@ routes.yaml
 # Env files
 .env
 .env.*
+# feature/catia-vertex-docker-readiness: placeholder-only template
+# (no real values -- same convention as config.yaml.example/
+# routes.yaml.example), meant to be committed.
+!deploy/catia-vertex-e2e/.env.catia-vertex-e2e.example
 
 # Logs
 *.log

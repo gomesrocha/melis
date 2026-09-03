@@ -15,6 +15,7 @@ mod state;
 mod middleware;
 pub mod streaming;
 mod transpiler;
+mod vertex_auth;
 
 #[cfg(test)]
 mod integration_tests;
@@ -30,6 +31,7 @@ use crate::middleware::rate_limiter::LocalTokenBucket;
 use crate::observability::{init_tracing, Metrics};
 use crate::route_config::RouteConfigManager;
 use crate::state::AppState;
+use crate::vertex_auth::VertexTokenCache;
 
 #[tokio::main]
 async fn main() {
@@ -86,6 +88,7 @@ async fn main() {
         http_client,
         metrics: Arc::new(Metrics::new()),
         redis_available: Arc::new(AtomicBool::new(true)),
+        vertex_token_cache: Arc::new(VertexTokenCache::new()),
     };
 
     let listener = tokio::net::TcpListener::bind(addr)
