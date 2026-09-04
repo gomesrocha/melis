@@ -137,7 +137,7 @@ providers:
     base_url: "https://api.openai.com/v1"
     api_key: "sk-proj-YOUR_KEY"
     weight: 1
-    timeout_secs: 60
+    timeout_secs: 60                # Max seconds to wait for provider response (default: 120, max: 600)
     models: ["gpt-4o", "gpt-4o-mini"]
 
   - id: "anthropic"
@@ -147,6 +147,14 @@ providers:
     weight: 1
     timeout_secs: 60
     models: ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+
+  - id: "ollama"
+    provider_type: "ollama"
+    base_url: "http://localhost:11434"
+    api_key: "ollama"
+    weight: 1
+    timeout_secs: 240               # Ollama local: use 240-300s for large prompts
+    models: ["llama3.2", "nomic-embed-text:latest"]
 
 rate_limit:
   burst_capacity: 100       # Max tokens in the bucket
@@ -188,6 +196,34 @@ routes_config_path: "./routes.yaml"
 | DeepSeek | `openai` | `https://api.deepseek.com/v1` |
 | Ollama | `ollama` | `http://localhost:11434` |
 | OCI GenAI | `oci_genai` | `https://<region>.oci.oraclecloud.com` |
+
+#### Provider Timeout (`timeout_secs`)
+
+Each provider has a configurable `timeout_secs` field that controls the maximum time (in seconds) the gateway waits for a response from that provider. This applies to both `/v1/chat/completions` and `/v1/embeddings`.
+
+| Setting | Value |
+|---------|-------|
+| Default | 120 seconds |
+| Minimum | 1 second |
+| Maximum | 600 seconds (10 minutes) |
+
+**When to increase:**
+- Running Ollama locally with large models (7B+) and long prompts → use 240–300s
+- Complex multi-step prompts that take over 2 minutes → use 300–600s
+- Cloud providers with occasional cold starts → use 90–120s
+
+**Example for Ollama local:**
+```yaml
+providers:
+  - id: "ollama"
+    provider_type: "ollama"
+    base_url: "http://host.docker.internal:11434"
+    api_key: "ollama"
+    timeout_secs: 240    # 4 minutes for long prompts
+    models: ["llama3.2-openclaw:16k", "nomic-embed-text:latest"]
+```
+
+If timeout is exceeded, the gateway returns HTTP 503 with a clear error message.
 
 ### routes.yaml
 

@@ -420,7 +420,7 @@ async fn chat_completions_handler(
                 .unwrap_or_else(|| "ollama".to_string());
             let timeout = pconfig
                 .map(|p| p.timeout())
-                .unwrap_or(Duration::from_secs(120));
+                .unwrap_or(Duration::from_secs(crate::balancer::DEFAULT_TIMEOUT_SECS));
             provider_type_used = ptype.clone();
 
             // Build forward URL

@@ -21,7 +21,7 @@ use crate::route_config::WeightedProvider;
 pub const MAX_RETRIES: usize = 2;
 
 /// Default timeout in seconds for provider requests.
-pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 /// Resolved endpoint information for a selected provider.
 #[derive(Debug, Clone)]

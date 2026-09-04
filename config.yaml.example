@@ -25,12 +25,15 @@ redis:
 # Provedores LLM — adicione seus provedores aqui
 providers:
   # Ollama (local)
+  # timeout_secs: tempo máximo (segundos) para aguardar resposta do provider.
+  # Para Ollama local com modelos grandes ou prompts longos, recomenda-se 240–300s.
+  # Default: 120s. Máximo: 600s.
   - id: "ollama"
     provider_type: "ollama"
     base_url: "http://localhost:11434"
     api_key: "ollama"
     weight: 1
-    timeout_secs: 120
+    timeout_secs: 240
     models: ["llama3.2", "mistral", "codellama", "nomic-embed-text:latest"]
 
   # OpenAI — descomente e insira sua chave
