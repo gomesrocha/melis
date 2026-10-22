@@ -149,6 +149,10 @@ pub fn normalize_chat_response(response: &Value) -> Value {
             usage.insert("total_tokens".to_string(), json!(prompt + completion));
         }
     }
+    if out.get("provider").and_then(Value::as_str).unwrap_or("").is_empty() {
+        out.as_object_mut()
+            .map(|body| body.insert("provider".to_string(), json!(PROVIDER_TYPE)));
+    }
     out
 }
 
@@ -296,6 +300,7 @@ mod tests {
             "usage": {"input_tokens": 4, "output_tokens": 6}
         });
         let normalized = normalize_chat_response(&raw);
+        assert_eq!(normalized["provider"], PROVIDER_TYPE);
         assert_eq!(normalized["model"], "qwen.qwen3-coder-next");
         assert_eq!(normalized["choices"][0]["message"]["content"], "ok");
         assert_eq!(normalized["usage"]["prompt_tokens"], 4);
