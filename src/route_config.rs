@@ -27,6 +27,7 @@ const KNOWN_PROVIDERS: &[&str] = &[
     "google_vertex_ai",
     "oci_genai",
     "ollama",
+    "bedrock",
 ];
 
 /// Errors that can occur during route configuration loading and validation.
@@ -41,7 +42,7 @@ pub enum RoutesConfigError {
     #[error("Campo obrigatório ausente na rota {route_index}: {field}")]
     MissingField { route_index: usize, field: String },
 
-    #[error("Provedor inválido '{provider}' na rota {route_index}. Valores aceitos: openai, anthropic, google_vertex_ai, oci_genai, ollama ou custom_providers registrados")]
+    #[error("Provedor inválido '{provider}' na rota {route_index}. Valores aceitos: openai, anthropic, google_vertex_ai, oci_genai, ollama, bedrock ou custom_providers registrados")]
     InvalidProvider {
         route_index: usize,
         provider: String,
@@ -71,6 +72,7 @@ pub enum ProviderType {
     GoogleVertexAi,
     OciGenai,
     Ollama,
+    Bedrock,
     #[serde(untagged)]
     Custom(String),
 }
@@ -733,6 +735,11 @@ routes:
         let pt: ProviderType = serde_yaml::from_str(yaml_ollama).unwrap();
         assert_eq!(pt, ProviderType::Ollama);
 
+        let yaml_bedrock = r#""bedrock""#;
+        let pt: ProviderType = serde_yaml::from_str(yaml_bedrock).unwrap();
+        assert_eq!(pt, ProviderType::Bedrock);
+        assert_ne!(pt, ProviderType::Openai);
+
         // Custom provider type
         let yaml_custom = r#""my_custom_provider""#;
         let pt: ProviderType = serde_yaml::from_str(yaml_custom).unwrap();
@@ -1191,9 +1198,42 @@ routes:
   - path: "/v1/ollama"
     method: "POST"
     provider: "ollama"
+  - path: "/v1/bedrock"
+    method: "POST"
+    provider: "bedrock"
+    model: "qwen.qwen3-coder-next"
 "#;
         let config: RouteConfigFile = serde_yaml::from_str(yaml).unwrap();
         assert!(validate(&config).is_ok());
+        assert_eq!(
+            config
+                .routes
+                .iter()
+                .find(|route| route.provider.as_deref() == Some("bedrock"))
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("qwen.qwen3-coder-next")
+        );
+    }
+
+    #[test]
+    fn openrouter_chat_route_remains_an_openai_provider() {
+        let yaml = r#"
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "openai"
+    token_optimization:
+      strategy: "adaptive_trimming"
+      max_history_messages: 20
+      compress_above_tokens: 4096
+      local_tokenizer: "cl100k_base"
+"#;
+        let config: RouteConfigFile = serde_yaml::from_str(yaml).unwrap();
+        assert!(validate(&config).is_ok());
+        assert_eq!(config.routes[0].provider.as_deref(), Some("openai"));
+        assert!(config.routes[0].model.is_none());
     }
 
     // ─── RouteConfigManager Tests ─────────────────────────────────────────────

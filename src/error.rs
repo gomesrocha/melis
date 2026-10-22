@@ -30,6 +30,9 @@ pub enum GatewayError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     #[error("Rate limit exceeded")]
     RateLimited { retry_after_secs: u64 },
 
@@ -59,6 +62,9 @@ impl IntoResponse for GatewayError {
                 "authentication_error",
                 msg.clone(),
             ),
+            GatewayError::Forbidden(msg) => {
+                (StatusCode::FORBIDDEN, "permission_error", msg.clone())
+            }
             GatewayError::RateLimited { retry_after_secs } => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate_limit_error",

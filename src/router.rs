@@ -266,7 +266,7 @@ async fn chat_completions_handler(
     let request_method = "POST";
 
     let resolver = state.route_config.current();
-    let resolved = resolve_route_config(
+    let mut resolved = resolve_route_config(
         &resolver,
         request_path,
         request_method,
@@ -359,6 +359,18 @@ async fn chat_completions_handler(
         .compaction_duration
         .observe(compaction_elapsed);
 
+    // A model declared by the Bedrock provider is served only by that provider.
+    // This is exact routing, not a failover path.
+    if let Some(owner) =
+        crate::bedrock::provider_for_exact_model(&state.gateway_config.providers, &effective_model)
+    {
+        resolved.providers = vec![WeightedProvider {
+            name: owner.id.clone(),
+            weight: 1,
+            model: effective_model.clone(),
+        }];
+    }
+
     // ─── Provider Selection & Failover Loop ──────────────────────────────────
     let mut excluded_providers: Vec<String> = Vec::new();
     let max_attempts = resolved.providers.len().min(3);
@@ -423,7 +435,9 @@ async fn chat_completions_handler(
             provider_type_used = ptype.clone();
 
             // Build forward URL
-            let url = if ptype == "anthropic" {
+            let url = if ptype == crate::bedrock::PROVIDER_TYPE {
+                crate::bedrock::chat_completions_url(&base_url)
+            } else if ptype == "anthropic" {
                 format!("{}/messages", base_url)
             } else if base_url.contains("/openai") || base_url.ends_with("/v1") {
                 format!("{}/chat/completions", base_url)
@@ -437,7 +451,28 @@ async fn chat_completions_handler(
                 reqwest::header::CONTENT_TYPE,
                 "application/json".parse().unwrap(),
             );
-            if !api_key.is_empty() && api_key != "ollama" {
+            let mut bearer_secret = String::new();
+            if ptype == crate::bedrock::PROVIDER_TYPE {
+                let provider = match pconfig {
+                    Some(provider) => provider,
+                    None => {
+                        break 'failover Err(GatewayError::Unauthorized(
+                            "Bedrock provider configuration is missing".to_string(),
+                        ));
+                    }
+                };
+                match crate::bedrock::ProviderCredential::from_provider(provider).resolve() {
+                    Ok(token) => {
+                        if let Err(error) =
+                            crate::bedrock::insert_bearer_header(&mut provider_headers, &token)
+                        {
+                            break 'failover Err(error);
+                        }
+                        bearer_secret = token;
+                    }
+                    Err(error) => break 'failover Err(error),
+                }
+            } else if !api_key.is_empty() && api_key != "ollama" {
                 if ptype == "anthropic" {
                     provider_headers.insert(
                         reqwest::header::HeaderName::from_static("x-api-key"),
@@ -468,6 +503,9 @@ async fn chat_completions_handler(
                         ));
                     }
                 }
+            } else if ptype == crate::bedrock::PROVIDER_TYPE {
+                let prepared = crate::bedrock::prepare_chat_body(&payload, &effective_model);
+                bytes::Bytes::from(serde_json::to_vec(&prepared).unwrap())
             } else {
                 bytes::Bytes::from(serde_json::to_vec(&payload).unwrap())
             };
@@ -538,6 +576,8 @@ async fn chat_completions_handler(
                                         json_response
                                     }
                                 }
+                            } else if ptype == crate::bedrock::PROVIDER_TYPE {
+                                crate::bedrock::normalize_chat_response(&json_response)
                             } else {
                                 json_response
                             };
@@ -594,6 +634,25 @@ async fn chat_completions_handler(
                         .with_label_values(&[&ptype, &status.to_string()])
                         .inc();
 
+                    if !crate::bedrock::retries_another_provider(&ptype) {
+                        if status == 429 {
+                            state
+                                .circuit_breaker
+                                .record_result(&selected_name, CallResult::RateLimited)
+                                .await;
+                        } else if status >= 500 {
+                            state
+                                .circuit_breaker
+                                .record_result(&selected_name, CallResult::Failure)
+                                .await;
+                        }
+                        break 'failover Err(crate::bedrock::http_status_error(
+                            status,
+                            &err_body,
+                            &bearer_secret,
+                            &effective_model,
+                        ));
+                    }
                     match status {
                         // Non-retryable errors — return immediately
                         400 => {
@@ -656,6 +715,18 @@ async fn chat_completions_handler(
                     }
                 }
                 Err(crate::client::ClientError::Timeout) => {
+                    if !crate::bedrock::retries_another_provider(&ptype) {
+                        state
+                            .circuit_breaker
+                            .record_result(&selected_name, CallResult::Timeout)
+                            .await;
+                        state
+                            .metrics
+                            .provider_errors_total
+                            .with_label_values(&[&ptype, "timeout"])
+                            .inc();
+                        break 'failover Err(crate::bedrock::timeout_error());
+                    }
                     backend_elapsed_time = provider_start.elapsed().as_secs_f64();
                     state
                         .metrics
@@ -682,6 +753,16 @@ async fn chat_completions_handler(
                     ));
                 }
                 Err(e) => {
+                    if !crate::bedrock::retries_another_provider(&ptype) {
+                        let safe = crate::bedrock::redact(&e.to_string(), &bearer_secret);
+                        state
+                            .circuit_breaker
+                            .record_result(&selected_name, CallResult::Failure)
+                            .await;
+                        break 'failover Err(GatewayError::ServiceUnavailable(format!(
+                            "Provider unavailable: {safe}"
+                        )));
+                    }
                     backend_elapsed_time = provider_start.elapsed().as_secs_f64();
                     state
                         .metrics

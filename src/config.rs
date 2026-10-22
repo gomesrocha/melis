@@ -96,6 +96,7 @@ pub struct ProviderConfig {
     pub id: String,
     pub provider_type: String,
     pub base_url: String,
+    #[serde(default)]
     pub api_key: String,
     #[serde(default = "default_weight")]
     pub weight: u32,
@@ -103,6 +104,22 @@ pub struct ProviderConfig {
     pub timeout_secs: u64,
     #[serde(default)]
     pub models: Vec<String>,
+    /// Bedrock Runtime region. Unused by the other provider types.
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Bedrock bearer-token source. The secret itself is never stored here.
+    #[serde(default)]
+    pub auth: Option<ProviderAuthConfig>,
+}
+
+/// Provider authentication descriptor.
+///
+/// `bearer_env` reads the named environment variable when a request is sent.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ProviderAuthConfig {
+    pub mode: String,
+    #[serde(default)]
+    pub env: Option<String>,
 }
 
 impl ProviderConfig {
@@ -480,7 +497,9 @@ impl GatewayConfig {
             if provider.base_url.trim().is_empty() {
                 errors.push(format!("providers[{}].base_url must not be empty", i));
             }
-            if provider.api_key.trim().is_empty() {
+            if provider.provider_type == crate::bedrock::PROVIDER_TYPE {
+                errors.extend(crate::bedrock::validate_provider(provider, i));
+            } else if provider.api_key.trim().is_empty() {
                 errors.push(format!("providers[{}].api_key must not be empty", i));
             }
             if provider.weight == 0 {
@@ -492,6 +511,7 @@ impl GatewayConfig {
                 "google_vertex_ai",
                 "oci_genai",
                 "ollama",
+                "bedrock",
             ];
             if !valid_types.contains(&provider.provider_type.as_str()) {
                 errors.push(format!(
@@ -684,6 +704,55 @@ redis:
             }
             _ => panic!("Expected ValidationError, got {:?}", err),
         }
+    }
+
+    #[test]
+    fn bedrock_provider_loads_without_an_inline_secret() {
+        let yaml = r#"
+server:
+  host: "0.0.0.0"
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+providers:
+  - id: "openrouter"
+    provider_type: "openai"
+    base_url: "https://openrouter.ai/api/v1"
+    api_key: "sk-test"
+    weight: 1
+    models:
+      - "qwen/qwen3-coder"
+  - id: "bedrock"
+    provider_type: "bedrock"
+    base_url: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"
+    weight: 1
+    region: "us-east-1"
+    auth:
+      mode: "bearer_env"
+      env: "AWS_BEARER_TOKEN_BEDROCK"
+    models:
+      - "qwen.qwen3-coder-next"
+"#;
+        let config = GatewayConfig::from_yaml(yaml).unwrap();
+        let bedrock = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == "bedrock")
+            .unwrap();
+        assert_eq!(bedrock.provider_type, "bedrock");
+        assert!(bedrock.api_key.is_empty());
+        assert_eq!(bedrock.region.as_deref(), Some("us-east-1"));
+        assert_eq!(bedrock.auth.as_ref().unwrap().mode, "bearer_env");
+        assert_eq!(
+            config
+                .providers
+                .iter()
+                .find(|provider| provider.id == "openrouter")
+                .unwrap()
+                .provider_type,
+            "openai"
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod balancer;
+mod bedrock;
 pub mod circuit_breaker;
 pub mod client;
 mod compactor;

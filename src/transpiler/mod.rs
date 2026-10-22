@@ -68,6 +68,9 @@ pub fn get_transpiler(provider_type: &str) -> Box<dyn PayloadTranspiler> {
     match provider_type {
         "anthropic" => Box::new(anthropic::AnthropicTranspiler),
         "google_vertex_ai" => Box::new(vertex::VertexTranspiler),
+        // Bedrock Runtime's OpenAI-compatible API uses the same chat body.
+        // The provider type itself stays `bedrock`.
+        "bedrock" => Box::new(openai::OpenAiTranspiler),
         // OpenAI, Ollama, OCI GenAI, and unknown providers use passthrough
         // since they are typically OpenAI-compatible
         _ => Box::new(openai::OpenAiTranspiler),
