@@ -128,6 +128,57 @@ pub struct WeightedProvider {
     pub model: String,
 }
 
+/// Semantic cache configuration per route (Phase 2).
+///
+/// Opt-in response cache keyed by (route + model + normalized-conversation embedding).
+/// All fields are optional with safe defaults so existing routes remain valid.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct SemanticCacheConfig {
+    /// Whether the semantic cache is enabled for this route. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Cosine-similarity threshold for a hit (applied at lookup time). Default: 0.92.
+    #[serde(default = "default_similarity_threshold")]
+    pub similarity_threshold: f64,
+    /// TTL applied to every cache entry, in seconds. Default: 3600.
+    #[serde(default = "default_cache_ttl_secs")]
+    pub ttl_secs: u64,
+    /// Maximum entries per (route, model) namespace. Default: 1000.
+    #[serde(default = "default_cache_max_entries")]
+    pub max_entries: u64,
+    /// Embedding model used for the conversation embedding. Default: nomic-embed-text.
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
+}
+
+impl Default for SemanticCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            similarity_threshold: default_similarity_threshold(),
+            ttl_secs: default_cache_ttl_secs(),
+            max_entries: default_cache_max_entries(),
+            embedding_model: default_embedding_model(),
+        }
+    }
+}
+
+fn default_similarity_threshold() -> f64 {
+    0.92
+}
+
+fn default_cache_ttl_secs() -> u64 {
+    3600
+}
+
+fn default_cache_max_entries() -> u64 {
+    1000
+}
+
+fn default_embedding_model() -> String {
+    "nomic-embed-text".to_string()
+}
+
 /// Definition of an individual route.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouteDefinition {
@@ -137,6 +188,9 @@ pub struct RouteDefinition {
     pub model: Option<String>,
     pub providers: Option<Vec<WeightedProvider>>,
     pub token_optimization: Option<TokenOptimizationConfig>,
+    /// Optional semantic cache configuration (Phase 2). Absent = disabled.
+    #[serde(default)]
+    pub semantic_cache: Option<SemanticCacheConfig>,
 }
 
 /// Custom provider registration.
@@ -356,8 +410,14 @@ impl RouteResolver {
 /// to detect modifications to the config file. When changes are detected, the new config
 /// is loaded, parsed, and validated. If valid, it's atomically swapped in; if invalid,
 /// the previous config is kept and a warning is emitted.
+/// Callback invoked when a route's effective model changes on hot reload.
+/// Receives (path, method, old_model). Used for best-effort cache cleanup.
+pub type ModelChangeHook = Arc<dyn Fn(String, String, String) + Send + Sync>;
+
 pub struct RouteConfigManager {
     config: Arc<ArcSwap<RouteResolver>>,
+    /// Optional hook fired on model change during hot reload (best-effort cache cleanup).
+    model_change_hook: Arc<arc_swap::ArcSwapOption<ModelChangeHook>>,
     _watcher_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -429,16 +489,32 @@ impl RouteConfigManager {
                 );
             });
 
+        let model_change_hook: Arc<arc_swap::ArcSwapOption<ModelChangeHook>> =
+            Arc::new(arc_swap::ArcSwapOption::from(None));
+
         // 3. Spawn Tokio task to process file change events with debouncing
         let config_clone = Arc::clone(&config);
+        let hook_clone = Arc::clone(&model_change_hook);
         let reload_path = config_path;
-        let watcher_handle =
-            tokio::spawn(Self::reload_loop(rx, config_clone, reload_path, watcher));
+        let watcher_handle = tokio::spawn(Self::reload_loop(
+            rx,
+            config_clone,
+            hook_clone,
+            reload_path,
+            watcher,
+        ));
 
         RouteConfigManager {
             config,
+            model_change_hook,
             _watcher_handle: watcher_handle,
         }
+    }
+
+    /// Registers a callback fired when a route's model changes on hot reload.
+    /// Used to trigger best-effort semantic cache cleanup of the old namespace.
+    pub fn set_model_change_hook(&self, hook: ModelChangeHook) {
+        self.model_change_hook.store(Some(Arc::new(hook)));
     }
 
     /// Returns the current RouteResolver (lock-free via ArcSwap).
@@ -461,6 +537,7 @@ impl RouteConfigManager {
         let watcher_handle = tokio::spawn(async {});
         RouteConfigManager {
             config,
+            model_change_hook: Arc::new(arc_swap::ArcSwapOption::from(None)),
             _watcher_handle: watcher_handle,
         }
     }
@@ -472,6 +549,7 @@ impl RouteConfigManager {
     async fn reload_loop(
         mut rx: mpsc::Receiver<()>,
         config: Arc<ArcSwap<RouteResolver>>,
+        model_change_hook: Arc<arc_swap::ArcSwapOption<ModelChangeHook>>,
         config_path: PathBuf,
         _watcher: RecommendedWatcher, // Keep watcher alive for the lifetime of this task
     ) {
@@ -489,26 +567,67 @@ impl RouteConfigManager {
             }
 
             // Attempt reload
-            Self::try_reload(&config, &config_path);
+            Self::try_reload(&config, &model_change_hook, &config_path);
         }
+    }
+
+    /// Builds a map of (path, method_uppercase) -> effective model for a config.
+    /// Used to detect model changes across reloads for cache cleanup.
+    fn route_model_map(config: &RouteConfigFile) -> HashMap<(String, String), String> {
+        let mut map = HashMap::new();
+        for route in &config.routes {
+            let model = route
+                .model
+                .clone()
+                .or_else(|| {
+                    route
+                        .providers
+                        .as_ref()
+                        .and_then(|ps| ps.first())
+                        .map(|p| p.model.clone())
+                })
+                .unwrap_or_default();
+            map.insert((route.path.clone(), route.method.to_uppercase()), model);
+        }
+        map
     }
 
     /// Attempts to reload the configuration from disk.
     ///
     /// If the new config is valid, performs an atomic swap. If invalid,
     /// keeps the previous config and logs a warning.
-    fn try_reload(config: &Arc<ArcSwap<RouteResolver>>, config_path: &Path) {
+    fn try_reload(
+        config: &Arc<ArcSwap<RouteResolver>>,
+        model_change_hook: &Arc<arc_swap::ArcSwapOption<ModelChangeHook>>,
+        config_path: &Path,
+    ) {
         tracing::info!("Detected route config file change, attempting reload...");
 
         match load_routes(config_path) {
             Ok(new_config_file) => match validate(&new_config_file) {
                 Ok(()) => {
+                    // Detect model changes per route (for best-effort cache cleanup).
+                    let old_models = Self::route_model_map(config.load().config());
+                    let new_models = Self::route_model_map(&new_config_file);
+
                     let new_resolver = RouteResolver::new(new_config_file);
                     config.store(Arc::new(new_resolver));
                     tracing::info!(
                         "Route config reloaded successfully from '{}'",
                         config_path.display()
                     );
+
+                    // Fire the model-change hook for any route whose model changed.
+                    if let Some(hook) = model_change_hook.load_full() {
+                        for ((path, method), old_model) in &old_models {
+                            if let Some(new_model) = new_models.get(&(path.clone(), method.clone()))
+                            {
+                                if new_model != old_model && !old_model.is_empty() {
+                                    hook(path.clone(), method.clone(), old_model.clone());
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(errors) => {
                     let error_msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
@@ -1476,6 +1595,7 @@ mod property_tests {
                     model: Some(model),
                     providers: None,
                     token_optimization: token_opt,
+                    semantic_cache: None,
                 },
             )
     }
@@ -1498,6 +1618,7 @@ mod property_tests {
                     model: Some("gpt-4o".to_string()),
                     providers: None,
                     token_optimization: None,
+                    semantic_cache: None,
                 }]
             } else {
                 unique_routes
@@ -1537,6 +1658,7 @@ mod property_tests {
                     model: None,
                     providers: None,
                     token_optimization: None,
+                    semantic_cache: None,
                 }],
                 custom_providers: vec![],
             };
@@ -1561,6 +1683,7 @@ mod property_tests {
                     model: None,
                     providers: None,
                     token_optimization: None,
+                    semantic_cache: None,
                 }],
                 custom_providers: vec![],
             };
@@ -1585,6 +1708,7 @@ mod property_tests {
                     model: None,
                     providers: None,
                     token_optimization: None,
+                    semantic_cache: None,
                 }],
                 custom_providers: vec![],
             };
@@ -1613,6 +1737,7 @@ mod property_tests {
                     model: None,
                     providers: None,
                     token_optimization: None,
+                    semantic_cache: None,
                 }],
                 custom_providers: vec![],
             };
@@ -1650,6 +1775,7 @@ mod property_tests {
                 model: Some(route_model.clone()),
                 providers: None,
                 token_optimization: None,
+                semantic_cache: None,
             };
 
             let effective_model = route.model.as_deref().unwrap_or(&payload_model);
@@ -1669,6 +1795,7 @@ mod property_tests {
                 model: None,
                 providers: None,
                 token_optimization: None,
+                semantic_cache: None,
             };
 
             let effective_model = route.model.as_deref().unwrap_or(&payload_model);
@@ -1708,6 +1835,7 @@ mod property_tests {
                     min_final_tokens: None,
                     critical_markers: None,
                 }),
+                semantic_cache: None,
             };
 
             let global = CompactorConfig {
@@ -1746,6 +1874,7 @@ mod property_tests {
                 model: None,
                 providers: None,
                 token_optimization: None,
+                semantic_cache: None,
             };
 
             let global = CompactorConfig {
@@ -1821,7 +1950,9 @@ mod property_tests {
             std::fs::write(&config_path, &invalid_content).unwrap();
 
             // Call try_reload - it should NOT swap in the invalid config
-            RouteConfigManager::try_reload(&arc_config, &config_path);
+            let no_hook: Arc<arc_swap::ArcSwapOption<ModelChangeHook>> =
+                Arc::new(arc_swap::ArcSwapOption::from(None));
+            RouteConfigManager::try_reload(&arc_config, &no_hook, &config_path);
 
             // Verify previous config is still active
             let current = arc_config.load();
@@ -1871,6 +2002,7 @@ mod property_tests {
                     model: Some(model.clone()),
                     providers: None,
                     token_optimization: None,
+                    semantic_cache: None,
                 })
                 .collect();
 
@@ -1924,6 +2056,7 @@ mod property_tests {
                     model: Some(model.clone()),
                     providers: None,
                     token_optimization: None,
+                    semantic_cache: None,
                 })
                 .collect();
 
@@ -1962,6 +2095,7 @@ mod property_tests {
                     model: Some(model.clone()),
                     providers: None,
                     token_optimization: None,
+                    semantic_cache: None,
                 }],
                 custom_providers: vec![],
             };

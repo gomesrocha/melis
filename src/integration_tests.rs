@@ -54,6 +54,8 @@ auth:
             http_client: Arc::new(ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
         }
     }
 
@@ -524,6 +526,97 @@ auth:
             "default config should count in estimated mode exactly once"
         );
         assert_eq!(real, 0, "real mode must not be used with default config");
+    }
+
+    // ─── Semantic cache: handler fail-open when embeddings unavailable ───────
+
+    /// Builds an AppState whose route config enables the semantic cache on
+    /// `/v1/chat/completions`, using a temp routes.yaml. No Ollama provider is
+    /// configured, so embedding computation fails and the cache must fail open.
+    fn build_cache_enabled_app_state(
+        dir: &tempfile::TempDir,
+    ) -> (AppState, std::sync::Arc<Metrics>) {
+        use crate::route_config::RouteConfigManager;
+
+        let routes_path = dir.path().join("routes.yaml");
+        std::fs::write(
+            &routes_path,
+            r#"
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "ollama"
+    model: "llama3.2"
+    semantic_cache:
+      enabled: true
+      similarity_threshold: 0.92
+      ttl_secs: 3600
+      max_entries: 1000
+      embedding_model: "nomic-embed-text"
+"#,
+        )
+        .unwrap();
+
+        let yaml = r#"
+server:
+  host: "0.0.0.0"
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+auth:
+  enabled: false
+"#;
+        let gateway_config = GatewayConfig::from_yaml(yaml).unwrap();
+        let route_config = RouteConfigManager::new(routes_path);
+        let metrics = Arc::new(Metrics::new());
+
+        let state = AppState {
+            route_config: Arc::new(route_config),
+            gateway_config: Arc::new(gateway_config),
+            rate_limiter: Arc::new(LocalTokenBucket::new()),
+            load_balancer: Arc::new(WeightedRoundRobin::new()),
+            circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+            http_client: Arc::new(ReqwestLlmClient::new()),
+            metrics: metrics.clone(),
+            redis_available: Arc::new(AtomicBool::new(true)),
+            // No Redis connection in tests → disabled cache; embeddings also absent.
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+        };
+        (state, metrics)
+    }
+
+    #[tokio::test]
+    async fn test_semantic_cache_fail_open_when_embeddings_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, metrics) = build_cache_enabled_app_state(&dir);
+        let app = build_router(state);
+
+        let payload = serde_json::json!({
+            "model": "llama3.2",
+            "messages": [{"role": "user", "content": "summarize document X"}]
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        // The request may ultimately 503 (no live provider), but the cache must
+        // degrade gracefully first: embeddings unavailable → melis_cache_degraded.
+        let _response = app.oneshot(request).await.unwrap();
+
+        let degraded = metrics
+            .cache_degraded
+            .with_label_values(&["embeddings"])
+            .get();
+        assert!(
+            degraded >= 1,
+            "expected melis_cache_degraded{{reason=embeddings}} to increment on fail-open"
+        );
     }
 
     // ─── Test: Readiness state toggle ────────────────────────────────────────

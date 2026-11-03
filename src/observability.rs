@@ -130,6 +130,18 @@ pub struct Metrics {
     pub fallback_mode_total: IntCounterVec,
     /// Counter of token-counting operations, labeled by mode (`real` or `estimated`).
     pub token_counting_mode: IntCounterVec,
+    /// Total semantic cache hits.
+    pub cache_hits_total: IntCounter,
+    /// Total semantic cache misses.
+    pub cache_misses_total: IntCounter,
+    /// Histogram of semantic cache lookup duration in seconds.
+    pub cache_lookup_seconds: Histogram,
+    /// Histogram of cache entry age (seconds) at hit time.
+    pub cache_entry_age_seconds: Histogram,
+    /// Counter of cache degradations (fail-open), labeled by reason (redis/embeddings).
+    pub cache_degraded: IntCounterVec,
+    /// Gauge of cache entry count per namespace.
+    pub cache_entries: IntGaugeVec,
     /// The Prometheus registry holding all metrics.
     pub registry: Registry,
 }
@@ -309,6 +321,57 @@ impl Metrics {
         )
         .expect("failed to create melis_token_counting_mode metric");
 
+        let cache_hits_total = IntCounter::with_opts(Opts::new(
+            "melis_cache_hits_total",
+            "Total semantic cache hits",
+        ))
+        .expect("failed to create melis_cache_hits_total metric");
+
+        let cache_misses_total = IntCounter::with_opts(Opts::new(
+            "melis_cache_misses_total",
+            "Total semantic cache misses",
+        ))
+        .expect("failed to create melis_cache_misses_total metric");
+
+        // Buckets tuned to measure the p95 < 5ms lookup budget at default capacity.
+        let cache_lookup_buckets = vec![0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05];
+        let cache_lookup_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "melis_cache_lookup_seconds",
+                "Semantic cache lookup duration in seconds",
+            )
+            .buckets(cache_lookup_buckets),
+        )
+        .expect("failed to create melis_cache_lookup_seconds metric");
+
+        let cache_entry_age_buckets = vec![1.0, 10.0, 60.0, 300.0, 900.0, 3600.0, 21600.0];
+        let cache_entry_age_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "melis_cache_entry_age_seconds",
+                "Age of a cache entry (seconds) at hit time",
+            )
+            .buckets(cache_entry_age_buckets),
+        )
+        .expect("failed to create melis_cache_entry_age_seconds metric");
+
+        let cache_degraded = IntCounterVec::new(
+            Opts::new(
+                "melis_cache_degraded",
+                "Semantic cache degradations (fail-open) by reason",
+            ),
+            &["reason"],
+        )
+        .expect("failed to create melis_cache_degraded metric");
+
+        let cache_entries = IntGaugeVec::new(
+            Opts::new(
+                "melis_cache_entries",
+                "Semantic cache entry count per namespace",
+            ),
+            &["namespace"],
+        )
+        .expect("failed to create melis_cache_entries metric");
+
         registry
             .register(Box::new(requests_total.clone()))
             .expect("failed to register melis_gateway_requests_total");
@@ -369,6 +432,24 @@ impl Metrics {
         registry
             .register(Box::new(token_counting_mode.clone()))
             .expect("failed to register melis_token_counting_mode");
+        registry
+            .register(Box::new(cache_hits_total.clone()))
+            .expect("failed to register melis_cache_hits_total");
+        registry
+            .register(Box::new(cache_misses_total.clone()))
+            .expect("failed to register melis_cache_misses_total");
+        registry
+            .register(Box::new(cache_lookup_seconds.clone()))
+            .expect("failed to register melis_cache_lookup_seconds");
+        registry
+            .register(Box::new(cache_entry_age_seconds.clone()))
+            .expect("failed to register melis_cache_entry_age_seconds");
+        registry
+            .register(Box::new(cache_degraded.clone()))
+            .expect("failed to register melis_cache_degraded");
+        registry
+            .register(Box::new(cache_entries.clone()))
+            .expect("failed to register melis_cache_entries");
 
         // Initialize metrics with known labels so they appear in /metrics even before first use
         provider_errors_total
@@ -396,6 +477,9 @@ impl Metrics {
         token_counting_mode
             .with_label_values(&["estimated"])
             .inc_by(0);
+        // Cache degradation reasons present from boot.
+        cache_degraded.with_label_values(&["redis"]).inc_by(0);
+        cache_degraded.with_label_values(&["embeddings"]).inc_by(0);
 
         Self {
             requests_total,
@@ -418,6 +502,12 @@ impl Metrics {
             model_substitution_total,
             fallback_mode_total,
             token_counting_mode,
+            cache_hits_total,
+            cache_misses_total,
+            cache_lookup_seconds,
+            cache_entry_age_seconds,
+            cache_degraded,
+            cache_entries,
             registry,
         }
     }

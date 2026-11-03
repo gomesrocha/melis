@@ -463,6 +463,8 @@ mod tests {
             http_client: Arc::new(crate::client::ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
         };
 
         Router::new()
@@ -626,6 +628,8 @@ rate_limit:
             http_client: Arc::new(crate::client::ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
         };
 
         let app = Router::new()

@@ -55,6 +55,9 @@ pub struct ResolvedRoute {
     /// If single `provider` is defined, this contains a single entry with weight 1.
     /// Empty if no provider info is available.
     pub providers: Vec<WeightedProvider>,
+    /// Effective semantic cache configuration for the route (Phase 2).
+    /// `None` when the route does not opt in (cache disabled).
+    pub semantic_cache: Option<crate::route_config::SemanticCacheConfig>,
 }
 
 /// Builds the main application router with all endpoints.
@@ -288,6 +291,92 @@ async fn chat_completions_handler(
         streaming = streaming,
         "Route resolved for /v1/chat/completions"
     );
+
+    // ─── Semantic Cache Lookup (Phase 2) ──────────────────────────────────────
+    // Only when the route opts in. The normalized conversation embedding and a
+    // stable entry id are computed up front and reused for store-on-miss.
+    let mut cache_ctx: Option<crate::semantic_cache::CacheKeyCtx> = None;
+    let mut cache_entry_id: Option<String> = None;
+    let mut cache_embedding: Option<Vec<f64>> = None;
+
+    if let Some(sc) = resolved.semantic_cache.clone() {
+        let messages = payload
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let normalized = crate::semantic_cache::normalize_conversation(&messages);
+        let ctx = crate::semantic_cache::CacheKeyCtx {
+            route_path: request_path.to_string(),
+            route_method: request_method.to_string(),
+            model: effective_model.clone(),
+            threshold: sc.similarity_threshold,
+            ttl_secs: sc.ttl_secs,
+            max_entries: sc.max_entries,
+        };
+
+        let lookup_start = Instant::now();
+        // Compute the embedding via the embeddings backend (fail-open on error).
+        match crate::embeddings::embed_single(&state, &sc.embedding_model, &normalized).await {
+            Some(embedding) => {
+                let outcome = state.semantic_cache.lookup(&ctx, &embedding).await;
+                state
+                    .metrics
+                    .cache_lookup_seconds
+                    .observe(lookup_start.elapsed().as_secs_f64());
+                match outcome {
+                    crate::semantic_cache::CacheLookup::Hit(cached) => {
+                        state.metrics.cache_hits_total.inc();
+                        let age =
+                            crate::semantic_cache::now_unix().saturating_sub(cached.stored_at_unix);
+                        state.metrics.cache_entry_age_seconds.observe(age as f64);
+                        tracing::info!(
+                            route = %request_path,
+                            model = %effective_model,
+                            "semantic cache hit"
+                        );
+                        // Outbound guardrail (Phase 2: no-op; Phase 3 filters here).
+                        let body = state.outbound_guardrail.apply(cached.body);
+                        state
+                            .metrics
+                            .requests_total
+                            .with_label_values(&[request_path, "unknown", "200"])
+                            .inc();
+                        if streaming || cached.was_streaming {
+                            return Ok(cache_hit_sse_response(&body));
+                        }
+                        return Ok(Json(body).into_response());
+                    }
+                    crate::semantic_cache::CacheLookup::Miss => {
+                        state.metrics.cache_misses_total.inc();
+                        cache_embedding = Some(embedding);
+                    }
+                    crate::semantic_cache::CacheLookup::Degraded(reason) => {
+                        state
+                            .metrics
+                            .cache_degraded
+                            .with_label_values(&[reason.label()])
+                            .inc();
+                        tracing::warn!(
+                            reason = reason.label(),
+                            "semantic cache degraded; fail-open"
+                        );
+                    }
+                }
+            }
+            None => {
+                state
+                    .metrics
+                    .cache_degraded
+                    .with_label_values(&[crate::semantic_cache::DegradeReason::Embeddings.label()])
+                    .inc();
+                tracing::warn!("semantic cache: embeddings unavailable; fail-open");
+            }
+        }
+
+        cache_entry_id = Some(crate::semantic_cache::entry_id_for(&normalized));
+        cache_ctx = Some(ctx);
+    }
 
     // ─── Context Compaction ───────────────────────────────────────────────────
     // Resolve the token counter for this request from the effective route config.
@@ -602,6 +691,19 @@ async fn chat_completions_handler(
                             // it (or returned zeros) and real counting is enabled for this route.
                             fill_usage_if_missing(&mut final_response, &payload, &token_counter);
 
+                            // ─── Semantic cache store on miss (Phase 2) ──────────
+                            if let (Some(ctx), Some(entry_id), Some(embedding)) =
+                                (&cache_ctx, &cache_entry_id, &cache_embedding)
+                            {
+                                state
+                                    .semantic_cache
+                                    .store(ctx, entry_id, embedding, &final_response, false)
+                                    .await;
+                            }
+
+                            // Outbound guardrail (Phase 2: no-op; Phase 3 filters here).
+                            let final_response = state.outbound_guardrail.apply(final_response);
+
                             // Record token metrics
                             if let Some(usage) = final_response.get("usage") {
                                 let prompt_tokens = usage
@@ -859,6 +961,55 @@ async fn chat_completions_handler(
     Ok(response)
 }
 
+/// Builds an SSE response that replays a cached (non-streaming) OpenAI response
+/// as a single `chat.completion.chunk` followed by `[DONE]`.
+///
+/// This lets streaming clients benefit from the cache: the assistant content from
+/// the cached `choices[0].message.content` is emitted as one delta chunk.
+fn cache_hit_sse_response(body: &Value) -> Response {
+    use axum::response::sse::{Event, Sse};
+    use futures_util::stream;
+
+    let id = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("chatcmpl-cache")
+        .to_string();
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let content = body
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|c| c.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+    let created = body.get("created").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    let chunk = serde_json::json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {"role": "assistant", "content": content},
+            "finish_reason": "stop"
+        }]
+    });
+
+    let events: Vec<Result<Event, std::convert::Infallible>> = vec![
+        Ok(Event::default().data(chunk.to_string())),
+        Ok(Event::default().data("[DONE]")),
+    ];
+    Sse::new(stream::iter(events)).into_response()
+}
+
 /// Fills the `usage` field of an OpenAI response with real token counts when the
 /// provider omitted it (or returned zeros) and real token counting is enabled.
 ///
@@ -945,10 +1096,14 @@ fn resolve_route_config(
             // Provider list for load balancer
             let providers = extract_providers(route);
 
+            // Semantic cache: only carried when the route opts in (enabled).
+            let semantic_cache = route.semantic_cache.clone().filter(|c| c.enabled);
+
             ResolvedRoute {
                 model: effective_model,
                 effective_token_config,
                 providers,
+                semantic_cache,
             }
         }
         None => {
@@ -962,6 +1117,7 @@ fn resolve_route_config(
                 model: payload_model.to_string(),
                 effective_token_config: global_compactor.clone(),
                 providers: Vec::new(),
+                semantic_cache: None,
             }
         }
     }
@@ -1466,6 +1622,8 @@ routes_config_path: "./routes.yaml"
             http_client: Arc::new(ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
         };
 
         build_router(app_state)
@@ -1668,6 +1826,8 @@ routes_config_path: "./routes.yaml"
             http_client: Arc::new(ReqwestLlmClient::new()),
             metrics: Arc::new(Metrics::new()),
             redis_available: Arc::new(AtomicBool::new(false)), // Redis unavailable
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
         };
 
         let app = build_router(app_state);

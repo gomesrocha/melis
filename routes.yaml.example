@@ -9,6 +9,7 @@
 #   provider - Nome do provedor (deve existir no config.yaml ou custom_providers)
 #   model    - Modelo padrão (override do payload do cliente)
 #   token_optimization - Configuração de compressão (opcional)
+#   semantic_cache     - Cache de respostas por rota (opcional, opt-in)
 
 # Provedores customizados (não são os 5 built-in)
 # Registre aqui qualquer provedor OpenAI-compatible
@@ -37,6 +38,22 @@ routes:
       max_history_messages: 20
       compress_above_tokens: 4096
       local_tokenizer: "cl100k_base"
+
+  # ─── Exemplo: rota com cache semântico (opt-in) ─────────────────
+  # Respostas são cacheadas por (rota + modelo + embedding da conversa).
+  # Requer Redis (config.yaml) e um provedor Ollama para embeddings.
+  # Fail-open: sem Redis/Ollama o cache desliga (warn + melis_cache_degraded),
+  # sem impacto no caminho crítico.
+  # - path: "/v1/chat/cached"
+  #   method: "POST"
+  #   provider: "ollama"
+  #   model: "llama3.2"
+  #   semantic_cache:
+  #     enabled: true                  # default false
+  #     similarity_threshold: 0.92     # cosseno mínimo p/ hit (aplicado no lookup)
+  #     ttl_secs: 3600                 # TTL de toda entrada (obrigatório)
+  #     max_entries: 1000              # máx. entradas por namespace (rota+modelo)
+  #     embedding_model: "nomic-embed-text"
 
   # Adicione mais rotas conforme necessário:
   # - path: "/v1/chat/openai"

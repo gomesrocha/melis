@@ -38,6 +38,7 @@ Melis is a **stateless, ultra-high-performance AI Gateway** written in Rust that
 - **SSE streaming** — token-by-token streaming with Server-Sent Events
 - **Context compression** — adaptive trimming and sliding window strategies
 - **Real BPE token counting** — opt-in precise tokenization (tiktoken `cl100k_base`/`o200k_base`), with a safe char-count fallback
+- **Semantic response cache** — opt-in per-route cache keyed by conversation embedding (Redis + Ollama), fail-open
 - **Load balancing** — weighted round-robin with automatic failover
 - **Circuit breaker** — per-provider, with exponential backoff recovery
 - **Failover/retry** — automatic fallback to healthy providers
@@ -246,6 +247,12 @@ routes:
 | `token_optimization.max_history_messages` | Max messages to keep in conversation history |
 | `token_optimization.compress_above_tokens` | Token threshold to trigger compression |
 | `token_optimization.local_tokenizer` | Tokenizer for counting (e.g., `cl100k_base`) |
+| `semantic_cache` | Per-route response cache settings (optional, opt-in) |
+| `semantic_cache.enabled` | Enable the cache for this route (default `false`) |
+| `semantic_cache.similarity_threshold` | Cosine threshold for a hit (default `0.92`) |
+| `semantic_cache.ttl_secs` | TTL applied to every entry (default `3600`) |
+| `semantic_cache.max_entries` | Max entries per (route, model) namespace (default `1000`) |
+| `semantic_cache.embedding_model` | Embedding model (default `nomic-embed-text`) |
 
 ---
 
@@ -483,6 +490,67 @@ The system prompt and recent context are preserved. Older messages are trimmed.
 
 ---
 
+## Semantic Cache
+
+Melis can cache responses per route and return them for semantically-equivalent
+requests, skipping the provider entirely. It is **opt-in per route** and
+**fail-open**: if Redis or the embeddings backend is unavailable, the cache
+disables itself (logs a warning, increments `melis_cache_degraded`) and the
+request proceeds normally.
+
+### How it works
+
+1. **Normalize** — the non-system messages are concatenated, lowercased, and
+   whitespace-collapsed.
+2. **Embed** — the normalized conversation is embedded via the configured Ollama
+   model (default `nomic-embed-text`).
+3. **Lookup** — all entries in the `(route, model)` namespace are fetched in a
+   single Redis round-trip and compared by cosine similarity. If the best match
+   is `>= similarity_threshold`, it is a **hit** (no provider call).
+4. **Store on miss** — the provider response is stored with a TTL and indexed for
+   the namespace; the oldest entries are evicted when `max_entries` is exceeded.
+
+Cache hits are delivered through the same outbound path as normal responses
+(reserved for output guardrails in a later phase). Streaming requests replay a
+cached response as an OpenAI SSE stream.
+
+### Configuration (per route in `routes.yaml`)
+
+```yaml
+routes:
+  - path: "/v1/chat/cached"
+    method: "POST"
+    provider: "ollama"
+    model: "llama3.2"
+    semantic_cache:
+      enabled: true                 # default false
+      similarity_threshold: 0.92    # cosine threshold applied at lookup
+      ttl_secs: 3600                # TTL on every entry (required)
+      max_entries: 1000             # per (route, model) namespace
+      embedding_model: "nomic-embed-text"
+```
+
+### Key design points
+
+- **Key = route + model + conversation embedding.** The same conversation on a
+  different route or model is a distinct entry (no cross-context leakage).
+- **Threshold is a query parameter**, not part of the key. Changing it only
+  changes the hit rate — no invalidation needed.
+- **Model invalidation is implicit by namespace**, backed by a mandatory TTL and a
+  best-effort background cleanup (`SCAN`+`DEL`) when a route's model changes on
+  hot reload. The request path never blocks on cleanup.
+- **Batch fetch:** a namespace scan reads all candidate embeddings in one Redis
+  round-trip (not one per candidate), keeping lookup latency low (p95 < 5 ms at
+  the default 1000-entry capacity).
+
+### Out of scope (v1)
+
+Multi-turn incremental/prefix caching and real LSH bucketing are tracked as
+future work; v1 keys on the full normalized conversation with a bounded
+brute-force scan.
+
+---
+
 ## Monitoring & Observability
 
 ### Prometheus Metrics
@@ -513,6 +581,12 @@ Melis exposes all metrics at `GET /metrics` in Prometheus text exposition format
 | `melis_model_substitution_total` | Counter | `requested_model`, `resolved_model`, `reason` | Model substitution events |
 | `melis_fallback_mode_total` | Counter | `original_provider`, `fallback_provider`, `reason` | Fallback mode activations |
 | `melis_token_counting_mode` | Counter | `mode` | Token-counting operations by mode (`real` or `estimated`) |
+| `melis_cache_hits_total` | Counter | — | Semantic cache hits |
+| `melis_cache_misses_total` | Counter | — | Semantic cache misses |
+| `melis_cache_lookup_seconds` | Histogram | — | Semantic cache lookup duration |
+| `melis_cache_entry_age_seconds` | Histogram | — | Age of a cache entry at hit time |
+| `melis_cache_degraded` | Counter | `reason` | Cache fail-open events (`redis` or `embeddings`) |
+| `melis_cache_entries` | Gauge | `namespace` | Cache entry count per (route, model) namespace |
 
 ### Grafana Setup
 

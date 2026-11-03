@@ -38,4 +38,8 @@ pub struct AppState {
     /// Used by the readiness probe (`/readyz`).
     // TODO: Ping Redis connection pool to update this flag periodically.
     pub redis_available: Arc<AtomicBool>,
+    /// Semantic response cache (Phase 2). `DisabledCache` when Redis is unavailable.
+    pub semantic_cache: Arc<dyn crate::semantic_cache::SemanticCache>,
+    /// Outbound guardrail hook (Phase 2: no-op; reserved for Phase 3 filtering).
+    pub outbound_guardrail: Arc<dyn crate::semantic_cache::OutboundGuardrail>,
 }

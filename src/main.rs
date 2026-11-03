@@ -11,6 +11,7 @@ pub mod observability;
 mod route_config;
 mod router;
 mod routing;
+mod semantic_cache;
 mod state;
 mod tokenizer;
 
@@ -78,6 +79,32 @@ async fn main() {
     // Initialize HTTP client for LLM providers
     let http_client = Arc::new(ReqwestLlmClient::new());
 
+    let metrics = Arc::new(Metrics::new());
+
+    // Initialize the semantic cache (Phase 2). Fail-open: if Redis cannot be
+    // reached/configured, fall back to a no-op cache so boot never blocks.
+    let semantic_cache = build_semantic_cache(&gateway_config, metrics.clone()).await;
+
+    // Best-effort cache cleanup on model change (hot reload). Fires a background
+    // SCAN+DEL of the old namespace; never on the request path; TTL covers failure.
+    {
+        let cache_for_hook = semantic_cache.clone();
+        route_config.set_model_change_hook(Arc::new(move |path, method, old_model| {
+            let cache = cache_for_hook.clone();
+            tokio::spawn(async move {
+                let ctx = semantic_cache::CacheKeyCtx {
+                    route_path: path,
+                    route_method: method,
+                    model: old_model,
+                    threshold: 0.0,
+                    ttl_secs: 0,
+                    max_entries: 0,
+                };
+                cache.invalidate_namespace(&ctx).await;
+            });
+        }));
+    }
+
     // Build shared application state with all components
     let app_state = AppState {
         route_config: Arc::new(route_config),
@@ -86,8 +113,10 @@ async fn main() {
         load_balancer,
         circuit_breaker,
         http_client,
-        metrics: Arc::new(Metrics::new()),
+        metrics,
         redis_available: Arc::new(AtomicBool::new(true)),
+        semantic_cache,
+        outbound_guardrail: Arc::new(semantic_cache::NoopOutboundGuardrail),
     };
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -138,6 +167,66 @@ async fn main() {
         .expect("Server error");
 
     tracing::info!("Melis AI Gateway shut down gracefully.");
+}
+
+/// Builds the semantic cache backend.
+///
+/// Attempts to connect to Redis using `config.redis.cluster_urls[0]`. On any
+/// failure (no URL, connect error), logs a warning and returns a `DisabledCache`
+/// so the gateway boots and operates normally (fail-open).
+async fn build_semantic_cache(
+    config: &GatewayConfig,
+    metrics: Arc<Metrics>,
+) -> Arc<dyn semantic_cache::SemanticCache> {
+    use fred::prelude::*;
+
+    let url = match config.redis.cluster_urls.first() {
+        Some(u) if !u.trim().is_empty() => u.clone(),
+        _ => {
+            tracing::warn!("semantic cache: no Redis URL configured; cache disabled (fail-open)");
+            return Arc::new(semantic_cache::DisabledCache);
+        }
+    };
+
+    let redis_config = match RedisConfig::from_url(&url) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                "semantic cache: invalid Redis URL '{}': {}; cache disabled",
+                url,
+                e
+            );
+            return Arc::new(semantic_cache::DisabledCache);
+        }
+    };
+
+    let client = Builder::from_config(redis_config)
+        .build()
+        .unwrap_or_else(|_| {
+            // Should not happen with a valid config, but stay fail-open.
+            panic!("unreachable: redis client build")
+        });
+
+    // Try to connect; if it fails quickly, degrade to DisabledCache.
+    if client.connect().await.is_err() || client.wait_for_connect().await.is_err() {
+        tracing::warn!(
+            "semantic cache: could not connect to Redis at {}; cache disabled (fail-open)",
+            url
+        );
+        return Arc::new(semantic_cache::DisabledCache);
+    }
+
+    tracing::info!("semantic cache: connected to Redis at {}", url);
+    let hook: Arc<dyn Fn(&str, i64) + Send + Sync> = {
+        let metrics = metrics.clone();
+        Arc::new(move |namespace: &str, count: i64| {
+            metrics
+                .cache_entries
+                .with_label_values(&[namespace])
+                .set(count);
+        })
+    };
+    Arc::new(semantic_cache::RedisSemanticCache::new(client).with_entry_count_hook(hook))
 }
 
 /// Provides a minimal development configuration when config.yaml is not available.

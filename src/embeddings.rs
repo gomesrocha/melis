@@ -288,6 +288,38 @@ pub async fn embeddings_handler(
     Ok(Json(response).into_response())
 }
 
+// ─── Reusable single-text embedding (used by the semantic cache) ──────────────
+
+/// Compute the embedding of a single text using the configured Ollama provider.
+///
+/// Returns `None` on any failure (no Ollama provider configured, timeout, or error)
+/// so callers can fail open. Reuses the same `/api/embed` → `/api/embeddings`
+/// fallback path as the public embeddings endpoint.
+pub async fn embed_single(state: &AppState, model: &str, text: &str) -> Option<Vec<f64>> {
+    let provider_config = state
+        .gateway_config
+        .providers
+        .iter()
+        .find(|p| p.provider_type == "ollama")?;
+
+    let base_url = &provider_config.base_url;
+    let timeout = provider_config.timeout();
+    let inputs = vec![text.to_string()];
+
+    let result = match call_ollama_embed(state, base_url, model, &inputs, timeout).await {
+        Ok(embs) => Ok(embs),
+        Err(EmbeddingProviderError::NotFound) => {
+            call_ollama_embeddings_legacy(state, base_url, model, &inputs, timeout).await
+        }
+        Err(e) => Err(e),
+    };
+
+    match result {
+        Ok(mut embs) if !embs.is_empty() && !embs[0].is_empty() => Some(embs.remove(0)),
+        _ => None,
+    }
+}
+
 // ─── Ollama Integration ──────────────────────────────────────────────────────
 
 /// Internal error type for embedding provider calls.
