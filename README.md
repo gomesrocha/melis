@@ -543,11 +543,17 @@ routes:
   round-trip (not one per candidate), keeping lookup latency low (p95 < 5 ms at
   the default 1000-entry capacity).
 
-### Out of scope (v1)
+### Limitations (v1)
 
-Multi-turn incremental/prefix caching and real LSH bucketing are tracked as
-future work; v1 keys on the full normalized conversation with a bounded
-brute-force scan.
+- **Streaming does not populate the cache.** Only non-streaming responses are
+  stored. A `stream: true` request can *replay* an existing cached entry, but its
+  own aggregated response is not written back. Aggregating and storing stream
+  responses is tracked as future work.
+- Multi-turn incremental/prefix caching and real LSH bucketing are future work;
+  v1 keys on the full normalized conversation with a bounded brute-force scan.
+- The lookup latency budget (p95 < 5 ms) covers the Redis scan; the embedding
+  call (Ollama) is measured separately via `melis_cache_embed_seconds` and is
+  typically the dominant cost of a lookup.
 
 ---
 
