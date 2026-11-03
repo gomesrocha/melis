@@ -292,6 +292,62 @@ async fn chat_completions_handler(
         "Route resolved for /v1/chat/completions"
     );
 
+    // ─── Inbound Guardrails (Phase 3) ─────────────────────────────────────────
+    // Runs AFTER auth + rate limit (Tower layers) and BEFORE cache lookup/store
+    // and compaction. A block rejects with 400 (never touching cache or provider);
+    // a redact rewrites the payload so the redacted content is what flows into the
+    // cache key, compaction, and the provider.
+    if let Some(guardrails) = state.guardrails.for_route(request_path, request_method) {
+        use crate::guardrails::GuardrailDecision;
+        use crate::route_config::GuardrailDirection;
+
+        if let Some(messages) = payload.get("messages").and_then(|m| m.as_array()).cloned() {
+            let mut rewritten: Vec<Value> = Vec::with_capacity(messages.len());
+            let mut any_redaction = false;
+
+            for msg in messages {
+                let content = msg.get("content").and_then(|c| c.as_str());
+                match content {
+                    Some(text) => {
+                        match guardrails.evaluate(GuardrailDirection::Inbound, text, &state.metrics)
+                        {
+                            GuardrailDecision::Blocked { rule } => {
+                                tracing::warn!(
+                                    rule = %rule,
+                                    route = %request_path,
+                                    "inbound guardrail blocked request; not forwarding to provider or cache"
+                                );
+                                state
+                                    .metrics
+                                    .requests_total
+                                    .with_label_values(&[request_path, "unknown", "400"])
+                                    .inc();
+                                return Err(GatewayError::BadRequest(format!(
+                                    "Request blocked by guardrail rule '{}'",
+                                    rule
+                                )));
+                            }
+                            GuardrailDecision::Redacted(new_text) => {
+                                any_redaction = true;
+                                let mut m = msg.clone();
+                                if let Some(obj) = m.as_object_mut() {
+                                    obj.insert("content".to_string(), Value::String(new_text));
+                                }
+                                rewritten.push(m);
+                            }
+                            GuardrailDecision::Allow => rewritten.push(msg),
+                        }
+                    }
+                    None => rewritten.push(msg),
+                }
+            }
+
+            if any_redaction {
+                payload["messages"] = Value::Array(rewritten);
+            }
+        }
+    }
+
     // ─── Semantic Cache Lookup (Phase 2) ──────────────────────────────────────
     // Only when the route opts in. The normalized conversation embedding and a
     // stable entry id are computed up front and reused for store-on-miss.
@@ -335,8 +391,34 @@ async fn chat_completions_handler(
                             model = %effective_model,
                             "semantic cache hit"
                         );
-                        // Outbound guardrail (Phase 2: no-op; Phase 3 filters here).
-                        let body = state.outbound_guardrail.apply(cached.body);
+                        // Phase 2 reserved hook (kept) + Phase 3 real outbound
+                        // guardrails: a cache hit must pass through output filtering
+                        // exactly like a provider response.
+                        let mut body = state.outbound_guardrail.apply(cached.body);
+                        if let Some(guardrails) =
+                            state.guardrails.for_route(request_path, request_method)
+                        {
+                            if let Err(rule) = crate::guardrails::apply_outbound_to_response(
+                                &mut body,
+                                &guardrails,
+                                &state.metrics,
+                            ) {
+                                tracing::warn!(
+                                    rule = %rule,
+                                    route = %request_path,
+                                    "outbound guardrail blocked cached response"
+                                );
+                                state
+                                    .metrics
+                                    .requests_total
+                                    .with_label_values(&[request_path, "unknown", "400"])
+                                    .inc();
+                                return Err(GatewayError::BadRequest(format!(
+                                    "Response blocked by guardrail rule '{}'",
+                                    rule
+                                )));
+                            }
+                        }
                         state
                             .metrics
                             .requests_total
@@ -638,11 +720,14 @@ async fn chat_completions_handler(
                     .await;
 
                 let transpiler = crate::transpiler::get_transpiler(&ptype);
-                let transformed = crate::streaming::transform_sse_stream(
+                let guardrails = state.guardrails.for_route(request_path, request_method);
+                let transformed = crate::streaming::transform_sse_stream_guarded(
                     Box::pin(stream.map(|r| {
                         r.map_err(|e| crate::streaming::StreamError::Connection(e.to_string()))
                     })),
                     transpiler,
+                    guardrails,
+                    Some(state.metrics.clone()),
                 );
 
                 break 'failover Ok(Sse::new(transformed).into_response());
@@ -701,8 +786,30 @@ async fn chat_completions_handler(
                                     .await;
                             }
 
-                            // Outbound guardrail (Phase 2: no-op; Phase 3 filters here).
-                            let final_response = state.outbound_guardrail.apply(final_response);
+                            // Phase 2 reserved hook (kept) + Phase 3 real outbound
+                            // guardrails. Note: the cache stores the unfiltered provider
+                            // response above; filtering is applied on every delivery
+                            // (fresh and cache hit), so a cache hit still passes through here.
+                            let mut final_response = state.outbound_guardrail.apply(final_response);
+                            if let Some(guardrails) =
+                                state.guardrails.for_route(request_path, request_method)
+                            {
+                                if let Err(rule) = crate::guardrails::apply_outbound_to_response(
+                                    &mut final_response,
+                                    &guardrails,
+                                    &state.metrics,
+                                ) {
+                                    tracing::warn!(
+                                        rule = %rule,
+                                        route = %request_path,
+                                        "outbound guardrail blocked provider response"
+                                    );
+                                    break 'failover Err(GatewayError::BadRequest(format!(
+                                        "Response blocked by guardrail rule '{}'",
+                                        rule
+                                    )));
+                                }
+                            }
 
                             // Record token metrics
                             if let Some(usage) = final_response.get("usage") {
@@ -1624,6 +1731,13 @@ routes_config_path: "./routes.yaml"
             redis_available: Arc::new(AtomicBool::new(true)),
             semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
+                &crate::route_config::RouteConfigFile {
+                    routes: vec![],
+                    custom_providers: vec![],
+                },
+                Default::default(),
+            )),
         };
 
         build_router(app_state)
@@ -1828,6 +1942,13 @@ routes_config_path: "./routes.yaml"
             redis_available: Arc::new(AtomicBool::new(false)), // Redis unavailable
             semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
+                &crate::route_config::RouteConfigFile {
+                    routes: vec![],
+                    custom_providers: vec![],
+                },
+                Default::default(),
+            )),
         };
 
         let app = build_router(app_state);

@@ -43,6 +43,9 @@ prometheus = "0.13"
 notify = "6.1.1"
 arc-swap = "1.7.1"
 
+# Guardrails regex engine (linear-time automaton, no catastrophic backtracking)
+regex = "1"
+
 # Error handling
 thiserror = "2.0.9"
 

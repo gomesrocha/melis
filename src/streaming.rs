@@ -52,8 +52,37 @@ pub fn transform_sse_stream(
     provider_stream: Pin<Box<dyn Stream<Item = Result<Bytes, StreamError>> + Send>>,
     transpiler: Box<dyn PayloadTranspiler>,
 ) -> Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> {
+    transform_sse_stream_guarded(provider_stream, transpiler, None, None)
+}
+
+/// Maximum size of the outbound sliding-window buffer (bytes).
+///
+/// Large enough to catch patterns that straddle chunk boundaries, bounded to keep
+/// memory predictable. Only the suffix is retained once the limit is reached.
+const GUARDRAIL_WINDOW_MAX: usize = 4096;
+
+/// Like [`transform_sse_stream`], but applies outbound guardrails with a sliding
+/// window over the accumulated assistant text before emitting each chunk.
+///
+/// - `guardrails`: compiled outbound rules for the route (`None` = passthrough).
+/// - `metrics`: used to record guardrail actions.
+///
+/// Emission latency is at most one chunk: each chunk is evaluated against the
+/// accumulated window *before* it is emitted. A blocking match emits an SSE error
+/// event and terminates the stream without emitting the offending content.
+pub fn transform_sse_stream_guarded(
+    provider_stream: Pin<Box<dyn Stream<Item = Result<Bytes, StreamError>> + Send>>,
+    transpiler: Box<dyn PayloadTranspiler>,
+    guardrails: Option<std::sync::Arc<crate::guardrails::CompiledGuardrails>>,
+    metrics: Option<std::sync::Arc<crate::observability::Metrics>>,
+) -> Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> {
+    use crate::guardrails::GuardrailDecision;
+    use crate::route_config::GuardrailDirection;
+
     let stream = async_stream::stream! {
         let mut stream = provider_stream;
+        // Sliding window of accumulated assistant text (for cross-chunk patterns).
+        let mut window = String::new();
 
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
@@ -116,6 +145,84 @@ pub fn transform_sse_stream(
                                 continue;
                             }
                         };
+
+                        // ─── Outbound guardrails (sliding window) ─────────────
+                        // Evaluate the accumulated text BEFORE emitting this chunk.
+                        let mut translated = translated;
+                        if let Some(g) = &guardrails {
+                            // Extract this chunk's delta content and append to the window.
+                            let delta = translated
+                                .get("choices")
+                                .and_then(|c| c.as_array())
+                                .and_then(|c| c.first())
+                                .and_then(|c| c.get("delta"))
+                                .and_then(|d| d.get("content"))
+                                .and_then(|c| c.as_str())
+                                .unwrap_or("")
+                                .to_string();
+
+                            if !delta.is_empty() {
+                                window.push_str(&delta);
+                                if window.len() > GUARDRAIL_WINDOW_MAX {
+                                    // Keep the suffix on a char boundary.
+                                    let cut = window.len() - GUARDRAIL_WINDOW_MAX;
+                                    let mut boundary = cut;
+                                    while boundary < window.len() && !window.is_char_boundary(boundary) {
+                                        boundary += 1;
+                                    }
+                                    window = window[boundary..].to_string();
+                                }
+
+                                let noop_metrics;
+                                let metrics_ref = match &metrics {
+                                    Some(m) => m.as_ref(),
+                                    None => {
+                                        noop_metrics = crate::observability::Metrics::new();
+                                        &noop_metrics
+                                    }
+                                };
+
+                                match g.evaluate(GuardrailDirection::Outbound, &window, metrics_ref) {
+                                    GuardrailDecision::Blocked { rule } => {
+                                        tracing::warn!(
+                                            rule = %rule,
+                                            "outbound guardrail blocked streaming content; terminating stream"
+                                        );
+                                        // Emit an OpenAI-compatible SSE error, without the content.
+                                        let err = serde_json::json!({
+                                            "error": {
+                                                "message": format!("Response blocked by guardrail rule '{}'", rule),
+                                                "type": "guardrail_error",
+                                                "code": "content_blocked"
+                                            }
+                                        });
+                                        yield Ok(Event::default().data(err.to_string()));
+                                        yield Ok(Event::default().data("[DONE]"));
+                                        return;
+                                    }
+                                    GuardrailDecision::Redacted(_) => {
+                                        // Redact only this chunk's delta for emission.
+                                        if let Some(slot) = translated
+                                            .get_mut("choices")
+                                            .and_then(|c| c.as_array_mut())
+                                            .and_then(|c| c.first_mut())
+                                            .and_then(|c| c.get_mut("delta"))
+                                            .and_then(|d| d.get_mut("content"))
+                                        {
+                                            // Re-evaluate just the delta to redact its spans.
+                                            if let GuardrailDecision::Redacted(red) = g.evaluate(
+                                                GuardrailDirection::Outbound,
+                                                &delta,
+                                                metrics_ref,
+                                            ) {
+                                                *slot = serde_json::Value::String(red);
+                                            }
+                                        }
+                                    }
+                                    GuardrailDecision::Allow => {}
+                                }
+                            }
+                        }
 
                         // Serialize and wrap in SSE Event
                         match serde_json::to_string(&translated) {
@@ -389,5 +496,127 @@ mod tests {
         assert!(!choices.is_empty());
         assert!(choices[0].get("index").is_some());
         assert!(choices[0].get("delta").is_some());
+    }
+
+    // ─── Outbound guardrail (sliding window) streaming tests ──────────────────
+
+    use crate::guardrails::CompiledGuardrails;
+    use crate::route_config::{
+        GuardrailAction, GuardrailDirection, GuardrailRule, GuardrailType, GuardrailsConfig,
+    };
+    use std::sync::Arc;
+
+    fn content_chunk(content: &str) -> Bytes {
+        let chunk = json!({
+            "id": "chatcmpl-x",
+            "object": "chat.completion.chunk",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": null}]
+        });
+        Bytes::from(serde_json::to_vec(&chunk).unwrap())
+    }
+
+    fn outbound_keyword_guardrail(
+        action: GuardrailAction,
+        keyword: &str,
+    ) -> Arc<CompiledGuardrails> {
+        let cfg = GuardrailsConfig {
+            rules: vec![GuardrailRule {
+                name: "stream-rule".to_string(),
+                r#type: GuardrailType::Keyword,
+                direction: GuardrailDirection::Outbound,
+                action,
+                pattern: None,
+                keywords: Some(vec![keyword.to_string()]),
+            }],
+            fail_closed: None,
+        };
+        Arc::new(CompiledGuardrails::compile(&cfg, &Default::default()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn streaming_block_interrupts_without_leaking_content() {
+        // Two chunks; the second contains the blocked keyword. The blocked content
+        // must NOT be emitted; an SSE error event is emitted instead.
+        let provider_stream = mock_provider_stream(vec![
+            Ok(content_chunk("safe start ")),
+            Ok(content_chunk("FORBIDDEN secret")),
+        ]);
+        let transpiler: Box<dyn PayloadTranspiler> = Box::new(OpenAiTranspiler);
+        let g = outbound_keyword_guardrail(GuardrailAction::Block, "forbidden");
+
+        let transformed = transform_sse_stream_guarded(provider_stream, transpiler, Some(g), None);
+        let data_lines = collect_data_lines(transformed).await;
+
+        let joined = data_lines.join("\n");
+        assert!(
+            !joined.to_lowercase().contains("forbidden"),
+            "blocked content leaked: {}",
+            joined
+        );
+        assert!(
+            joined.contains("content_blocked") || joined.contains("guardrail"),
+            "expected a guardrail error event, got: {}",
+            joined
+        );
+        // First (safe) chunk may have been emitted; the point is no leak + termination.
+        assert!(data_lines.last().map(|l| l == "[DONE]").unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn streaming_redact_rewrites_delta() {
+        let provider_stream =
+            mock_provider_stream(vec![Ok(content_chunk("here is a badword in text"))]);
+        let transpiler: Box<dyn PayloadTranspiler> = Box::new(OpenAiTranspiler);
+        let g = outbound_keyword_guardrail(GuardrailAction::Redact, "badword");
+
+        let transformed = transform_sse_stream_guarded(provider_stream, transpiler, Some(g), None);
+        let data_lines = collect_data_lines(transformed).await;
+
+        let chunk = data_lines
+            .iter()
+            .find(|l| l.contains("delta"))
+            .expect("expected a content chunk");
+        assert!(
+            chunk.contains("[REDACTED]"),
+            "delta not redacted: {}",
+            chunk
+        );
+        assert!(!chunk.contains("badword"), "keyword leaked: {}", chunk);
+    }
+
+    #[tokio::test]
+    async fn streaming_block_detects_pattern_across_chunk_boundary() {
+        // The keyword "blockme" is split across two chunks; the sliding window
+        // must detect it once the full pattern has accumulated.
+        let provider_stream = mock_provider_stream(vec![
+            Ok(content_chunk("start bloc")),
+            Ok(content_chunk("kme end")),
+        ]);
+        let transpiler: Box<dyn PayloadTranspiler> = Box::new(OpenAiTranspiler);
+        let g = outbound_keyword_guardrail(GuardrailAction::Block, "blockme");
+
+        let transformed = transform_sse_stream_guarded(provider_stream, transpiler, Some(g), None);
+        let data_lines = collect_data_lines(transformed).await;
+        let joined = data_lines.join("\n");
+
+        assert!(
+            joined.contains("content_blocked") || joined.contains("guardrail"),
+            "cross-boundary pattern not blocked: {}",
+            joined
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_without_guardrails_is_unchanged() {
+        let provider_stream = mock_provider_stream(vec![Ok(content_chunk("hello world"))]);
+        let transpiler: Box<dyn PayloadTranspiler> = Box::new(OpenAiTranspiler);
+
+        let transformed = transform_sse_stream_guarded(provider_stream, transpiler, None, None);
+        let data_lines = collect_data_lines(transformed).await;
+        let joined = data_lines.join("\n");
+        assert!(joined.contains("hello world"));
+        assert!(!joined.contains("guardrail"));
     }
 }

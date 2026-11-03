@@ -41,8 +41,18 @@ pub struct GatewayConfig {
     pub observability: OtelConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub guardrails: GuardrailsGlobalConfig,
     #[serde(default = "default_routes_config_path")]
     pub routes_config_path: PathBuf,
+}
+
+/// Global guardrails defaults (Phase 3). Per-route config takes precedence.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GuardrailsGlobalConfig {
+    /// Default fail-closed behavior when a route does not specify it. Default: false.
+    #[serde(default)]
+    pub fail_closed: bool,
 }
 
 fn default_routes_config_path() -> PathBuf {

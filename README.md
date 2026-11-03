@@ -39,6 +39,7 @@ Melis is a **stateless, ultra-high-performance AI Gateway** written in Rust that
 - **Context compression** — adaptive trimming and sliding window strategies
 - **Real BPE token counting** — opt-in precise tokenization (tiktoken `cl100k_base`/`o200k_base`), with a safe char-count fallback
 - **Semantic response cache** — opt-in per-route cache keyed by conversation embedding (Redis + Ollama), fail-open
+- **Bidirectional guardrails** — opt-in per-route inbound/outbound content rules (regex/keyword/prompt-injection), block/redact/warn, streaming-aware
 - **Load balancing** — weighted round-robin with automatic failover
 - **Circuit breaker** — per-provider, with exponential backoff recovery
 - **Failover/retry** — automatic fallback to healthy providers
@@ -253,6 +254,14 @@ routes:
 | `semantic_cache.ttl_secs` | TTL applied to every entry (default `3600`) |
 | `semantic_cache.max_entries` | Max entries per (route, model) namespace (default `1000`) |
 | `semantic_cache.embedding_model` | Embedding model (default `nomic-embed-text`) |
+| `guardrails` | Per-route content rules (optional, opt-in) |
+| `guardrails.fail_closed` | Block on evaluation failure (default inherits global) |
+| `guardrails.rules[].name` | Rule name (used as the `rule` metric label) |
+| `guardrails.rules[].type` | `regex`, `keyword`, or `prompt_injection_heuristic` |
+| `guardrails.rules[].direction` | `inbound`, `outbound`, or `both` |
+| `guardrails.rules[].action` | `block`, `redact`, or `warn` |
+| `guardrails.rules[].pattern` | Regex pattern (for `type: regex`) |
+| `guardrails.rules[].keywords` | Keyword list (for `type: keyword`) |
 
 ---
 
@@ -557,6 +566,92 @@ routes:
 
 ---
 
+## Guardrails
+
+Melis can inspect and filter content in both directions, opt-in per route. Rules
+are evaluated with a safe regex engine and can block, redact, or warn.
+
+### Pipeline order
+
+Inbound guardrails run **after** auth and rate limiting (so content inspection is
+never spent on unauthenticated/limited traffic) and **before** compaction and the
+semantic cache:
+
+- A **blocked** request returns HTTP 400 and never reaches the provider or the
+  cache (no lookup, no store).
+- A **redacted** request has its content rewritten (`[REDACTED]`) *before* the
+  cache key is computed and before the provider call — so a cache hit always
+  corresponds to what was actually sent upstream.
+
+Outbound guardrails are applied to every response before delivery, **including
+cache hits**. For streaming, a sliding-window buffer evaluates the accumulated
+text before emitting each chunk (emission latency ≤ 1 chunk); a blocking match
+ends the stream with an SSE error event without leaking the blocked content.
+
+### Configuration (per route in `routes.yaml`)
+
+```yaml
+routes:
+  - path: "/v1/chat/guarded"
+    method: "POST"
+    provider: "ollama"
+    model: "llama3.2"
+    guardrails:
+      fail_closed: false            # optional; inherits config.yaml global if omitted
+      rules:
+        - name: "no-ssn"
+          type: "regex"             # regex | keyword | prompt_injection_heuristic
+          direction: "inbound"      # inbound | outbound | both
+          action: "block"          # block | redact | warn
+          pattern: "\\d{3}-\\d{2}-\\d{4}"
+        - name: "mask-emails"
+          type: "regex"
+          direction: "outbound"
+          action: "redact"
+          pattern: "[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}"
+        - name: "prompt-injection"
+          type: "prompt_injection_heuristic"
+          direction: "inbound"
+          action: "warn"
+```
+
+Global default (optional, in `config.yaml`):
+
+```yaml
+guardrails:
+  fail_closed: false
+```
+
+### Rule types
+
+| Type | Matches |
+|------|---------|
+| `regex` | A `regex`-crate pattern (linear-time automaton) |
+| `keyword` | Any of `keywords`, case-insensitive substring |
+| `prompt_injection_heuristic` | Built-in instruction-override phrases |
+
+### Actions and precedence
+
+`block` > `redact` > `warn`. If any rule blocks, the request/response is rejected.
+Otherwise all redactions are applied; warnings only log and increment
+`melis_guardrail_actions_total{rule,direction,action}`.
+
+### fail_closed
+
+When guardrail evaluation fails internally, `fail_closed: true` blocks the
+request/response; the default (`false`) fails open and proceeds. Per-route config
+takes precedence over the global default.
+
+### Safety: regex engine and ReDoS
+
+Regex rules use the [`regex`](https://crates.io/crates/regex) crate, a finite
+automaton with linear-time matching and **no catastrophic backtracking**.
+Look-around and backreferences are not supported by design — a guardrail must
+never become a ReDoS vector. Invalid patterns are dropped at load/reload with an
+error log; on hot reload the previous valid config is kept.
+
+---
+
 ## Monitoring & Observability
 
 ### Prometheus Metrics
@@ -593,6 +688,7 @@ Melis exposes all metrics at `GET /metrics` in Prometheus text exposition format
 | `melis_cache_entry_age_seconds` | Histogram | — | Age of a cache entry at hit time |
 | `melis_cache_degraded` | Counter | `reason` | Cache fail-open events (`redis` or `embeddings`) |
 | `melis_cache_entries` | Gauge | `namespace` | Cache entry count per (route, model) namespace |
+| `melis_guardrail_actions_total` | Counter | `rule`, `direction`, `action` | Guardrail actions taken (block/redact/warn) |
 
 ### Grafana Setup
 

@@ -179,6 +179,65 @@ fn default_embedding_model() -> String {
     "nomic-embed-text".to_string()
 }
 
+/// Guardrail rule type (Phase 3).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardrailType {
+    /// Regular-expression match (crate `regex`, linear-time automaton).
+    Regex,
+    /// Case-insensitive substring match against one or more keywords.
+    Keyword,
+    /// Built-in prompt-injection heuristics.
+    PromptInjectionHeuristic,
+}
+
+/// Direction in which a guardrail rule applies.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardrailDirection {
+    Inbound,
+    Outbound,
+    Both,
+}
+
+/// Action taken when a guardrail rule matches.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardrailAction {
+    /// Reject (inbound: 400; outbound: error response / SSE error).
+    Block,
+    /// Replace the matched span with `[REDACTED]`.
+    Redact,
+    /// Log + metric only; content passes unchanged.
+    Warn,
+}
+
+/// A single guardrail rule (Phase 3).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GuardrailRule {
+    /// Rule name, used as the `rule` metric label.
+    pub name: String,
+    pub r#type: GuardrailType,
+    pub direction: GuardrailDirection,
+    pub action: GuardrailAction,
+    /// Regex pattern (required for `type: regex`).
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Keyword list (required for `type: keyword`).
+    #[serde(default)]
+    pub keywords: Option<Vec<String>>,
+}
+
+/// Per-route guardrails configuration (Phase 3).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GuardrailsConfig {
+    #[serde(default)]
+    pub rules: Vec<GuardrailRule>,
+    /// Block on internal evaluation failure. `None` inherits the global default.
+    #[serde(default)]
+    pub fail_closed: Option<bool>,
+}
+
 /// Definition of an individual route.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouteDefinition {
@@ -191,6 +250,9 @@ pub struct RouteDefinition {
     /// Optional semantic cache configuration (Phase 2). Absent = disabled.
     #[serde(default)]
     pub semantic_cache: Option<SemanticCacheConfig>,
+    /// Optional guardrails configuration (Phase 3). Absent = no guardrails.
+    #[serde(default)]
+    pub guardrails: Option<GuardrailsConfig>,
 }
 
 /// Custom provider registration.
@@ -414,10 +476,16 @@ impl RouteResolver {
 /// Receives (path, method, old_model). Used for best-effort cache cleanup.
 pub type ModelChangeHook = Arc<dyn Fn(String, String, String) + Send + Sync>;
 
+/// Callback invoked after a successful hot reload, with the new config file.
+/// Used to recompile derived state (e.g. compiled guardrails).
+pub type ReloadHook = Arc<dyn Fn(&RouteConfigFile) + Send + Sync>;
+
 pub struct RouteConfigManager {
     config: Arc<ArcSwap<RouteResolver>>,
     /// Optional hook fired on model change during hot reload (best-effort cache cleanup).
     model_change_hook: Arc<arc_swap::ArcSwapOption<ModelChangeHook>>,
+    /// Optional hook fired after every successful reload (e.g. recompile guardrails).
+    reload_hook: Arc<arc_swap::ArcSwapOption<ReloadHook>>,
     _watcher_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -491,15 +559,19 @@ impl RouteConfigManager {
 
         let model_change_hook: Arc<arc_swap::ArcSwapOption<ModelChangeHook>> =
             Arc::new(arc_swap::ArcSwapOption::from(None));
+        let reload_hook: Arc<arc_swap::ArcSwapOption<ReloadHook>> =
+            Arc::new(arc_swap::ArcSwapOption::from(None));
 
         // 3. Spawn Tokio task to process file change events with debouncing
         let config_clone = Arc::clone(&config);
         let hook_clone = Arc::clone(&model_change_hook);
+        let reload_hook_clone = Arc::clone(&reload_hook);
         let reload_path = config_path;
         let watcher_handle = tokio::spawn(Self::reload_loop(
             rx,
             config_clone,
             hook_clone,
+            reload_hook_clone,
             reload_path,
             watcher,
         ));
@@ -507,6 +579,7 @@ impl RouteConfigManager {
         RouteConfigManager {
             config,
             model_change_hook,
+            reload_hook,
             _watcher_handle: watcher_handle,
         }
     }
@@ -515,6 +588,12 @@ impl RouteConfigManager {
     /// Used to trigger best-effort semantic cache cleanup of the old namespace.
     pub fn set_model_change_hook(&self, hook: ModelChangeHook) {
         self.model_change_hook.store(Some(Arc::new(hook)));
+    }
+
+    /// Registers a callback fired after every successful hot reload.
+    /// Used to recompile derived state such as compiled guardrails.
+    pub fn set_reload_hook(&self, hook: ReloadHook) {
+        self.reload_hook.store(Some(Arc::new(hook)));
     }
 
     /// Returns the current RouteResolver (lock-free via ArcSwap).
@@ -538,6 +617,7 @@ impl RouteConfigManager {
         RouteConfigManager {
             config,
             model_change_hook: Arc::new(arc_swap::ArcSwapOption::from(None)),
+            reload_hook: Arc::new(arc_swap::ArcSwapOption::from(None)),
             _watcher_handle: watcher_handle,
         }
     }
@@ -550,6 +630,7 @@ impl RouteConfigManager {
         mut rx: mpsc::Receiver<()>,
         config: Arc<ArcSwap<RouteResolver>>,
         model_change_hook: Arc<arc_swap::ArcSwapOption<ModelChangeHook>>,
+        reload_hook: Arc<arc_swap::ArcSwapOption<ReloadHook>>,
         config_path: PathBuf,
         _watcher: RecommendedWatcher, // Keep watcher alive for the lifetime of this task
     ) {
@@ -567,7 +648,7 @@ impl RouteConfigManager {
             }
 
             // Attempt reload
-            Self::try_reload(&config, &model_change_hook, &config_path);
+            Self::try_reload(&config, &model_change_hook, &reload_hook, &config_path);
         }
     }
 
@@ -599,6 +680,7 @@ impl RouteConfigManager {
     fn try_reload(
         config: &Arc<ArcSwap<RouteResolver>>,
         model_change_hook: &Arc<arc_swap::ArcSwapOption<ModelChangeHook>>,
+        reload_hook: &Arc<arc_swap::ArcSwapOption<ReloadHook>>,
         config_path: &Path,
     ) {
         tracing::info!("Detected route config file change, attempting reload...");
@@ -609,6 +691,12 @@ impl RouteConfigManager {
                     // Detect model changes per route (for best-effort cache cleanup).
                     let old_models = Self::route_model_map(config.load().config());
                     let new_models = Self::route_model_map(&new_config_file);
+
+                    // Fire the reload hook (e.g. recompile guardrails) before swapping,
+                    // using the new config file.
+                    if let Some(hook) = reload_hook.load_full() {
+                        hook(&new_config_file);
+                    }
 
                     let new_resolver = RouteResolver::new(new_config_file);
                     config.store(Arc::new(new_resolver));
@@ -1596,6 +1684,7 @@ mod property_tests {
                     providers: None,
                     token_optimization: token_opt,
                     semantic_cache: None,
+                    guardrails: None,
                 },
             )
     }
@@ -1619,6 +1708,7 @@ mod property_tests {
                     providers: None,
                     token_optimization: None,
                     semantic_cache: None,
+                    guardrails: None,
                 }]
             } else {
                 unique_routes
@@ -1659,6 +1749,7 @@ mod property_tests {
                     providers: None,
                     token_optimization: None,
                     semantic_cache: None,
+                    guardrails: None,
                 }],
                 custom_providers: vec![],
             };
@@ -1684,6 +1775,7 @@ mod property_tests {
                     providers: None,
                     token_optimization: None,
                     semantic_cache: None,
+                    guardrails: None,
                 }],
                 custom_providers: vec![],
             };
@@ -1709,6 +1801,7 @@ mod property_tests {
                     providers: None,
                     token_optimization: None,
                     semantic_cache: None,
+                    guardrails: None,
                 }],
                 custom_providers: vec![],
             };
@@ -1738,6 +1831,7 @@ mod property_tests {
                     providers: None,
                     token_optimization: None,
                     semantic_cache: None,
+                    guardrails: None,
                 }],
                 custom_providers: vec![],
             };
@@ -1776,6 +1870,7 @@ mod property_tests {
                 providers: None,
                 token_optimization: None,
                 semantic_cache: None,
+                guardrails: None,
             };
 
             let effective_model = route.model.as_deref().unwrap_or(&payload_model);
@@ -1796,6 +1891,7 @@ mod property_tests {
                 providers: None,
                 token_optimization: None,
                 semantic_cache: None,
+                guardrails: None,
             };
 
             let effective_model = route.model.as_deref().unwrap_or(&payload_model);
@@ -1836,6 +1932,7 @@ mod property_tests {
                     critical_markers: None,
                 }),
                 semantic_cache: None,
+                guardrails: None,
             };
 
             let global = CompactorConfig {
@@ -1875,6 +1972,7 @@ mod property_tests {
                 providers: None,
                 token_optimization: None,
                 semantic_cache: None,
+                guardrails: None,
             };
 
             let global = CompactorConfig {
@@ -1952,7 +2050,14 @@ mod property_tests {
             // Call try_reload - it should NOT swap in the invalid config
             let no_hook: Arc<arc_swap::ArcSwapOption<ModelChangeHook>> =
                 Arc::new(arc_swap::ArcSwapOption::from(None));
-            RouteConfigManager::try_reload(&arc_config, &no_hook, &config_path);
+            let no_reload_hook: Arc<arc_swap::ArcSwapOption<ReloadHook>> =
+                Arc::new(arc_swap::ArcSwapOption::from(None));
+            RouteConfigManager::try_reload(
+                &arc_config,
+                &no_hook,
+                &no_reload_hook,
+                &config_path,
+            );
 
             // Verify previous config is still active
             let current = arc_config.load();
@@ -2003,6 +2108,7 @@ mod property_tests {
                     providers: None,
                     token_optimization: None,
                     semantic_cache: None,
+                    guardrails: None,
                 })
                 .collect();
 
@@ -2057,6 +2163,7 @@ mod property_tests {
                     providers: None,
                     token_optimization: None,
                     semantic_cache: None,
+                    guardrails: None,
                 })
                 .collect();
 
@@ -2096,6 +2203,7 @@ mod property_tests {
                     providers: None,
                     token_optimization: None,
                     semantic_cache: None,
+                    guardrails: None,
                 }],
                 custom_providers: vec![],
             };

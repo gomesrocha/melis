@@ -465,6 +465,13 @@ mod tests {
             redis_available: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
+                &crate::route_config::RouteConfigFile {
+                    routes: vec![],
+                    custom_providers: vec![],
+                },
+                Default::default(),
+            )),
         };
 
         Router::new()
@@ -630,6 +637,13 @@ rate_limit:
             redis_available: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
+                &crate::route_config::RouteConfigFile {
+                    routes: vec![],
+                    custom_providers: vec![],
+                },
+                Default::default(),
+            )),
         };
 
         let app = Router::new()

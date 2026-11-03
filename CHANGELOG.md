@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3 — Bidirectional Guardrails
+
+#### Added
+
+- **Opt-in per-route guardrails.** New `guardrails` block in `routes.yaml` with a
+  list of `rules` (`type`: `regex` | `keyword` | `prompt_injection_heuristic`;
+  `direction`: `inbound` | `outbound` | `both`; `action`: `block` | `redact` |
+  `warn`) and an optional `fail_closed`. Optional, with safe defaults — existing
+  routes are unaffected.
+- **`src/guardrails.rs`**: compiled matchers (`CompiledRule`/`Matcher`),
+  `CompiledGuardrails` with `block > redact > warn` precedence, a `GuardrailEngine`
+  (per-route compiled map) recompiled at boot and on every hot reload, and
+  `apply_outbound_to_response` for non-streaming/cache-hit delivery.
+- **Inbound enforcement** (handler, after auth + rate limit, before cache and
+  compaction): `block` → HTTP 400 without touching the provider or cache; `redact`
+  → rewrites the payload so the redacted content feeds the cache key and the
+  provider; `warn` → log + metric.
+- **Outbound enforcement**: applied to every response before delivery, including
+  cache hits (reuses the Phase 2 `OutboundGuardrail` hook point). Streaming uses a
+  sliding-window buffer in `transform_sse_stream_guarded` — evaluates accumulated
+  text before emitting each chunk (≤ 1 chunk latency); a block ends the stream with
+  an SSE error event without leaking content; redact rewrites the chunk delta.
+- **Safe regex engine**: rules use the `regex` crate (linear-time automaton, no
+  catastrophic backtracking). Look-around/backreferences unsupported by design.
+  Invalid patterns are dropped at load/reload; hot reload keeps the previous config.
+- **`fail_closed`** resolvable per route with a global default in `config.yaml`
+  (`guardrails.fail_closed`, default `false`).
+- **New metric** `melis_guardrail_actions_total{rule,direction,action}` plus a
+  structured log per action.
+- Documentation: `routes.yaml.example`, `config.yaml.example`, README "Guardrails"
+  section and metrics reference.
+
+#### Notes
+
+- Backward compatible: routes without `guardrails` behave exactly as before.
+  `transform_sse_stream` is preserved as a passthrough wrapper over the new
+  guardrail-aware variant.
+
 ### Phase 2 — Semantic Response Cache
 
 #### Added

@@ -95,6 +95,12 @@ compactor:
   # thresholds and usage metrics (intentional — see README/CHANGELOG).
   token_counting: "estimated"
 
+# Global guardrails defaults (Phase 3). Per-route `guardrails.fail_closed` in
+# routes.yaml takes precedence. Rules themselves are defined per route.
+guardrails:
+  # When true, block the request/response if guardrail evaluation fails internally.
+  fail_closed: false
+
 circuit_breaker:
   failure_threshold_percent: 50.0
   window_duration_secs: 60

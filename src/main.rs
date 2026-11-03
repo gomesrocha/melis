@@ -6,6 +6,7 @@ mod compactor;
 mod config;
 pub mod embeddings;
 mod error;
+mod guardrails;
 mod models;
 pub mod observability;
 mod route_config;
@@ -105,6 +106,20 @@ async fn main() {
         }));
     }
 
+    // Build the guardrail engine (Phase 3) from the initial route config, and
+    // register a reload hook so it recompiles whenever routes.yaml changes.
+    let guardrails = {
+        let resolver = route_config.current();
+        Arc::new(guardrails::GuardrailEngine::new(
+            resolver.config(),
+            gateway_config.guardrails.clone(),
+        ))
+    };
+    {
+        let engine = guardrails.clone();
+        route_config.set_reload_hook(Arc::new(move |cfg| engine.recompile(cfg)));
+    }
+
     // Build shared application state with all components
     let app_state = AppState {
         route_config: Arc::new(route_config),
@@ -117,6 +132,7 @@ async fn main() {
         redis_available: Arc::new(AtomicBool::new(true)),
         semantic_cache,
         outbound_guardrail: Arc::new(semantic_cache::NoopOutboundGuardrail),
+        guardrails,
     };
 
     let listener = tokio::net::TcpListener::bind(addr)

@@ -10,6 +10,7 @@
 #   model    - Modelo padrão (override do payload do cliente)
 #   token_optimization - Configuração de compressão (opcional)
 #   semantic_cache     - Cache de respostas por rota (opcional, opt-in)
+#   guardrails         - Filtros de entrada/saída por rota (opcional, opt-in)
 
 # Provedores customizados (não são os 5 built-in)
 # Registre aqui qualquer provedor OpenAI-compatible
@@ -54,6 +55,31 @@ routes:
   #     ttl_secs: 3600                 # TTL de toda entrada (obrigatório)
   #     max_entries: 1000              # máx. entradas por namespace (rota+modelo)
   #     embedding_model: "nomic-embed-text"
+
+  # ─── Exemplo: rota com guardrails (opt-in) ──────────────────────
+  # Regras bidirecionais de conteúdo. Regex usa a crate `regex` (tempo linear,
+  # sem backtracking catastrófico / ReDoS; sem look-around/backreferences).
+  # - path: "/v1/chat/guarded"
+  #   method: "POST"
+  #   provider: "ollama"
+  #   model: "llama3.2"
+  #   guardrails:
+  #     fail_closed: false            # opcional; herda config.yaml se omitido
+  #     rules:
+  #       - name: "no-ssn"
+  #         type: "regex"              # regex | keyword | prompt_injection_heuristic
+  #         direction: "inbound"       # inbound | outbound | both
+  #         action: "block"           # block | redact | warn
+  #         pattern: "\\d{3}-\\d{2}-\\d{4}"
+  #       - name: "mask-emails"
+  #         type: "regex"
+  #         direction: "outbound"
+  #         action: "redact"
+  #         pattern: "[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}"
+  #       - name: "prompt-injection"
+  #         type: "prompt_injection_heuristic"
+  #         direction: "inbound"
+  #         action: "warn"
 
   # Adicione mais rotas conforme necessário:
   # - path: "/v1/chat/openai"

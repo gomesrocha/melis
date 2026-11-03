@@ -142,6 +142,8 @@ pub struct Metrics {
     pub cache_degraded: IntCounterVec,
     /// Gauge of cache entry count per namespace.
     pub cache_entries: IntGaugeVec,
+    /// Counter of guardrail actions, labeled by rule, direction, and action.
+    pub guardrail_actions_total: IntCounterVec,
     /// The Prometheus registry holding all metrics.
     pub registry: Registry,
 }
@@ -372,6 +374,15 @@ impl Metrics {
         )
         .expect("failed to create melis_cache_entries metric");
 
+        let guardrail_actions_total = IntCounterVec::new(
+            Opts::new(
+                "melis_guardrail_actions_total",
+                "Total guardrail actions taken by rule, direction, and action",
+            ),
+            &["rule", "direction", "action"],
+        )
+        .expect("failed to create melis_guardrail_actions_total metric");
+
         registry
             .register(Box::new(requests_total.clone()))
             .expect("failed to register melis_gateway_requests_total");
@@ -450,6 +461,9 @@ impl Metrics {
         registry
             .register(Box::new(cache_entries.clone()))
             .expect("failed to register melis_cache_entries");
+        registry
+            .register(Box::new(guardrail_actions_total.clone()))
+            .expect("failed to register melis_guardrail_actions_total");
 
         // Initialize metrics with known labels so they appear in /metrics even before first use
         provider_errors_total
@@ -508,6 +522,7 @@ impl Metrics {
             cache_entry_age_seconds,
             cache_degraded,
             cache_entries,
+            guardrail_actions_total,
             registry,
         }
     }

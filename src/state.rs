@@ -42,4 +42,6 @@ pub struct AppState {
     pub semantic_cache: Arc<dyn crate::semantic_cache::SemanticCache>,
     /// Outbound guardrail hook (Phase 2: no-op; reserved for Phase 3 filtering).
     pub outbound_guardrail: Arc<dyn crate::semantic_cache::OutboundGuardrail>,
+    /// Compiled guardrails per route (Phase 3), recompiled on hot reload.
+    pub guardrails: Arc<crate::guardrails::GuardrailEngine>,
 }
