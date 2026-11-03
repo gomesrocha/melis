@@ -37,6 +37,7 @@ Melis is a **stateless, ultra-high-performance AI Gateway** written in Rust that
 - **Multi-provider routing** — route-based configuration via `routes.yaml`
 - **SSE streaming** — token-by-token streaming with Server-Sent Events
 - **Context compression** — adaptive trimming and sliding window strategies
+- **Real BPE token counting** — opt-in precise tokenization (tiktoken `cl100k_base`/`o200k_base`), with a safe char-count fallback
 - **Load balancing** — weighted round-robin with automatic failover
 - **Circuit breaker** — per-provider, with exponential backoff recovery
 - **Failover/retry** — automatic fallback to healthy providers
@@ -155,7 +156,8 @@ rate_limit:
 compactor:
   token_threshold: 4096     # Compress context above this token count
   stop_words: []            # Words to remove during compression
-  tokenizer_name: "cl100k_base"
+  tokenizer_name: "cl100k_base"  # Encoding used when token_counting is "real"
+  token_counting: "estimated"    # "estimated" (default) or "real" (BPE) — see Token Counting
 
 circuit_breaker:
   failure_threshold_percent: 50.0   # Open circuit at 50% failure rate
@@ -399,6 +401,48 @@ token_optimization:
    - `sliding_window`: Keeps only the last `max_history_messages` messages
 4. **Forward** — The compressed context is sent to the provider
 
+### Token Counting (estimated vs real)
+
+By default, Melis counts tokens with a fast character-count approximation
+(`len / 4`). You can opt into precise BPE counting per deployment via the
+`compactor.token_counting` setting in `config.yaml`:
+
+```yaml
+compactor:
+  token_counting: "real"        # "estimated" (default) or "real"
+  tokenizer_name: "cl100k_base" # encoding used only in "real" mode
+```
+
+| Mode | Behavior | Encoding source |
+|------|----------|-----------------|
+| `estimated` (default) | `len / 4` approximation — legacy behavior, bit-for-bit | n/a (`tokenizer_name` ignored) |
+| `real` | Precise BPE counting via tiktoken | `tokenizer_name`: `cl100k_base` or `o200k_base` |
+
+Notes:
+
+- `tokenizer_name` is **only** the encoding selector; it never enables real
+  counting on its own. The switch is always the explicit `token_counting` field.
+- In `real` mode, when a provider omits `usage` (or returns zeros), Melis fills
+  `usage.prompt_tokens`/`completion_tokens` with real counts.
+- The active mode is exported as `melis_token_counting_mode{mode="real|estimated"}`
+  (present from boot) so dashboards can tell the base of token numbers.
+- If `tokenizer_name` is set to an unsupported encoding while in `real` mode,
+  Melis logs a warning and falls back to estimated counting (never fails a request).
+
+> **Heads up on upgrades:** switching from `estimated` to `real` changes the token
+> numbers that drive compaction thresholds (`compress_above_tokens`) and the
+> `usage`/token metrics. This is intentional — real counts differ from the
+> approximation — but it means compaction may trigger at different points. See the
+> CHANGELOG for details.
+
+**Cost:** BPE counting is backed by cached (`&'static`) tiktoken encodings, so no
+vocabulary is loaded per request. Measured on a release build, a ~341-token chat
+payload counts in ~80 µs per call — well under 1 ms. You can reproduce it with:
+
+```bash
+cargo test --release tokenizer::tests::bench_real_count_typical_chat -- --ignored --nocapture
+```
+
 ### Example: Before and After
 
 **Before compression** (12 messages, ~6000 tokens):
@@ -468,6 +512,7 @@ Melis exposes all metrics at `GET /metrics` in Prometheus text exposition format
 | `melis_provider_errors_total` | Counter | `provider`, `status_code` | Total provider errors |
 | `melis_model_substitution_total` | Counter | `requested_model`, `resolved_model`, `reason` | Model substitution events |
 | `melis_fallback_mode_total` | Counter | `original_provider`, `fallback_provider`, `reason` | Fallback mode activations |
+| `melis_token_counting_mode` | Counter | `mode` | Token-counting operations by mode (`real` or `estimated`) |
 
 ### Grafana Setup
 

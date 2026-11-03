@@ -85,7 +85,15 @@ rate_limit:
 compactor:
   token_threshold: 4096
   stop_words: []
+  # Encoding used for real BPE token counting. Only takes effect when
+  # token_counting is "real". Supported: cl100k_base, o200k_base.
   tokenizer_name: "cl100k_base"
+  # Token counting mode:
+  #   estimated (default) — fast char-count approximation (len/4), legacy behavior.
+  #   real               — precise BPE counting via tokenizer_name.
+  # NOTE: switching to "real" changes the token numbers used for compaction
+  # thresholds and usage metrics (intentional — see README/CHANGELOG).
+  token_counting: "estimated"
 
 circuit_breaker:
   failure_threshold_percent: 50.0

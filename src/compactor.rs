@@ -7,6 +7,7 @@
 //! with optional HuggingFace Tokenizer integration for precise counting.
 
 use crate::config::CompactorConfig;
+use crate::tokenizer::TokenCounter;
 
 /// A message with owned data, suitable for mutation during compaction.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,21 +54,33 @@ impl SimpleCompactor {
     }
 
     /// Approximate token count for a string (4 chars ≈ 1 token).
+    ///
+    /// Legacy wrapper that delegates to the estimated (character-count) strategy.
+    /// Preserved bit-for-bit for backward compatibility and existing call sites.
     pub fn count_tokens(text: &str) -> usize {
-        // Minimum 1 token for non-empty text
-        let chars = text.len();
-        if chars == 0 {
-            0
-        } else {
-            (chars + 3) / 4 // ceiling division
-        }
+        Self::count_tokens_with(&TokenCounter::Estimated, text)
+    }
+
+    /// Count tokens for a string using the provided [`TokenCounter`].
+    pub fn count_tokens_with(counter: &TokenCounter, text: &str) -> usize {
+        counter.count(text)
     }
 
     /// Count total tokens across all messages (role + content).
+    ///
+    /// Legacy wrapper that delegates to the estimated strategy.
     pub fn total_tokens(messages: &[CompactMessage]) -> usize {
+        Self::total_tokens_with(&TokenCounter::Estimated, messages)
+    }
+
+    /// Count total tokens across all messages using the provided [`TokenCounter`].
+    pub fn total_tokens_with(counter: &TokenCounter, messages: &[CompactMessage]) -> usize {
         messages
             .iter()
-            .map(|m| Self::count_tokens(&m.role) + Self::count_tokens(&m.content))
+            .map(|m| {
+                Self::count_tokens_with(counter, &m.role)
+                    + Self::count_tokens_with(counter, &m.content)
+            })
             .sum()
     }
 
@@ -100,7 +113,11 @@ impl Default for SimpleCompactor {
 
 impl ContextCompactor for SimpleCompactor {
     fn compact(&self, messages: Vec<CompactMessage>, config: &CompactorConfig) -> CompactionResult {
-        let original_tokens = Self::total_tokens(&messages);
+        // Resolve the token counter once per call. Real BPE instances are cached
+        // singletons, so this does not allocate the vocabulary per request.
+        let counter = TokenCounter::resolve(config.token_counting, &config.tokenizer_name);
+
+        let original_tokens = Self::total_tokens_with(&counter, &messages);
         let original_count = messages.len();
 
         // Step 1: If tokens < threshold AND message count <= max_history_messages → no compression
@@ -167,7 +184,7 @@ impl ContextCompactor for SimpleCompactor {
         let messages_pruned_by_window = original_count - windowed_messages.len();
 
         // Step 3: If after windowing, tokens are below threshold → done
-        let tokens_after_window = Self::total_tokens(&windowed_messages);
+        let tokens_after_window = Self::total_tokens_with(&counter, &windowed_messages);
         if tokens_after_window < config.token_threshold {
             // SAFETY: never return empty messages array
             if windowed_messages.is_empty() {
@@ -228,7 +245,7 @@ impl ContextCompactor for SimpleCompactor {
         let target_tokens = (original_tokens as f64 * 0.75) as usize;
 
         // Check if stop-word removal alone achieved the target
-        let tokens_after_stopwords = Self::total_tokens(&working_messages);
+        let tokens_after_stopwords = Self::total_tokens_with(&counter, &working_messages);
         if tokens_after_stopwords <= target_tokens {
             // SAFETY: never return empty messages array
             if working_messages.is_empty() {
@@ -270,7 +287,10 @@ impl ContextCompactor for SimpleCompactor {
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| !indices_to_remove.contains(i))
-                .map(|(_, m)| Self::count_tokens(&m.role) + Self::count_tokens(&m.content))
+                .map(|(_, m)| {
+                    Self::count_tokens_with(&counter, &m.role)
+                        + Self::count_tokens_with(&counter, &m.content)
+                })
                 .sum();
 
             if remaining_tokens <= target_tokens {
@@ -304,7 +324,7 @@ impl ContextCompactor for SimpleCompactor {
             final_messages
         };
 
-        let final_tokens = Self::total_tokens(&final_messages);
+        let final_tokens = Self::total_tokens_with(&counter, &final_messages);
         let compression_ratio = if original_tokens > 0 {
             final_tokens as f64 / original_tokens as f64
         } else {
@@ -489,7 +509,10 @@ impl Default for SemanticGuardedCompactor {
 
 impl ContextCompactor for SemanticGuardedCompactor {
     fn compact(&self, messages: Vec<CompactMessage>, config: &CompactorConfig) -> CompactionResult {
-        let original_tokens = SimpleCompactor::total_tokens(&messages);
+        // Resolve the token counter once per call (cached singleton for real mode).
+        let counter = TokenCounter::resolve(config.token_counting, &config.tokenizer_name);
+
+        let original_tokens = SimpleCompactor::total_tokens_with(&counter, &messages);
         let original_count = messages.len();
 
         // Step 1: If below threshold, return unchanged
@@ -526,8 +549,8 @@ impl ContextCompactor for SemanticGuardedCompactor {
                     &last_user_terms,
                     &config.critical_markers,
                 );
-                let token_count = SimpleCompactor::count_tokens(&msg.role)
-                    + SimpleCompactor::count_tokens(&msg.content);
+                let token_count = SimpleCompactor::count_tokens_with(&counter, &msg.role)
+                    + SimpleCompactor::count_tokens_with(&counter, &msg.content);
                 let is_protected = msg.role == "system"
                     || is_last_user
                     || (config.preserve_critical_markers
@@ -560,7 +583,7 @@ impl ContextCompactor for SemanticGuardedCompactor {
                 .filter(|s| s.is_protected)
                 .map(|s| s.message.clone())
                 .collect();
-            let final_tokens = SimpleCompactor::total_tokens(&final_messages);
+            let final_tokens = SimpleCompactor::total_tokens_with(&counter, &final_messages);
             return CompactionResult {
                 original_tokens,
                 final_tokens,
@@ -600,7 +623,7 @@ impl ContextCompactor for SemanticGuardedCompactor {
             .map(|s| s.message.clone())
             .collect();
 
-        let final_tokens = SimpleCompactor::total_tokens(&final_messages);
+        let final_tokens = SimpleCompactor::total_tokens_with(&counter, &final_messages);
         let messages_pruned = original_count - final_messages.len();
 
         CompactionResult {
@@ -754,9 +777,7 @@ mod proptest_tests {
                     // after the last found position)
                     let search_start = last_found_idx.map(|i| i + 1).unwrap_or(0);
                     let found = messages[search_start..].iter().position(|orig| {
-                        orig.role == result_msg.role
-                            && (orig.content == result_msg.content
-                                || result_msg.role == "system" && orig.content == result_msg.content)
+                        orig.role == result_msg.role && orig.content == result_msg.content
                     });
 
                     prop_assert!(
@@ -1295,6 +1316,47 @@ mod tests {
 
         // Last message should be the protected user message
         assert_eq!(result.messages.last().unwrap().content, "final question");
+    }
+
+    #[test]
+    fn test_real_mode_counts_differ_from_estimated_in_result() {
+        use crate::config::TokenCountingMode;
+
+        // A history large enough to be measured; same content, two counting modes.
+        let messages =
+            vec![
+            make_msg("system", "You are a helpful assistant that answers concisely."),
+            make_msg(
+                "user",
+                "Explain how byte pair encoding tokenization works, step by step, with an example.",
+            ),
+            make_msg(
+                "assistant",
+                "BPE merges frequent adjacent byte pairs iteratively to build a vocabulary.",
+            ),
+        ];
+
+        let estimated_cfg = CompactorConfig {
+            token_threshold: 100_000, // above threshold -> identity, but counts still computed
+            max_history_messages: 100,
+            token_counting: TokenCountingMode::Estimated,
+            tokenizer_name: "cl100k_base".to_string(),
+            ..Default::default()
+        };
+        let real_cfg = CompactorConfig {
+            token_counting: TokenCountingMode::Real,
+            ..estimated_cfg.clone()
+        };
+
+        let compactor = SimpleCompactor::new();
+        let estimated = compactor.compact(messages.clone(), &estimated_cfg);
+        let real = compactor.compact(messages, &real_cfg);
+
+        // The core Phase 1 premise: real BPE counting differs from the char/4 estimate.
+        assert_ne!(
+            estimated.original_tokens, real.original_tokens,
+            "real BPE token count should differ from the estimated approximation"
+        );
     }
 
     #[test]

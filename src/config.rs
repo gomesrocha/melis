@@ -49,6 +49,20 @@ fn default_routes_config_path() -> PathBuf {
     PathBuf::from("./routes.yaml")
 }
 
+/// Returns true if the raw YAML explicitly defines `compactor.tokenizer_name`.
+///
+/// Used only for a one-line discoverability log; does not affect token counting.
+fn compactor_tokenizer_name_is_explicit(raw_yaml: &str) -> bool {
+    let value: serde_yaml::Value = match serde_yaml::from_str(raw_yaml) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    value
+        .get("compactor")
+        .and_then(|c| c.get("tokenizer_name"))
+        .is_some()
+}
+
 /// HTTP server configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -196,6 +210,19 @@ fn default_refill_rate() -> f64 {
     10.0
 }
 
+/// Token counting mode for the context compactor.
+///
+/// - `Estimated` (default): character-count approximation `(len + 3) / 4`, bit-for-bit
+///   identical to legacy behavior. `tokenizer_name` is ignored for counting.
+/// - `Real`: real BPE token counting using the encoding selected by `tokenizer_name`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenCountingMode {
+    #[default]
+    Estimated,
+    Real,
+}
+
 /// Context compactor configuration.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct CompactorConfig {
@@ -207,6 +234,10 @@ pub struct CompactorConfig {
     pub stop_words: Vec<String>,
     #[serde(default = "default_tokenizer_name")]
     pub tokenizer_name: String,
+    /// Token counting mode. Default `estimated` (legacy behavior).
+    /// Set to `real` to enable BPE counting via `tokenizer_name`.
+    #[serde(default)]
+    pub token_counting: TokenCountingMode,
     /// Target ratio for semantic_guarded_trimming (e.g., 0.45 = keep 45% of tokens).
     #[serde(default = "default_target_token_ratio")]
     pub target_token_ratio: f64,
@@ -231,6 +262,7 @@ impl Default for CompactorConfig {
             max_history_messages: default_max_history_messages(),
             stop_words: Vec::new(),
             tokenizer_name: default_tokenizer_name(),
+            token_counting: TokenCountingMode::default(),
             target_token_ratio: default_target_token_ratio(),
             min_final_tokens: default_min_final_tokens(),
             critical_markers: Vec::new(),
@@ -428,6 +460,17 @@ impl GatewayConfig {
 
         // Validate configuration
         config.validate()?;
+
+        // Discoverability: if an operator explicitly set `compactor.tokenizer_name`
+        // but left counting in estimated mode, hint that `token_counting: real` now exists.
+        if config.compactor.token_counting == TokenCountingMode::Estimated
+            && compactor_tokenizer_name_is_explicit(&contents)
+        {
+            tracing::info!(
+                "compactor.tokenizer_name is set but token_counting is 'estimated' (default); \
+                 set compactor.token_counting: real to enable BPE token counting"
+            );
+        }
 
         Ok(config)
     }

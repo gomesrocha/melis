@@ -35,6 +35,7 @@ use crate::middleware::rate_limiter::rate_limit_middleware;
 use crate::observability::metrics_handler;
 use crate::route_config::{RouteDefinition, WeightedProvider};
 use crate::state::AppState;
+use crate::tokenizer::TokenCounter;
 
 /// Maximum payload size: 10MB.
 const MAX_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
@@ -289,6 +290,19 @@ async fn chat_completions_handler(
     );
 
     // ─── Context Compaction ───────────────────────────────────────────────────
+    // Resolve the token counter for this request from the effective route config.
+    // Used both for compaction counting and for synthesizing `usage` when a provider
+    // omits it. Real BPE encodings are cached singletons (cheap to resolve).
+    let token_counter = TokenCounter::resolve(
+        resolved.effective_token_config.token_counting,
+        &resolved.effective_token_config.tokenizer_name,
+    );
+    state
+        .metrics
+        .token_counting_mode
+        .with_label_values(&[token_counter.mode_label()])
+        .inc();
+
     let compaction_start = Instant::now();
     if let Some(messages_arr) = payload.get("messages").and_then(|m| m.as_array()) {
         let compact_messages: Vec<CompactMessage> = messages_arr
@@ -582,6 +596,12 @@ async fn chat_completions_handler(
                                 json_response
                             };
 
+                            let mut final_response = final_response;
+
+                            // Fill `usage` with real token counts when the provider omitted
+                            // it (or returned zeros) and real counting is enabled for this route.
+                            fill_usage_if_missing(&mut final_response, &payload, &token_counter);
+
                             // Record token metrics
                             if let Some(usage) = final_response.get("usage") {
                                 let prompt_tokens = usage
@@ -837,6 +857,70 @@ async fn chat_completions_handler(
     state.metrics.gateway_overhead.observe(total_elapsed);
 
     Ok(response)
+}
+
+/// Fills the `usage` field of an OpenAI response with real token counts when the
+/// provider omitted it (or returned zeros) and real token counting is enabled.
+///
+/// Rules:
+/// - Only acts when `counter` is in real mode (`TokenCounter::Real`). In estimated
+///   mode this is a no-op, preserving legacy behavior.
+/// - Preserves provider-supplied values: if `prompt_tokens` and `completion_tokens`
+///   are both already non-zero, nothing is changed.
+/// - `prompt` tokens are counted from the (post-compaction) request messages;
+///   `completion` tokens from the assistant content in the first choice.
+fn fill_usage_if_missing(response: &mut Value, request_payload: &Value, counter: &TokenCounter) {
+    // No synthetic usage in estimated mode.
+    if counter.mode_label() != "real" {
+        return;
+    }
+
+    let existing_prompt = response
+        .get("usage")
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let existing_completion = response
+        .get("usage")
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Provider already supplied real usage — do not overwrite.
+    if existing_prompt > 0 && existing_completion > 0 {
+        return;
+    }
+
+    // Count prompt tokens from the request messages' content.
+    let prompt_tokens = request_payload
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|msgs| {
+            msgs.iter()
+                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                .map(|text| counter.count(text) as u64)
+                .sum::<u64>()
+        })
+        .unwrap_or(0);
+
+    // Count completion tokens from the first choice's assistant content.
+    let completion_tokens = response
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|msg| msg.get("content"))
+        .and_then(|c| c.as_str())
+        .map(|text| counter.count(text) as u64)
+        .unwrap_or(0);
+
+    let total_tokens = prompt_tokens + completion_tokens;
+
+    response["usage"] = serde_json::json!({
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    });
 }
 
 /// Resolves route configuration and builds a `ResolvedRoute` with the effective
@@ -1603,5 +1687,89 @@ routes_config_path: "./routes.yaml"
         let json: Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(json["status"], "not_ready");
         assert_eq!(json["reason"], "Redis connection unavailable");
+    }
+
+    // --- fill_usage_if_missing unit tests (Phase 1) ---
+
+    use crate::config::TokenCountingMode;
+    use crate::tokenizer::TokenCounter;
+
+    fn req_payload() -> Value {
+        serde_json::json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Summarize the quarterly report in two sentences."}
+            ]
+        })
+    }
+
+    fn response_with_content(content: &str) -> Value {
+        serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop"
+            }]
+        })
+    }
+
+    #[test]
+    fn fill_usage_noop_in_estimated_mode() {
+        let counter = TokenCounter::resolve(TokenCountingMode::Estimated, "cl100k_base");
+        let mut response = response_with_content("Revenue grew. Costs fell.");
+        fill_usage_if_missing(&mut response, &req_payload(), &counter);
+        // Estimated mode must not synthesize usage.
+        assert!(response.get("usage").is_none());
+    }
+
+    #[test]
+    fn fill_usage_fills_when_missing_in_real_mode() {
+        let counter = TokenCounter::resolve(TokenCountingMode::Real, "cl100k_base");
+        let mut response = response_with_content("Revenue grew. Costs fell.");
+        fill_usage_if_missing(&mut response, &req_payload(), &counter);
+
+        let usage = response.get("usage").expect("usage should be filled");
+        let prompt = usage["prompt_tokens"].as_u64().unwrap();
+        let completion = usage["completion_tokens"].as_u64().unwrap();
+        let total = usage["total_tokens"].as_u64().unwrap();
+        assert!(prompt > 0, "prompt_tokens should be counted");
+        assert!(completion > 0, "completion_tokens should be counted");
+        assert_eq!(total, prompt + completion);
+    }
+
+    #[test]
+    fn fill_usage_preserves_provider_values() {
+        let counter = TokenCounter::resolve(TokenCountingMode::Real, "cl100k_base");
+        let mut response = response_with_content("Revenue grew. Costs fell.");
+        response["usage"] = serde_json::json!({
+            "prompt_tokens": 11,
+            "completion_tokens": 22,
+            "total_tokens": 33
+        });
+        fill_usage_if_missing(&mut response, &req_payload(), &counter);
+
+        // Provider-supplied non-zero values must be preserved untouched.
+        assert_eq!(response["usage"]["prompt_tokens"], 11);
+        assert_eq!(response["usage"]["completion_tokens"], 22);
+        assert_eq!(response["usage"]["total_tokens"], 33);
+    }
+
+    #[test]
+    fn fill_usage_overwrites_zeroed_provider_values_in_real_mode() {
+        let counter = TokenCounter::resolve(TokenCountingMode::Real, "cl100k_base");
+        let mut response = response_with_content("Revenue grew. Costs fell.");
+        response["usage"] = serde_json::json!({
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        });
+        fill_usage_if_missing(&mut response, &req_payload(), &counter);
+
+        assert!(response["usage"]["prompt_tokens"].as_u64().unwrap() > 0);
+        assert!(response["usage"]["completion_tokens"].as_u64().unwrap() > 0);
     }
 }

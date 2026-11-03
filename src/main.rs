@@ -12,6 +12,7 @@ mod route_config;
 mod router;
 mod routing;
 mod state;
+mod tokenizer;
 
 mod middleware;
 pub mod streaming;

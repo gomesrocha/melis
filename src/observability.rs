@@ -128,6 +128,8 @@ pub struct Metrics {
     pub model_substitution_total: IntCounterVec,
     /// Counter of fallback mode activations, labeled by original_provider, fallback_provider, reason.
     pub fallback_mode_total: IntCounterVec,
+    /// Counter of token-counting operations, labeled by mode (`real` or `estimated`).
+    pub token_counting_mode: IntCounterVec,
     /// The Prometheus registry holding all metrics.
     pub registry: Registry,
 }
@@ -298,6 +300,15 @@ impl Metrics {
         )
         .expect("failed to create melis_fallback_mode_total metric");
 
+        let token_counting_mode = IntCounterVec::new(
+            Opts::new(
+                "melis_token_counting_mode",
+                "Token-counting operations by mode (real BPE or estimated approximation)",
+            ),
+            &["mode"],
+        )
+        .expect("failed to create melis_token_counting_mode metric");
+
         registry
             .register(Box::new(requests_total.clone()))
             .expect("failed to register melis_gateway_requests_total");
@@ -355,6 +366,9 @@ impl Metrics {
         registry
             .register(Box::new(fallback_mode_total.clone()))
             .expect("failed to register melis_fallback_mode_total");
+        registry
+            .register(Box::new(token_counting_mode.clone()))
+            .expect("failed to register melis_token_counting_mode");
 
         // Initialize metrics with known labels so they appear in /metrics even before first use
         provider_errors_total
@@ -375,6 +389,12 @@ impl Metrics {
             .inc_by(0);
         fallback_mode_total
             .with_label_values(&["none", "none", "none"])
+            .inc_by(0);
+        // Both counting modes present from boot so dashboards can tell the base of
+        // token numbers even before any traffic.
+        token_counting_mode.with_label_values(&["real"]).inc_by(0);
+        token_counting_mode
+            .with_label_values(&["estimated"])
             .inc_by(0);
 
         Self {
@@ -397,6 +417,7 @@ impl Metrics {
             context_saved_tokens_total,
             model_substitution_total,
             fallback_mode_total,
+            token_counting_mode,
             registry,
         }
     }

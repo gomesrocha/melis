@@ -329,6 +329,7 @@ impl RouteResolver {
                     max_history_messages: opt.max_history_messages,
                     stop_words: global.stop_words.clone(),
                     tokenizer_name: opt.local_tokenizer.clone(),
+                    token_counting: global.token_counting,
                     target_token_ratio: opt.target_token_ratio.unwrap_or(global.target_token_ratio),
                     min_final_tokens: opt.min_final_tokens.unwrap_or(global.min_final_tokens),
                     critical_markers: opt
