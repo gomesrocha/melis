@@ -411,9 +411,9 @@ async fn chat_completions_handler(
                                 state
                                     .metrics
                                     .requests_total
-                                    .with_label_values(&[request_path, "unknown", "400"])
+                                    .with_label_values(&[request_path, "unknown", "403"])
                                     .inc();
-                                return Err(GatewayError::BadRequest(format!(
+                                return Err(GatewayError::ContentBlocked(format!(
                                     "Response blocked by guardrail rule '{}'",
                                     rule
                                 )));
@@ -804,7 +804,7 @@ async fn chat_completions_handler(
                                         route = %request_path,
                                         "outbound guardrail blocked provider response"
                                     );
-                                    break 'failover Err(GatewayError::BadRequest(format!(
+                                    break 'failover Err(GatewayError::ContentBlocked(format!(
                                         "Response blocked by guardrail rule '{}'",
                                         rule
                                     )));

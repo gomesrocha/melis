@@ -47,6 +47,14 @@ pub enum GatewayError {
 
     #[error("Provider error: {0}")]
     ProviderError(String),
+
+    /// An outbound guardrail suppressed a policy-violating response.
+    ///
+    /// Distinct from `BadRequest` (inbound block): the client's request was valid,
+    /// but the gateway refused to deliver the response for content-policy reasons.
+    /// Mapped to HTTP 403 with an OpenAI-compatible error body.
+    #[error("Content blocked by policy: {0}")]
+    ContentBlocked(String),
 }
 
 impl IntoResponse for GatewayError {
@@ -91,6 +99,11 @@ impl IntoResponse for GatewayError {
             GatewayError::ProviderError(msg) => {
                 (StatusCode::BAD_GATEWAY, "provider_error", msg.clone())
             }
+            GatewayError::ContentBlocked(msg) => (
+                StatusCode::FORBIDDEN,
+                "content_policy_violation",
+                msg.clone(),
+            ),
         };
 
         let body = ErrorResponse {

@@ -236,6 +236,23 @@ impl CompiledGuardrails {
             GuardrailDecision::Allow
         }
     }
+
+    /// Decision to take when guardrail evaluation itself fails internally.
+    ///
+    /// With `fail_closed` the request/response is blocked (a synthetic blocking
+    /// decision is returned); otherwise it fails open (`Allow`). Callers invoke
+    /// this from the `Err` arm of a fallible evaluation. Current matchers are
+    /// infallible, so this is a safety valve for future fallible evaluators and
+    /// the documented, testable `fail_closed` contract.
+    pub fn decision_on_eval_error(&self) -> GuardrailDecision {
+        if self.fail_closed {
+            GuardrailDecision::Blocked {
+                rule: "__eval_error__".to_string(),
+            }
+        } else {
+            GuardrailDecision::Allow
+        }
+    }
 }
 
 /// Applies outbound guardrails to an OpenAI-compatible response body in place.
@@ -650,6 +667,43 @@ mod tests {
         let global = GuardrailsGlobalConfig { fail_closed: false };
         let g = CompiledGuardrails::compile(&cfg, &global).unwrap();
         assert!(g.fail_closed, "route fail_closed should override global");
+    }
+
+    #[test]
+    fn fail_closed_true_blocks_on_eval_error() {
+        // When evaluation fails internally and fail_closed is true, block.
+        let g = compile(
+            vec![rule(
+                "r",
+                GuardrailType::Keyword,
+                GuardrailDirection::Inbound,
+                GuardrailAction::Warn,
+                None,
+                Some(vec!["x"]),
+            )],
+            Some(true),
+        );
+        assert!(matches!(
+            g.decision_on_eval_error(),
+            GuardrailDecision::Blocked { .. }
+        ));
+    }
+
+    #[test]
+    fn fail_open_proceeds_on_eval_error() {
+        // When evaluation fails internally and fail_closed is false, proceed.
+        let g = compile(
+            vec![rule(
+                "r",
+                GuardrailType::Keyword,
+                GuardrailDirection::Inbound,
+                GuardrailAction::Warn,
+                None,
+                Some(vec!["x"]),
+            )],
+            Some(false),
+        );
+        assert_eq!(g.decision_on_eval_error(), GuardrailDecision::Allow);
     }
 
     #[test]
