@@ -31,6 +31,10 @@ pub struct CompactionResult {
     pub was_compressed: bool,
     /// The resulting messages after compaction.
     pub messages: Vec<CompactMessage>,
+    /// For each entry of `messages`, its index in the input (strictly increasing:
+    /// original order is preserved). Lets callers map kept messages back to the
+    /// original payload objects instead of rebuilding them.
+    pub kept_indices: Vec<usize>,
 }
 
 /// Trait for context compaction implementations.
@@ -38,8 +42,145 @@ pub trait ContextCompactor: Send + Sync {
     /// Compact the given messages according to the provided configuration.
     ///
     /// Returns a `CompactionResult` containing the (possibly modified) messages
-    /// along with compression metrics.
-    fn compact(&self, messages: Vec<CompactMessage>, config: &CompactorConfig) -> CompactionResult;
+    /// along with compression metrics. Equivalent to
+    /// [`compact_with_pins`](Self::compact_with_pins) with no pinned messages.
+    /// The request path uses [`compact_json_messages`]; kept as the stable
+    /// text-only entry point (tests, library callers).
+    #[allow(dead_code)]
+    fn compact(&self, messages: Vec<CompactMessage>, config: &CompactorConfig) -> CompactionResult {
+        self.compact_with_pins(messages, &[], config)
+    }
+
+    /// Like [`compact`](Self::compact), but messages with `pinned[i] == true` are
+    /// always kept, unmodified, at their original position. They still count
+    /// toward the token totals. A `pinned` shorter than `messages` treats the
+    /// missing entries as `false` (so `&[]` = legacy behavior).
+    fn compact_with_pins(
+        &self,
+        messages: Vec<CompactMessage>,
+        pinned: &[bool],
+        config: &CompactorConfig,
+    ) -> CompactionResult;
+}
+
+fn is_pinned(pinned: &[bool], i: usize) -> bool {
+    pinned.get(i).copied().unwrap_or(false)
+}
+
+// ─── JSON payload adapter (bugfix D1) ─────────────────────────────────────────
+
+/// Outcome of compacting an OpenAI-style `messages` array.
+#[derive(Debug, Clone)]
+pub struct JsonCompaction {
+    /// Metrics and kept indices from the underlying compactor.
+    pub result: CompactionResult,
+    /// The messages to forward: clones of the ORIGINAL JSON objects (all fields,
+    /// including unknown ones), in original order. Only the `content` string of a
+    /// compactable message may differ (e.g. stop-word removal). Equal to the input
+    /// when `result.was_compressed` is false.
+    pub messages: Vec<serde_json::Value>,
+}
+
+/// Why a message must be kept verbatim (never pruned, never rewritten).
+///
+/// Conservative rule for the bugfix: anything the text-only compactors cannot
+/// reason about safely is pinned. Tool call/result grouping is Phase 5 work.
+fn must_pin(m: &serde_json::Value) -> bool {
+    let role = m.get("role").and_then(|r| r.as_str());
+    let has = |k: &str| m.get(k).is_some_and(|v| !v.is_null());
+    role.is_none()
+        || matches!(role, Some("tool") | Some("function"))
+        || !m.get("content").is_some_and(|c| c.is_string())
+        || has("tool_calls")
+        || has("tool_call_id")
+        || has("function_call")
+}
+
+/// Text used ONLY for scoring and token counting; never forwarded.
+fn text_repr(m: &serde_json::Value) -> String {
+    let mut out = match m.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .map(
+                |p| match (p.get("type").and_then(|t| t.as_str()), p.get("text")) {
+                    (Some("text"), Some(serde_json::Value::String(t))) => t.clone(),
+                    _ => p.to_string(),
+                },
+            )
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(other) => other.to_string(),
+    };
+    // Tool payloads are real prompt tokens: count them.
+    for k in ["tool_calls", "function_call"] {
+        if let Some(v) = m.get(k).filter(|v| !v.is_null()) {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&v.to_string());
+        }
+    }
+    out
+}
+
+/// Compact an OpenAI-style `messages` array while preserving the original objects.
+///
+/// - Text-only messages (`role` + string `content`, any extra fields): compactable.
+///   If kept, the original object is forwarded with all fields; only `content` is
+///   replaced when the compactor changed it.
+/// - Messages with non-string/null content, `tool_calls`, `tool_call_id`,
+///   `function_call`, role `tool`/`function`, or no string `role`: pinned (kept
+///   verbatim, still counted).
+///
+/// For conversations of `{role, content: string}` objects only, the output equals
+/// the legacy `json!({"role", "content"})` reconstruction.
+pub fn compact_json_messages(
+    compactor: &dyn ContextCompactor,
+    original: &[serde_json::Value],
+    config: &CompactorConfig,
+) -> JsonCompaction {
+    let pinned: Vec<bool> = original.iter().map(must_pin).collect();
+    let compact_messages: Vec<CompactMessage> = original
+        .iter()
+        .map(|m| CompactMessage {
+            role: m
+                .get("role")
+                .and_then(|r| r.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            content: text_repr(m),
+        })
+        .collect();
+
+    let result = compactor.compact_with_pins(compact_messages, &pinned, config);
+
+    let messages = if result.was_compressed {
+        result
+            .kept_indices
+            .iter()
+            .zip(result.messages.iter())
+            .map(|(&idx, cm)| {
+                let mut obj = original[idx].clone();
+                if !pinned[idx] {
+                    // Compactable ⇒ content is a string; write back only if changed.
+                    let changed = obj
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| c != cm.content);
+                    if changed {
+                        obj["content"] = serde_json::Value::String(cm.content.clone());
+                    }
+                }
+                obj
+            })
+            .collect()
+    } else {
+        original.to_vec()
+    };
+
+    JsonCompaction { result, messages }
 }
 
 /// Simple compactor that uses character-count approximation for token counting.
@@ -112,13 +253,19 @@ impl Default for SimpleCompactor {
 }
 
 impl ContextCompactor for SimpleCompactor {
-    fn compact(&self, messages: Vec<CompactMessage>, config: &CompactorConfig) -> CompactionResult {
+    fn compact_with_pins(
+        &self,
+        messages: Vec<CompactMessage>,
+        pinned: &[bool],
+        config: &CompactorConfig,
+    ) -> CompactionResult {
         // Resolve the token counter once per call. Real BPE instances are cached
         // singletons, so this does not allocate the vocabulary per request.
         let counter = TokenCounter::resolve(config.token_counting, &config.tokenizer_name);
 
         let original_tokens = Self::total_tokens_with(&counter, &messages);
         let original_count = messages.len();
+        let all_indices: Vec<usize> = (0..original_count).collect();
 
         // Step 1: If tokens < threshold AND message count <= max_history_messages → no compression
         if original_tokens < config.token_threshold && original_count <= config.max_history_messages
@@ -130,56 +277,34 @@ impl ContextCompactor for SimpleCompactor {
                 compression_ratio: 1.0,
                 was_compressed: false,
                 messages,
+                kept_indices: all_indices,
             };
         }
 
-        // Step 2: Apply max_history_messages sliding window
-        // Keep all system messages + last N non-system messages
-        let non_system_messages: Vec<(usize, &CompactMessage)> = messages
+        // Step 2: Apply max_history_messages sliding window.
+        // Keep all system (and pinned) messages + the last N other messages,
+        // in original order. Pinned messages never count toward N.
+        let windowable: Vec<usize> = messages
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.role != "system")
+            .filter(|(i, m)| m.role != "system" && !is_pinned(pinned, *i))
+            .map(|(i, _)| i)
             .collect();
 
+        let windowed_idx: Vec<usize> = if windowable.len() > config.max_history_messages {
+            let kept_start = windowable.len() - config.max_history_messages;
+            let kept: std::collections::HashSet<usize> =
+                windowable.iter().skip(kept_start).copied().collect();
+            (0..original_count)
+                .filter(|i| {
+                    messages[*i].role == "system" || is_pinned(pinned, *i) || kept.contains(i)
+                })
+                .collect()
+        } else {
+            all_indices.clone()
+        };
         let windowed_messages: Vec<CompactMessage> =
-            if non_system_messages.len() > config.max_history_messages {
-                // Keep all system messages
-                let system_messages: Vec<CompactMessage> = messages
-                    .iter()
-                    .filter(|m| m.role == "system")
-                    .cloned()
-                    .collect();
-
-                // Keep last N non-system messages
-                let keep_non_system: Vec<CompactMessage> = non_system_messages
-                    .iter()
-                    .rev()
-                    .take(config.max_history_messages)
-                    .rev()
-                    .map(|(_, m)| (*m).clone())
-                    .collect();
-
-                // Reconstruct: system messages first (in order), then kept non-system messages
-                // Actually, preserve original interleaving order for system messages
-                // by keeping all system messages at their relative positions among kept messages.
-                // Simpler approach: system messages come first, then the windowed non-system messages.
-                // But this breaks order. Better: iterate original order, keep system + kept non-system.
-                let kept_non_system_start = non_system_messages.len() - config.max_history_messages;
-                let kept_indices: std::collections::HashSet<usize> = non_system_messages
-                    .iter()
-                    .skip(kept_non_system_start)
-                    .map(|(i, _)| *i)
-                    .collect();
-
-                messages
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, m)| m.role == "system" || kept_indices.contains(i))
-                    .map(|(_, m)| m.clone())
-                    .collect()
-            } else {
-                messages.clone()
-            };
+            windowed_idx.iter().map(|&i| messages[i].clone()).collect();
 
         let messages_pruned_by_window = original_count - windowed_messages.len();
 
@@ -195,6 +320,7 @@ impl ContextCompactor for SimpleCompactor {
                     compression_ratio: 1.0,
                     was_compressed: false,
                     messages,
+                    kept_indices: all_indices,
                 };
             }
 
@@ -210,6 +336,7 @@ impl ContextCompactor for SimpleCompactor {
                 compression_ratio,
                 was_compressed: messages_pruned_by_window > 0,
                 messages: windowed_messages,
+                kept_indices: windowed_idx,
             };
         }
 
@@ -217,11 +344,16 @@ impl ContextCompactor for SimpleCompactor {
         // Find the index of the last user message in the windowed set
         let last_user_idx = windowed_messages.iter().rposition(|m| m.role == "user");
 
-        // Identify eligible messages (not system, not last user)
+        // Identify eligible messages (not system, not last user, not pinned).
+        // Positions are relative to `windowed_messages`.
         let eligible_indices: Vec<usize> = windowed_messages
             .iter()
             .enumerate()
-            .filter(|(i, m)| m.role != "system" && Some(*i) != last_user_idx)
+            .filter(|(i, m)| {
+                m.role != "system"
+                    && Some(*i) != last_user_idx
+                    && !is_pinned(pinned, windowed_idx[*i])
+            })
             .map(|(i, _)| i)
             .collect();
 
@@ -256,6 +388,7 @@ impl ContextCompactor for SimpleCompactor {
                     compression_ratio: 1.0,
                     was_compressed: false,
                     messages,
+                    kept_indices: all_indices,
                 };
             }
 
@@ -271,6 +404,7 @@ impl ContextCompactor for SimpleCompactor {
                 compression_ratio,
                 was_compressed: true,
                 messages: working_messages,
+                kept_indices: windowed_idx,
             };
         }
 
@@ -299,17 +433,17 @@ impl ContextCompactor for SimpleCompactor {
         }
 
         // Build final message list preserving order
-        let final_messages: Vec<CompactMessage> = working_messages
+        let (final_messages, final_idx): (Vec<CompactMessage>, Vec<usize>) = working_messages
             .into_iter()
             .enumerate()
             .filter(|(i, _)| !indices_to_remove.contains(i))
-            .map(|(_, m)| m)
-            .collect();
+            .map(|(i, m)| (m, windowed_idx[i]))
+            .unzip();
 
         // SAFETY: never return an empty message array — always keep at least the last message
-        let final_messages = if final_messages.is_empty() {
+        let (final_messages, final_idx) = if final_messages.is_empty() {
             if let Some(last) = messages.last() {
-                vec![last.clone()]
+                (vec![last.clone()], vec![original_count - 1])
             } else {
                 return CompactionResult {
                     original_tokens,
@@ -318,10 +452,11 @@ impl ContextCompactor for SimpleCompactor {
                     compression_ratio: 1.0,
                     was_compressed: false,
                     messages,
+                    kept_indices: all_indices,
                 };
             }
         } else {
-            final_messages
+            (final_messages, final_idx)
         };
 
         let final_tokens = Self::total_tokens_with(&counter, &final_messages);
@@ -338,6 +473,7 @@ impl ContextCompactor for SimpleCompactor {
             compression_ratio,
             was_compressed: true,
             messages: final_messages,
+            kept_indices: final_idx,
         }
     }
 }
@@ -508,7 +644,12 @@ impl Default for SemanticGuardedCompactor {
 }
 
 impl ContextCompactor for SemanticGuardedCompactor {
-    fn compact(&self, messages: Vec<CompactMessage>, config: &CompactorConfig) -> CompactionResult {
+    fn compact_with_pins(
+        &self,
+        messages: Vec<CompactMessage>,
+        pinned: &[bool],
+        config: &CompactorConfig,
+    ) -> CompactionResult {
         // Resolve the token counter once per call (cached singleton for real mode).
         let counter = TokenCounter::resolve(config.token_counting, &config.tokenizer_name);
 
@@ -524,6 +665,7 @@ impl ContextCompactor for SemanticGuardedCompactor {
                 compression_ratio: 1.0,
                 was_compressed: false,
                 messages,
+                kept_indices: (0..original_count).collect(),
             };
         }
 
@@ -553,6 +695,7 @@ impl ContextCompactor for SemanticGuardedCompactor {
                     + SimpleCompactor::count_tokens_with(&counter, &msg.content);
                 let is_protected = msg.role == "system"
                     || is_last_user
+                    || is_pinned(pinned, i)
                     || (config.preserve_critical_markers
                         && config
                             .critical_markers
@@ -578,11 +721,11 @@ impl ContextCompactor for SemanticGuardedCompactor {
 
         // If protected alone exceeds budget, just keep protected messages
         if protected_tokens >= target_tokens {
-            let final_messages: Vec<CompactMessage> = scored
+            let (final_messages, kept_indices): (Vec<CompactMessage>, Vec<usize>) = scored
                 .iter()
                 .filter(|s| s.is_protected)
-                .map(|s| s.message.clone())
-                .collect();
+                .map(|s| (s.message.clone(), s.index))
+                .unzip();
             let final_tokens = SimpleCompactor::total_tokens_with(&counter, &final_messages);
             return CompactionResult {
                 original_tokens,
@@ -595,6 +738,7 @@ impl ContextCompactor for SemanticGuardedCompactor {
                 },
                 was_compressed: true,
                 messages: final_messages,
+                kept_indices,
             };
         }
 
@@ -617,11 +761,11 @@ impl ContextCompactor for SemanticGuardedCompactor {
         }
 
         // Step 8: Build final message list preserving original order
-        let final_messages: Vec<CompactMessage> = scored
+        let (final_messages, kept_indices): (Vec<CompactMessage>, Vec<usize>) = scored
             .iter()
             .filter(|s| !removed_indices.contains(&s.index))
-            .map(|s| s.message.clone())
-            .collect();
+            .map(|s| (s.message.clone(), s.index))
+            .unzip();
 
         let final_tokens = SimpleCompactor::total_tokens_with(&counter, &final_messages);
         let messages_pruned = original_count - final_messages.len();
@@ -637,6 +781,7 @@ impl ContextCompactor for SemanticGuardedCompactor {
             },
             was_compressed: true,
             messages: final_messages,
+            kept_indices,
         }
     }
 }
@@ -1405,5 +1550,394 @@ mod tests {
         assert_eq!(result.messages_pruned, 0);
         // Messages should remain unchanged (no stop-words configured)
         assert_eq!(result.messages.len(), 2);
+    }
+}
+
+#[cfg(test)]
+#[path = "compactor_legacy_ref.rs"]
+mod legacy_ref;
+
+/// Regression tests for bugfix D1: compaction must forward the ORIGINAL message
+/// objects (all fields), keep order, and never drop non-text / tool messages.
+#[cfg(test)]
+mod d1_preservation_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use serde_json::{json, Value};
+
+    fn long(tag: &str) -> String {
+        format!("{tag} ").repeat(60)
+    }
+
+    /// Small threshold so compaction always fires; window large enough that the
+    /// token-pruning path (not only the window) is exercised.
+    fn cfg(strategy: &str) -> CompactorConfig {
+        CompactorConfig {
+            token_threshold: 50,
+            max_history_messages: 50,
+            target_token_ratio: 0.3,
+            min_final_tokens: 10,
+            strategy: strategy.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn compactors() -> Vec<(&'static str, Box<dyn ContextCompactor>)> {
+        vec![
+            ("simple", Box::new(SimpleCompactor::new())),
+            ("semantic", Box::new(SemanticGuardedCompactor::new())),
+        ]
+    }
+
+    /// Conversation mixing every case the old reconstruction corrupted.
+    fn mixed_conversation() -> Vec<Value> {
+        vec![
+            json!({"role": "system", "content": "You are a helpful assistant."}),
+            json!({"role": "user", "content": long("old filler"), "name": "alice", "x_trace": {"id": 7}}),
+            json!({"role": "assistant", "content": long("old answer"), "x_vendor": [1, 2, 3]}),
+            json!({"role": "user", "content": long("more filler")}),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "get_weather", "arguments": "{\"city\":\"Lisboa\"}"}}]
+            }),
+            json!({"role": "tool", "tool_call_id": "call_1", "name": "get_weather", "content": "{\"temp\":21}"}),
+            json!({"role": "user", "content": [
+                {"type": "text", "text": "what about this image?"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
+            ]}),
+            json!({"role": "assistant", "content": long("filler reply"), "refusal": null}),
+            json!({"content": "message without role", "x_custom": true}),
+            json!({"role": "user", "content": "final question about the weather?", "name": "alice"}),
+        ]
+    }
+
+    fn assert_structurally_preserved(input: &[Value], out: &JsonCompaction, label: &str) {
+        let kept = &out.result.kept_indices;
+        assert_eq!(
+            kept.len(),
+            out.messages.len(),
+            "{label}: one index per message"
+        );
+        assert!(
+            kept.windows(2).all(|w| w[0] < w[1]),
+            "{label}: original order preserved, no duplicates: {kept:?}"
+        );
+        for (&idx, m) in kept.iter().zip(&out.messages) {
+            // Without stop-words nothing is rewritten: byte-for-byte the original object.
+            assert_eq!(
+                m, &input[idx],
+                "{label}: message {idx} must be the original object"
+            );
+        }
+        for (i, m) in input.iter().enumerate() {
+            if must_pin(m) {
+                assert!(
+                    kept.contains(&i),
+                    "{label}: pinned message {i} was dropped: {m}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tool_calls_tool_call_id_name_and_unknown_fields_survive_compaction() {
+        let input = mixed_conversation();
+        for (label, c) in compactors() {
+            let out = compact_json_messages(c.as_ref(), &input, &cfg(label));
+            assert!(out.result.was_compressed, "{label}: compaction must fire");
+            assert!(
+                out.messages.len() < input.len(),
+                "{label}: something pruned"
+            );
+            assert_structurally_preserved(&input, &out, label);
+
+            let assistant_call = out
+                .messages
+                .iter()
+                .find(|m| m.get("tool_calls").is_some())
+                .expect("assistant tool_calls message kept");
+            assert_eq!(assistant_call, &input[4]);
+            assert!(
+                assistant_call["content"].is_null(),
+                "null content stays null"
+            );
+
+            let tool = out
+                .messages
+                .iter()
+                .find(|m| m["role"] == "tool")
+                .expect("tool result kept");
+            assert_eq!(tool["tool_call_id"], "call_1");
+            assert_eq!(tool["name"], "get_weather");
+
+            let last = out.messages.last().unwrap();
+            assert_eq!(last, &input[9], "{label}: last user keeps `name`");
+        }
+    }
+
+    #[test]
+    fn non_text_and_null_content_is_never_silently_dropped() {
+        let input = mixed_conversation();
+        for (label, c) in compactors() {
+            let out = compact_json_messages(c.as_ref(), &input, &cfg(label));
+            assert!(
+                out.messages.contains(&input[6]),
+                "{label}: array content kept verbatim"
+            );
+            assert!(
+                out.messages.contains(&input[4]),
+                "{label}: null content kept verbatim"
+            );
+            assert!(
+                out.messages.contains(&input[8]),
+                "{label}: role-less message kept"
+            );
+        }
+    }
+
+    #[test]
+    fn kept_compactable_message_keeps_unknown_fields() {
+        // A relevant text message carrying `name` + unknown fields is kept by both
+        // compactors, while a low-value one is pruned: the kept one is forwarded
+        // as the original object.
+        let input = vec![
+            json!({"role": "system", "content": "sys"}),
+            json!({"role": "user", "content": long("contexto auxiliar filler")}),
+            json!({"role": "assistant", "content": long("api error port 8080 deploy weather"),
+                   "name": "helper", "x_trace": {"id": 7}}),
+            json!({"role": "user", "content": "weather deploy question?"}),
+        ];
+        for (label, comp) in compactors() {
+            let mut c = cfg(label);
+            c.target_token_ratio = 0.6;
+            let out = compact_json_messages(comp.as_ref(), &input, &c);
+            assert!(out.result.was_compressed, "{label}");
+            assert!(!out.messages.contains(&input[1]), "{label}: filler pruned");
+            let kept = out
+                .messages
+                .iter()
+                .find(|m| m.get("x_trace").is_some())
+                .unwrap_or_else(|| panic!("{label}: message with unknown fields kept"));
+            assert_eq!(kept, &input[2], "{label}");
+            assert_eq!(kept["name"], "helper");
+        }
+    }
+
+    #[test]
+    fn stop_word_rewrite_changes_only_content() {
+        let input = vec![
+            json!({"role": "system", "content": "sys"}),
+            json!({"role": "user", "content": long("the the the data"), "name": "bob", "x_meta": {"k": 1}}),
+            json!({"role": "assistant", "content": long("the reply the"), "x_vendor": 1}),
+            json!({"role": "user", "content": "last question"}),
+        ];
+        let c = CompactorConfig {
+            token_threshold: 50,
+            max_history_messages: 50,
+            stop_words: vec!["the".to_string()],
+            ..Default::default()
+        };
+        let out = compact_json_messages(&SimpleCompactor::new(), &input, &c);
+        assert!(out.result.was_compressed);
+        let rewritten = out
+            .messages
+            .iter()
+            .find(|m| m.get("x_meta").is_some())
+            .expect("stop-word path keeps the message");
+        assert_eq!(rewritten["name"], "bob");
+        assert_eq!(rewritten["x_meta"], json!({"k": 1}));
+        assert!(!rewritten["content"].as_str().unwrap().contains("the "));
+        let mut expected = input[1].clone();
+        expected["content"] = rewritten["content"].clone();
+        assert_eq!(rewritten, &expected, "only `content` may differ");
+    }
+
+    #[test]
+    fn pinned_tool_payload_counts_toward_tokens() {
+        let call = json!({"role": "assistant", "content": null,
+                          "tool_calls": [{"id": "c", "type": "function",
+                                          "function": {"name": "f", "arguments": long("arg")}}]});
+        assert!(
+            text_repr(&call).len() > 200,
+            "tool_calls are counted, not ignored"
+        );
+    }
+
+    #[test]
+    fn below_threshold_returns_input_unchanged() {
+        let input = mixed_conversation();
+        let mut c = cfg("simple");
+        c.token_threshold = 1_000_000;
+        c.max_history_messages = 1_000;
+        let out = compact_json_messages(&SimpleCompactor::new(), &input, &c);
+        assert!(!out.result.was_compressed);
+        assert_eq!(out.messages, input);
+    }
+
+    #[test]
+    fn window_never_drops_pinned_messages() {
+        // max_history_messages=1 would keep only the last non-system message under
+        // the legacy window; pinned tool messages must survive it.
+        let input = mixed_conversation();
+        let mut c = cfg("simple");
+        c.max_history_messages = 1;
+        let out = compact_json_messages(&SimpleCompactor::new(), &input, &c);
+        assert!(out.result.was_compressed);
+        assert_structurally_preserved(&input, &out, "window");
+    }
+
+    // ── legacy parity (text-only, no extra fields) ──────────────────────────────
+
+    /// The pre-D1 router path: filter_map(role, content: string) → compact →
+    /// `json!({"role", "content"})`. Uses the verbatim pre-D1 algorithms.
+    fn legacy_forward(
+        strategy: &str,
+        input: &[Value],
+        c: &CompactorConfig,
+    ) -> (CompactionResult, Vec<Value>) {
+        let msgs: Vec<CompactMessage> = input
+            .iter()
+            .filter_map(|m| {
+                Some(CompactMessage {
+                    role: m.get("role")?.as_str()?.to_string(),
+                    content: m.get("content")?.as_str()?.to_string(),
+                })
+            })
+            .collect();
+        let r = if strategy == "semantic" {
+            super::legacy_ref::legacy_semantic(msgs, c)
+        } else {
+            super::legacy_ref::legacy_simple(msgs, c)
+        };
+        let forwarded = if r.was_compressed {
+            r.messages
+                .iter()
+                .map(|m| json!({"role": m.role, "content": m.content}))
+                .collect()
+        } else {
+            input.to_vec()
+        };
+        (r, forwarded)
+    }
+
+    fn text_conversation() -> impl Strategy<Value = Vec<Value>> {
+        let role = prop_oneof![
+            1 => Just("system"),
+            4 => Just("user"),
+            4 => Just("assistant"),
+        ];
+        let word = prop_oneof![
+            Just("the"),
+            Just("a"),
+            Just("api"),
+            Just("error"),
+            Just("port"),
+            Just("8080"),
+            Just("FATOS"),
+            Just("contexto"),
+            Just("auxiliar"),
+            Just("ok"),
+            Just("deploy"),
+            Just("lorem"),
+            Just("ipsum"),
+            Just("2024-01-02"),
+            Just("https://x.io/v1/a"),
+        ];
+        let content = prop::collection::vec(word, 1..40).prop_map(|w| w.join(" "));
+        prop::collection::vec((role, content), 1..25).prop_map(|v| {
+            v.into_iter()
+                .map(|(r, c)| json!({"role": r, "content": c}))
+                .collect()
+        })
+    }
+
+    fn any_config() -> impl Strategy<Value = CompactorConfig> {
+        (
+            1usize..400,
+            1usize..12,
+            any::<bool>(),
+            0.1f64..0.95,
+            0usize..60,
+            any::<bool>(),
+        )
+            .prop_map(|(thr, hist, sw, ratio, minf, markers)| CompactorConfig {
+                token_threshold: thr,
+                max_history_messages: hist,
+                stop_words: if sw {
+                    vec!["the".into(), "a".into()]
+                } else {
+                    vec![]
+                },
+                target_token_ratio: ratio,
+                min_final_tokens: minf,
+                critical_markers: if markers {
+                    vec!["FATOS".into()]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// Text-only conversations: the new adapter forwards exactly what the
+        /// pre-D1 code forwarded, with identical metrics.
+        #[test]
+        fn legacy_parity_text_only(input in text_conversation(), c in any_config()) {
+            for (label, comp) in compactors() {
+                let (legacy, legacy_out) = legacy_forward(label, &input, &c);
+                let new = compact_json_messages(comp.as_ref(), &input, &c);
+                prop_assert_eq!(&new.messages, &legacy_out, "{} payload", label);
+                prop_assert_eq!(new.result.original_tokens, legacy.original_tokens);
+                prop_assert_eq!(new.result.final_tokens, legacy.final_tokens);
+                prop_assert_eq!(new.result.messages_pruned, legacy.messages_pruned);
+                prop_assert_eq!(new.result.was_compressed, legacy.was_compressed);
+                prop_assert_eq!(&new.result.messages, &legacy.messages);
+            }
+        }
+
+        /// Mixed conversations: pinned messages always survive, verbatim, in order.
+        #[test]
+        fn pinned_messages_always_survive(
+            text in text_conversation(),
+            positions in prop::collection::vec(0usize..30, 1..5),
+            c in any_config(),
+        ) {
+            let mut input = text;
+            let specials = mixed_conversation();
+            let pinned_samples = [&specials[4], &specials[5], &specials[6], &specials[8]];
+            for (k, p) in positions.iter().enumerate() {
+                let at = p % (input.len() + 1);
+                input.insert(at, pinned_samples[k % pinned_samples.len()].clone());
+            }
+            for (label, comp) in compactors() {
+                let out = compact_json_messages(comp.as_ref(), &input, &c);
+                let kept = &out.result.kept_indices;
+                prop_assert!(kept.windows(2).all(|w| w[0] < w[1]), "{} order", label);
+                if out.result.was_compressed {
+                    for (&idx, m) in kept.iter().zip(&out.messages) {
+                        if must_pin(&input[idx]) {
+                            prop_assert_eq!(m, &input[idx]);
+                        } else {
+                            // Only content may differ.
+                            let mut e = input[idx].clone();
+                            e["content"] = m["content"].clone();
+                            prop_assert_eq!(m, &e);
+                        }
+                    }
+                } else {
+                    prop_assert_eq!(&out.messages, &input);
+                }
+                for (i, m) in input.iter().enumerate() {
+                    if must_pin(m) {
+                        prop_assert!(kept.contains(&i), "{}: pinned {} dropped", label, i);
+                    }
+                }
+            }
+        }
     }
 }

@@ -24,9 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::circuit_breaker::CallResult;
-use crate::compactor::{
-    CompactMessage, ContextCompactor, SemanticGuardedCompactor, SimpleCompactor,
-};
+use crate::compactor::{ContextCompactor, SemanticGuardedCompactor, SimpleCompactor};
 use crate::config::CompactorConfig;
 use crate::embeddings::embeddings_handler;
 use crate::error::GatewayError;
@@ -495,33 +493,23 @@ async fn chat_completions_handler(
 
     let compaction_start = Instant::now();
     if let Some(messages_arr) = payload.get("messages").and_then(|m| m.as_array()) {
-        let compact_messages: Vec<CompactMessage> = messages_arr
-            .iter()
-            .filter_map(|m| {
-                let role = m.get("role")?.as_str()?;
-                let content = m.get("content")?.as_str()?;
-                Some(CompactMessage {
-                    role: role.to_string(),
-                    content: content.to_string(),
-                })
-            })
-            .collect();
-
         let compactor: Box<dyn ContextCompactor> =
             if resolved.effective_token_config.strategy == "semantic_guarded_trimming" {
                 Box::new(SemanticGuardedCompactor::new())
             } else {
                 Box::new(SimpleCompactor::new())
             };
-        let result = compactor.compact(compact_messages, &resolved.effective_token_config);
+        // Preserves the original message objects (all fields, unknown ones
+        // included); tool/non-text messages are pinned (bugfix D1).
+        let compaction = crate::compactor::compact_json_messages(
+            compactor.as_ref(),
+            messages_arr,
+            &resolved.effective_token_config,
+        );
+        let result = compaction.result;
 
         if result.was_compressed {
-            let new_messages: Vec<Value> = result
-                .messages
-                .iter()
-                .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
-                .collect();
-            payload["messages"] = Value::Array(new_messages);
+            payload["messages"] = Value::Array(compaction.messages);
             state.metrics.compaction_applied_total.inc();
             state
                 .metrics

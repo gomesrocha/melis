@@ -1146,3 +1146,196 @@ custom_providers:
         }
     }
 }
+
+/// Bugfix D1 end-to-end: capture the payload the gateway actually sends to an
+/// OpenAI-compatible provider after compaction fires, and compare it with the
+/// original message objects.
+#[cfg(test)]
+mod d1_payload_preservation_e2e {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::balancer::WeightedRoundRobin;
+    use crate::circuit_breaker::LocalCircuitBreaker;
+    use crate::client::ReqwestLlmClient;
+    use crate::config::GatewayConfig;
+    use crate::guardrails::GuardrailEngine;
+    use crate::middleware::rate_limiter::LocalTokenBucket;
+    use crate::observability::Metrics;
+    use crate::route_config::RouteConfigManager;
+    use crate::router::build_router;
+    use crate::state::AppState;
+
+    fn long(tag: &str) -> String {
+        format!("{tag} ").repeat(80)
+    }
+
+    async fn forwarded_messages(strategy: &str, messages: &[Value]) -> (Vec<Value>, Arc<Metrics>) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "x", "object": "chat.completion", "created": 0, "model": "mock-model",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let routes_path = dir.path().join("routes.yaml");
+        std::fs::write(
+            &routes_path,
+            format!(
+                r#"
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "openai"
+    model: "mock-model"
+    token_optimization:
+      strategy: "{strategy}"
+      max_history_messages: 50
+      compress_above_tokens: 50
+      target_token_ratio: 0.3
+      min_final_tokens: 10
+"#
+            ),
+        )
+        .unwrap();
+        let gateway_config = GatewayConfig::from_yaml(&format!(
+            r#"
+server:
+  host: "0.0.0.0"
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+auth:
+  enabled: false
+providers:
+  - id: "mock-openai"
+    provider_type: "openai"
+    api_key: "test-key"
+    base_url: "{}/v1"
+"#,
+            server.uri()
+        ))
+        .unwrap();
+
+        let route_config = RouteConfigManager::new(routes_path);
+        let guardrails = Arc::new(GuardrailEngine::new(
+            route_config.current().config(),
+            gateway_config.guardrails.clone(),
+        ));
+        let metrics = Arc::new(Metrics::new());
+        let state = AppState {
+            route_config: Arc::new(route_config),
+            gateway_config: Arc::new(gateway_config),
+            rate_limiter: Arc::new(LocalTokenBucket::new()),
+            load_balancer: Arc::new(WeightedRoundRobin::new()),
+            circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+            http_client: Arc::new(ReqwestLlmClient::new()),
+            metrics: metrics.clone(),
+            redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails,
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+        };
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({"model": "mock-model", "messages": messages})).unwrap(),
+            ))
+            .unwrap();
+        let response = build_router(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1, "exactly one upstream call");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        (body["messages"].as_array().unwrap().clone(), metrics)
+    }
+
+    /// Shapes that pass `validate_chat_payload` (string content) but used to be
+    /// corrupted by the `{role, content}` rebuild when compaction fired.
+    fn conversation() -> Vec<Value> {
+        vec![
+            json!({"role": "system", "content": "You are a helpful assistant."}),
+            json!({"role": "user", "content": long("old filler"), "name": "alice", "x_trace": {"id": 7}}),
+            json!({"role": "assistant", "content": long("old answer")}),
+            json!({
+                "role": "assistant",
+                "content": "Calling the weather tool.",
+                "tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "get_weather", "arguments": "{\"city\":\"Lisboa\"}"}}]
+            }),
+            json!({"role": "tool", "tool_call_id": "call_1", "name": "get_weather", "content": "{\"temp\":21}"}),
+            json!({"role": "assistant", "content": long("filler reply")}),
+            json!({"role": "user", "content": "And tomorrow's weather?", "name": "alice", "x_client": "web"}),
+        ]
+    }
+
+    #[tokio::test]
+    async fn compaction_forwards_original_objects_with_tool_fields() {
+        for strategy in ["adaptive_trimming", "semantic_guarded_trimming"] {
+            let input = conversation();
+            let (sent, metrics) = forwarded_messages(strategy, &input).await;
+
+            assert_eq!(
+                metrics.compaction_applied_total.get(),
+                1,
+                "{strategy}: compaction must have fired"
+            );
+            assert!(sent.len() < input.len(), "{strategy}: something was pruned");
+
+            // Every forwarded message is one of the ORIGINAL objects, in order.
+            let mut last = None;
+            for m in &sent {
+                let idx = input
+                    .iter()
+                    .position(|o| o == m)
+                    .unwrap_or_else(|| panic!("{strategy}: forwarded message was rewritten: {m}"));
+                assert!(last.is_none_or(|l| idx > l), "{strategy}: order changed");
+                last = Some(idx);
+            }
+
+            // Tool call and its result reach the provider intact.
+            assert!(sent.contains(&input[3]), "{strategy}: tool_calls lost");
+            assert!(sent.contains(&input[4]), "{strategy}: tool result lost");
+            // Last user message keeps `name` and the unknown field.
+            assert_eq!(sent.last().unwrap(), &input[6], "{strategy}");
+        }
+    }
+
+    #[tokio::test]
+    async fn text_only_conversation_is_forwarded_as_before() {
+        // Legacy shape: `{role, content}` only. Forwarded payload is exactly the
+        // subset of the original objects the old code produced.
+        let input = vec![
+            json!({"role": "system", "content": "sys"}),
+            json!({"role": "user", "content": long("old filler")}),
+            json!({"role": "assistant", "content": long("old answer")}),
+            json!({"role": "user", "content": "final question"}),
+        ];
+        let (sent, _) = forwarded_messages("adaptive_trimming", &input).await;
+        // Legacy rule: target = 75% of original; oldest eligible pruned first.
+        // Dropping message 1 alone reaches the target.
+        assert_eq!(
+            sent,
+            vec![input[0].clone(), input[2].clone(), input[3].clone()]
+        );
+    }
+}

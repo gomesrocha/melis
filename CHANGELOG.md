@@ -5,6 +5,41 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed — Context compaction corrupted messages (bugfix D1)
+- **Before:** when compaction fired (`adaptive_trimming`, `sliding_window`,
+  `semantic_guarded_trimming`), the handler rebuilt every kept message as
+  `{"role", "content"}`. As a result:
+  - `tool_calls`, `tool_call_id`, `name`, `function_call` and any unknown fields
+    were silently dropped;
+  - a `role: tool` result could be pruned while its `assistant.tool_calls` was
+    kept, or the reverse;
+  - messages without a string `role`/`content` disappeared.
+  Payloads were only intact when compaction did not fire.
+- **Now:**
+  - The gateway forwards clones of the original message objects, with all fields
+    and in the original order.
+  - Text is extracted separately and used only for scoring and token counting.
+  - When stop-word removal shortens a kept message, only its `content` string
+    changes.
+  - Messages the text compactors can't handle safely are pinned: always kept,
+    verbatim, still counted toward the budget. Pinned cases: non-string or null
+    `content`, `tool_calls`, `tool_call_id`, `function_call`, role
+    `tool`/`function`, no string `role`.
+  - Pinned messages are never dropped by the `max_history_messages` window and
+    don't count toward its limit.
+  - Tool-call grouping (pruning a call together with its results) is not part of
+    this fix.
+- `tool_calls` / `function_call` payloads now count toward the token total of their
+  message (they are real prompt tokens and are now forwarded).
+- **Unchanged:** text-only conversations (`{role, content: string}` without extra
+  fields) produce the same forwarded payload and metrics as before. This is
+  verified by a property test against a verbatim copy of the pre-fix algorithms.
+- `CompactionResult` gains `kept_indices`; `ContextCompactor` gains
+  `compact_with_pins` (`compact` = no pins, unchanged).
+- Known gap, not addressed here (GAP-OAI-1): request validation still rejects
+  `content: null` (valid in OpenAI for `assistant` with `tool_calls`) and array
+  (multimodal) `content` with 400, so those shapes never reach compaction via
+  HTTP. The adapter handles them for robustness.
 
 ### Phase 4 — Shared Redis Circuit Breaker
 
