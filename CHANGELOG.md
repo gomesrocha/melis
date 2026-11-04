@@ -5,6 +5,44 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Phase 6A — Virtual models (declarative aliases)
+#### Added
+- `model_aliases` in `routes.yaml`: `[{name, targets: [{provider, model, weight}]}]`.
+  A request `model` can be an alias name that resolves to one or more concrete
+  `(provider, model)` targets. `@name` is reserved syntax that forces alias
+  interpretation; `@name` and `name` are the same alias (stored canonically without
+  `@`). An unknown `@name` returns 400 and is never forwarded as a concrete model; a
+  bare unknown name is forwarded as a concrete model (passthrough).
+- `route.default_model`: the model used only when the client sends no usable model.
+  Unlike `route.model` (mandatory override), it does not shadow a client alias.
+  A route may set at most one of `model` / `default_model`.
+- Precedence: route `model` (override) > payload alias > concrete payload model >
+  `default_model`. Multi-target aliases feed the existing weighted balancer and
+  failover; each attempt forwards its target's concrete model.
+- `GET /v1/models`: OpenAI-compatible listing of declared aliases and declared
+  concrete models. Respects auth and filters by the client's `allowed_models`.
+  Never exposes credentials, provider endpoints, weights, or the alias mapping.
+- Alias authorization: `allowed_models` is checked for the requested name, the
+  effective model, and every resolved alias destination — an alias cannot be used
+  to reach a model the client is not allowed to use.
+- Cache + effective destination: single-target aliases (and normal routes) key the
+  cache by the effective destination (provider + hashed deployment + concrete
+  model, namespace version 4), so a remapped alias or a different deployment never
+  reuses an incompatible entry. Multi-target aliases bypass cache lookup and store
+  this version (non-deterministic destination), counted by
+  `melis_cache_skipped_total{reason="multi_target_alias"}`.
+- Observability: `melis_model_alias_resolution_total{alias,outcome}` with a bounded
+  `alias` label (declared name or `other`). Requested / resolved / effective models
+  are distinguished in logs; arbitrary client strings are never used as labels.
+- Response contract unchanged: the `model` field returned is the provider's value;
+  no public fields were added for alias / resolved / effective model.
+- Validation: ambiguous `name`/`@name`, collision with a declared concrete model,
+  empty targets, `weight >= 1` and positive sum, unknown target provider, no alias
+  chaining, and `model`/`default_model` mutual exclusion. Invalid config is rejected
+  at boot and kept-previous on hot reload.
+- Hot reload: alias resolution uses the same per-request resolver snapshot as the
+  route; a reload mid-request does not mix versions.
+
 ### Security — enforce allowed_models (previously inert)
 #### Fixed
 - `auth.api_keys[].allowed_models` was carried into `ClientIdentity` but never

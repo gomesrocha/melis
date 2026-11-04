@@ -670,6 +670,73 @@ harness and don't support conclusions.
 
 ---
 
+## Virtual Models (aliases)
+
+A request's `model` field can be a declarative **alias** that resolves to one or
+more concrete `(provider, model)` targets, so clients can ask for a logical name
+(`fast`, `team-default`) without knowing the backend. This is pure declarative
+mapping with configured weights — there is no "lowest cost" / "best quality"
+auto-routing.
+
+```yaml
+model_aliases:
+  - name: "fast"
+    targets:
+      - provider: "ollama"
+        model: "llama3.2"
+  - name: "team-default"
+    targets:
+      - provider: "openai"
+        model: "gpt-4o-mini"
+        weight: 3
+      - provider: "ollama"
+        model: "llama3.2"
+        weight: 1
+```
+
+Resolution and precedence (for a request that matched a route):
+
+1. **Route `model`** (mandatory override) — forces the model; a client alias is
+   ignored. Existing routes keep their exact behavior.
+2. **Payload alias** — a `model` that names an alias resolves to its targets.
+3. **Concrete payload model** — forwarded as-is.
+4. **Route `default_model`** — used only when the client sent no usable model; it
+   does **not** shadow an alias the client sent. A route sets at most one of
+   `model` / `default_model`.
+
+`@name` is reserved syntax that forces alias interpretation: `@fast` must be a
+declared alias (else **400**, never forwarded as a concrete model). `@fast` and
+`fast` are the same alias. A bare unknown name is treated as a concrete model and
+forwarded as-is.
+
+- **Multi-target** aliases feed the weighted load balancer and failover; each
+  attempt forwards that target's concrete model. **Single-target** aliases are
+  deterministic.
+- **Authorization:** `allowed_models` (per API key) is enforced for the requested
+  name, the effective model, and every resolved alias destination — an alias cannot
+  reach a model the client is not allowed to use.
+- **Cache:** single-target aliases (and normal routes) key the cache by the
+  effective destination (provider + hashed deployment + concrete model), so a
+  remapped alias or a different deployment never reuses an incompatible entry.
+  Multi-target aliases **bypass** the cache in this version (the destination is
+  chosen after lookup and can fall back), counted by
+  `melis_cache_skipped_total{reason="multi_target_alias"}`.
+- **Response contract unchanged:** the `model` field in the response is the
+  provider's value. The requested / resolved / effective models are recorded only
+  in internal observability (`melis_model_alias_resolution_total{alias,outcome}`,
+  bounded labels), never as public fields.
+- **`GET /v1/models`** lists declared aliases and declared concrete models in
+  OpenAI format, respects auth, and filters by `allowed_models`. It never reveals
+  credentials, provider endpoints, weights, or the alias mapping.
+
+Validation rejects (at boot; kept-previous on hot reload): an alias name equal to a
+declared concrete model, ambiguous `name`/`@name`, empty targets, zero weight,
+unknown target provider, alias chaining, and `model`+`default_model` on one route.
+
+See [`docs/specs/phase-6a-virtual-models.md`](docs/specs/phase-6a-virtual-models.md).
+
+---
+
 ## Semantic Cache
 
 Melis can cache responses per route and return them for semantically-equivalent
@@ -911,6 +978,8 @@ Melis exposes all metrics at `GET /metrics` in Prometheus text exposition format
 | `melis_compaction_scoring_fallback_total` | Counter | `reason` | Fallbacks to the heuristic: `limit_exceeded`, `timeout`, `provider_error`, `count_mismatch`, `invalid_dimension`, `non_finite`, `zero_norm`, `no_query` |
 | `melis_compaction_scoring_skipped_total` | Counter | `reason` | Scoring not needed: `no_candidates`, `mandatory_exceeds_target` |
 | `melis_compaction_budget_insufficient_total` | Counter | — | Requests rejected by `budget.mode: strict` |
+| `melis_model_alias_resolution_total` | Counter | `alias`, `outcome` | Alias resolutions; `alias` is a declared name or `other`; `outcome` ∈ resolved_single/resolved_multi/unknown_alias/no_alias |
+| `melis_cache_skipped_total` | Counter | `reason` | Cache lookups/stores skipped (e.g. `multi_target_alias`) |
 
 > **Note on `melis_circuit_breaker_state` with the Redis backend:** replicas read
 > state through a short-TTL local cache (`circuit_breaker.redis_state_cache_ms`,

@@ -1,6 +1,16 @@
-# Fase 6A: modelos virtuais (aliases declarativos) — spec revisado
+# Fase 6A: modelos virtuais (aliases declarativos) — spec
 
-Spec para aprovação. **Nada implementado.** Rev. 2 incorpora os pontos da revisão:
+**Status: IMPLEMENTADO** na branch `feat/phase-6a-virtual-models` (ver CHANGELOG).
+Decisões aprovadas aplicadas: contrato de resposta preservado (sem campos públicos
+novos); `model` (override) vs `default_model`; `@` como sintaxe canônica de alias;
+`/v1/models` sem `melis:kind`; `allowed_models` aplicado ao nome pedido e ao destino
+resolvido (e à listagem); cache por destino efetivo (destino único) e bypass para
+múltiplos destinos; snapshot único por requisição. `allowed_models` passou a ser
+**enforced** (antes era inerte) em commit de segurança separado.
+
+---
+
+Rev. 2 incorpora os pontos da revisão:
 distinção override obrigatório vs default, tabela de precedência com casos de teste,
 elegibilidade de cache pelo destino efetivo, separação solicitado/resolvido/efetivo,
 consistência de configuração por requisição, colisões sem descoberta remota, e

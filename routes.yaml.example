@@ -119,3 +119,35 @@ routes:
   #     max_history_messages: 20
   #     compress_above_tokens: 4096
   #     local_tokenizer: "cl100k_base"
+
+# ─── Modelos virtuais / aliases declarativos (Fase 6A, opcional) ──────
+# Um alias mapeia um nome lógico para um ou mais destinos concretos.
+# O cliente pede `model: "fast"` (ou `@fast` para forçar interpretação de alias).
+# @nome desconhecido => 400 (nunca encaminhado como modelo concreto).
+# Precedência: route.model (override) > alias do payload > concreto > default_model.
+# default_model é usado só quando o cliente não envia modelo; não oculta um alias.
+# allowed_models (por API key) é checado no nome pedido E no destino resolvido.
+# Cache: alias de destino único usa o destino efetivo na chave; múltiplos destinos
+# fazem bypass do cache nesta versão. GET /v1/models lista aliases + concretos
+# declarados, respeita auth e filtra por allowed_models; não revela credenciais.
+# Ver docs/specs/phase-6a-virtual-models.md.
+#
+# model_aliases:
+#   - name: "fast"
+#     targets:
+#       - provider: "ollama"
+#         model: "llama3.2"
+#   - name: "team-default"
+#     targets:
+#       - provider: "openai"
+#         model: "gpt-4o-mini"
+#         weight: 3
+#       - provider: "ollama"
+#         model: "llama3.2"
+#         weight: 1
+#
+# Exemplo de rota com default_model (em vez de model obrigatório):
+# - path: "/v1/chat/flex"
+#   method: "POST"
+#   provider: "openai"
+#   default_model: "gpt-4o-mini"   # usado só se o cliente não enviar modelo
