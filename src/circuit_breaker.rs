@@ -58,6 +58,45 @@ pub trait CircuitBreaker: Send + Sync {
 
     /// Records the result of a call to a provider, potentially transitioning state.
     async fn record_result(&self, provider_id: &str, result: CallResult);
+
+    /// Decide whether ONE attempt may reach the provider.
+    ///
+    /// Unlike [`is_available`](Self::is_available), the answer can be a half-open
+    /// *probe* grant carrying an identity (lease token). A grant authorizes exactly
+    /// one attempt; the caller must hand the same `Admission` back to
+    /// [`record_outcome`](Self::record_outcome) so a late completion can be matched
+    /// to (or rejected as stale against) the current probe.
+    ///
+    /// `probe_lease` bounds how long a probe may stay in flight before it is
+    /// considered lost; it should be the provider timeout plus a small margin.
+    ///
+    /// Default (local breaker): maps `is_available` to `Allow`/`Deny`, unchanged.
+    async fn admit(&self, provider_id: &str, _probe_lease: Duration) -> Admission {
+        if self.is_available(provider_id).await {
+            Admission::Allow
+        } else {
+            Admission::Deny
+        }
+    }
+
+    /// Record the outcome of an attempt that was admitted via [`admit`](Self::admit).
+    ///
+    /// Default (local breaker): ignores the admission and calls `record_result`.
+    async fn record_outcome(&self, provider_id: &str, result: CallResult, _admission: &Admission) {
+        self.record_result(provider_id, result).await
+    }
+}
+
+/// Outcome of an admission decision for a single attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    /// Circuit healthy (closed): proceed normally.
+    Allow,
+    /// Half-open probe granted. Carries the lease token identifying this probe.
+    /// Authorizes exactly one attempt.
+    Probe(String),
+    /// Do not call the provider (open, or a probe is already in flight).
+    Deny,
 }
 
 // ─── Local (In-Memory) Implementation ────────────────────────────────────────
@@ -221,22 +260,62 @@ impl CircuitBreaker for LocalCircuitBreaker {
     }
 }
 
-// ─── Redis Implementation (Placeholder) ──────────────────────────────────────
-
 // ─── Redis Implementation ─────────────────────────────────────────────────────
+//
+// State machine encoded in keys (`P` = provider id):
+//
+//   melis:cb:P:state    present  → OPEN (TTL = current open window)
+//   melis:cb:P:backoff  present  → the circuit is in an UNHEALTHY CYCLE
+//                                  (value = current open TTL in secs; no TTL).
+//                                  This is the persistent marker that tells a
+//                                  circuit whose OPEN just expired apart from a
+//                                  healthy one that never opened. It is created
+//                                  together with `:state` and deleted ONLY by a
+//                                  successful probe.
+//   melis:cb:P:probe    present  → a half-open probe lease is held; the VALUE is the
+//                                  lease token (the probe's identity); TTL = lease.
+//
+//   state absent & backoff absent                    → CLOSED (healthy): allow, no probe
+//   state present                                    → OPEN: deny
+//   state absent & backoff present & probe absent    → HALF-OPEN: first caller wins a probe
+//   state absent & backoff present & probe present   → HALF-OPEN, probe in flight: deny
+//
+// Expiry of `:state` therefore never means "closed": only a successful probe does.
 
-/// Lua: record a call result and update state atomically using the server clock.
+/// Lua: admission decision + atomic half-open probe lease.
 ///
-/// KEYS[1]=state KEYS[2]=failures KEYS[3]=requests KEYS[4]=backoff KEYS[5]=probe
-/// ARGV: 1=is_failure(0/1) 2=is_rate_limited(0/1) 3=is_success(0/1)
-///       4=window_secs 5=min_requests 6=threshold_pct 7=open_ttl 8=max_ttl 9=backoff_factor
-///       10=member(unique)
-/// Returns resulting state code: 0=closed 1=open 2=half-open(not represented here; see is_available)
+/// KEYS: 1=state 2=failures 3=requests 4=backoff 5=probe
+/// ARGV: 1=lease_secs 2=token
+/// Returns a string: "0:" closed (allow) | "1:" open (deny) |
+///                   "2:<token>" probe granted | "3:" probe in flight elsewhere (deny)
+const CB_ADMIT_LUA: &str = r#"
+if redis.call('EXISTS', KEYS[1]) == 1 then
+    return '1:'
+end
+if redis.call('EXISTS', KEYS[4]) == 1 then
+    -- Unhealthy cycle whose OPEN window has expired: half-open. Exactly one caller
+    -- (across all replicas) can create the probe key.
+    local ok = redis.call('SET', KEYS[5], ARGV[2], 'NX', 'EX', tonumber(ARGV[1]))
+    if ok then
+        return '2:' .. ARGV[2]
+    end
+    return '3:'
+end
+return '0:'
+"#;
+
+/// Lua: record an outcome and apply state transitions atomically, using the Redis
+/// server clock.
+///
+/// KEYS: 1=state 2=failures 3=requests 4=backoff 5=probe
+/// ARGV: 1=is_failure 2=is_rate_limited 3=is_success 4=window_secs 5=min_requests
+///       6=threshold_pct 7=open_ttl 8=max_ttl 9=backoff_factor 10=member 11=probe_token ('' if none)
+/// Returns: 0=closed/ok 1=(re)opened 4=stale probe ignored 5=in-flight result ignored
 const CB_RECORD_LUA: &str = r#"
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
-local window_ms = tonumber(ARGV[4]) * 1000
-local cutoff = now - window_ms
+local window_secs = tonumber(ARGV[4])
+local cutoff = now - window_secs * 1000
 
 local is_failure = ARGV[1] == '1'
 local is_rl = ARGV[2] == '1'
@@ -245,49 +324,51 @@ local open_ttl = tonumber(ARGV[7])
 local max_ttl = tonumber(ARGV[8])
 local factor = tonumber(ARGV[9])
 local member = ARGV[10]
+local token = ARGV[11]
 
--- Record request in window.
-redis.call('ZADD', KEYS[3], now, member)
-redis.call('ZREMRANGEBYSCORE', KEYS[3], 0, cutoff)
-redis.call('EXPIRE', KEYS[3], tonumber(ARGV[4]))
-
-if is_failure or is_rl then
-    redis.call('ZADD', KEYS[2], now, member .. 'f')
-    redis.call('ZREMRANGEBYSCORE', KEYS[2], 0, cutoff)
-    redis.call('EXPIRE', KEYS[2], tonumber(ARGV[4]))
-end
-
--- Half-open detection: a probe claim exists → this result is the probe outcome.
-local probe = redis.call('GET', KEYS[5])
-if probe then
+-- Probe completion. Only the CURRENT lease holder may change state: a completion
+-- arriving after its lease expired, or after a newer probe/round started, is
+-- rejected here, atomically with the state update below.
+if token ~= '' then
+    local current = redis.call('GET', KEYS[5])
+    if current ~= token then
+        return 4
+    end
     if is_success then
         redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5])
         return 0
-    else
-        local cur = tonumber(redis.call('GET', KEYS[4]) or tostring(open_ttl))
-        local new_ttl = math.floor(cur * factor)
-        if new_ttl > max_ttl then new_ttl = max_ttl end
-        if new_ttl < 1 then new_ttl = 1 end
-        redis.call('SET', KEYS[1], 'open', 'EX', new_ttl)
-        redis.call('SET', KEYS[4], new_ttl)
-        redis.call('DEL', KEYS[5])
-        return 1
     end
-end
-
--- If already open, nothing more to do.
-if redis.call('EXISTS', KEYS[1]) == 1 then
+    local cur = tonumber(redis.call('GET', KEYS[4]) or tostring(open_ttl))
+    local new_ttl = math.floor(cur * factor)
+    if new_ttl > max_ttl then new_ttl = max_ttl end
+    if new_ttl < 1 then new_ttl = 1 end
+    redis.call('SET', KEYS[1], 'open', 'EX', new_ttl)
+    redis.call('SET', KEYS[4], new_ttl)
+    redis.call('DEL', KEYS[5])
     return 1
 end
 
--- 429 opens immediately.
+-- Regular (non-probe) result. During an unhealthy cycle it can only be a request
+-- that was admitted before the circuit opened: it must not alter the state.
+if redis.call('EXISTS', KEYS[4]) == 1 then
+    return 5
+end
+
+redis.call('ZADD', KEYS[3], now, member)
+redis.call('ZREMRANGEBYSCORE', KEYS[3], 0, cutoff)
+redis.call('EXPIRE', KEYS[3], window_secs)
+if is_failure or is_rl then
+    redis.call('ZADD', KEYS[2], now, member)
+    redis.call('ZREMRANGEBYSCORE', KEYS[2], 0, cutoff)
+    redis.call('EXPIRE', KEYS[2], window_secs)
+end
+
 if is_rl then
     redis.call('SET', KEYS[1], 'open', 'EX', open_ttl)
     redis.call('SET', KEYS[4], open_ttl)
     return 1
 end
 
--- Failure-rate threshold.
 local total = redis.call('ZCARD', KEYS[3])
 local fails = redis.call('ZCARD', KEYS[2])
 if total >= tonumber(ARGV[5]) then
@@ -301,48 +382,28 @@ end
 return 0
 "#;
 
-/// Lua: compute availability and claim the half-open probe atomically.
-///
-/// KEYS[1]=state KEYS[5]=probe
-/// ARGV: 1=probe_ttl_secs
-/// Returns: 0=closed(available) 1=open(unavailable) 2=half-open-probe-claimed(available)
-///          3=half-open-probe-in-flight-by-other(unavailable)
-const CB_AVAILABLE_LUA: &str = r#"
-if redis.call('EXISTS', KEYS[1]) == 1 then
-    return 1  -- open
-end
--- state absent: closed, UNLESS a probe cycle is active.
-if redis.call('EXISTS', KEYS[5]) == 1 then
-    return 3  -- another replica owns the probe
-end
--- Try to claim the probe. If state recently expired, the first caller probes.
--- We only create a probe claim if there is evidence a cycle was open: a backoff key.
-if redis.call('EXISTS', KEYS[2]) == 1 then
-    local ok = redis.call('SET', KEYS[5], '1', 'NX', 'EX', tonumber(ARGV[1]))
-    if ok then
-        return 2  -- we are the probe
-    else
-        return 3  -- lost the race
-    end
-end
-return 0  -- fully closed
-"#;
-
 /// Redis-backed circuit breaker with shared state across replicas.
 ///
-/// State is encoded in keys (see design): `:state` present = Open, `:probe` present
-/// = half-open probe in flight, both absent = Closed. All transitions are atomic
-/// via Lua using the Redis server clock (no replica clock skew).
-///
-/// `is_available` uses a short-TTL local read-through cache to avoid a Redis
-/// round-trip per request; writes (`record_result`) always go through Redis and
-/// invalidate the local copy immediately on a 429 (write-through).
+/// - Transitions are atomic (Lua) and use the Redis server clock.
+/// - `admit` reads through a short-TTL local cache of **Allow/Deny only**. A probe
+///   grant is never cached: it authorizes one attempt, not a window of traffic.
+/// - Redis problems never block or fail requests: operations are bounded by a
+///   [`RedisGate`]; on error/timeout the breaker fails open (`Allow`), counts
+///   `melis_circuit_breaker_degraded`, and skips Redis for a short window. It
+///   recovers automatically when Redis answers again.
 pub struct RedisCircuitBreaker {
     client: fred::clients::RedisClient,
     config: CircuitBreakerConfig,
     metrics: Arc<crate::observability::Metrics>,
-    /// Local read-through cache: provider -> (available, cached_at).
+    gate: crate::redis_client::RedisGate,
+    /// provider -> (available, expires_at). Only Allow/Deny are stored.
     local_cache: std::sync::Mutex<HashMap<String, (bool, Instant)>>,
+    /// provider -> "known unhealthy until". Set whenever Redis reports the circuit
+    /// as OPEN or HALF-OPEN. If Redis becomes unreadable before that instant, this
+    /// replica keeps denying instead of failing open, so a Redis outage during an
+    /// unhealthy cycle cannot let a flood of traffic through.
+    known_unhealthy: std::sync::Mutex<HashMap<String, Instant>>,
+    seq: std::sync::atomic::AtomicU64,
 }
 
 impl RedisCircuitBreaker {
@@ -351,28 +412,49 @@ impl RedisCircuitBreaker {
         config: CircuitBreakerConfig,
         metrics: Arc<crate::observability::Metrics>,
     ) -> Self {
+        Self::with_gate(
+            client,
+            config,
+            metrics,
+            crate::redis_client::RedisGate::new(
+                crate::redis_client::DEFAULT_OP_TIMEOUT,
+                crate::redis_client::DEFAULT_DEGRADED_BACKOFF,
+            ),
+        )
+    }
+
+    pub fn with_gate(
+        client: fred::clients::RedisClient,
+        config: CircuitBreakerConfig,
+        metrics: Arc<crate::observability::Metrics>,
+        gate: crate::redis_client::RedisGate,
+    ) -> Self {
         Self {
             client,
             config,
             metrics,
+            gate,
             local_cache: std::sync::Mutex::new(HashMap::new()),
+            known_unhealthy: std::sync::Mutex::new(HashMap::new()),
+            seq: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
-    fn state_key(p: &str) -> String {
-        format!("melis:cb:{}:state", p)
+    fn keys(p: &str) -> Vec<String> {
+        // Order matters: it defines KEYS[1..5] in the Lua scripts.
+        ["state", "failures", "requests", "backoff", "probe"]
+            .iter()
+            .map(|s| format!("melis:cb:{}:{}", p, s))
+            .collect()
     }
-    fn failures_key(p: &str) -> String {
-        format!("melis:cb:{}:failures", p)
-    }
-    fn requests_key(p: &str) -> String {
-        format!("melis:cb:{}:requests", p)
-    }
-    fn backoff_key(p: &str) -> String {
-        format!("melis:cb:{}:backoff", p)
-    }
-    fn probe_key(p: &str) -> String {
-        format!("melis:cb:{}:probe", p)
+
+    fn unique(&self) -> String {
+        let n = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{}-{}-{}", std::process::id(), nanos, n)
     }
 
     fn cache_ttl(&self) -> Duration {
@@ -381,112 +463,164 @@ impl RedisCircuitBreaker {
 
     fn cached(&self, provider: &str) -> Option<bool> {
         let cache = self.local_cache.lock().unwrap();
-        cache.get(provider).and_then(|(avail, at)| {
-            if at.elapsed() < self.cache_ttl() {
-                Some(*avail)
-            } else {
-                None
-            }
-        })
+        cache
+            .get(provider)
+            .and_then(|(avail, expires)| (Instant::now() < *expires).then_some(*avail))
     }
 
     fn put_cache(&self, provider: &str, available: bool) {
-        let mut cache = self.local_cache.lock().unwrap();
-        cache.insert(provider.to_string(), (available, Instant::now()));
+        if self.cache_ttl().is_zero() {
+            return;
+        }
+        self.local_cache.lock().unwrap().insert(
+            provider.to_string(),
+            (available, Instant::now() + self.cache_ttl()),
+        );
     }
 
     fn invalidate_cache(&self, provider: &str) {
-        let mut cache = self.local_cache.lock().unwrap();
-        cache.remove(provider);
-    }
-
-    fn degrade(&self, err: &str) {
-        self.metrics.circuit_breaker_degraded.inc();
-        tracing::warn!(error = %err, "redis circuit breaker degraded; fail-open");
+        self.local_cache.lock().unwrap().remove(provider);
     }
 
     fn set_state_metric(&self, provider: &str, code: i64) {
-        // 0=closed,1=open,2=half-open
+        // 0=closed, 1=open, 2=half-open
         self.metrics
             .circuit_breaker_state
             .with_label_values(&[provider])
             .set(code);
+    }
+
+    fn degraded(&self) {
+        self.metrics.circuit_breaker_degraded.inc();
+    }
+
+    fn mark_unhealthy(&self, provider: &str, horizon: Duration) {
+        self.known_unhealthy
+            .lock()
+            .unwrap()
+            .insert(provider.to_string(), Instant::now() + horizon);
+    }
+
+    fn clear_unhealthy(&self, provider: &str) {
+        self.known_unhealthy.lock().unwrap().remove(provider);
+    }
+
+    /// Decision when Redis cannot be read.
+    ///
+    /// - Known unhealthy (this replica recently saw OPEN/HALF-OPEN): keep denying
+    ///   until that knowledge expires — never fail open in the middle of a cycle.
+    /// - Otherwise (healthy / never seen): fail open.
+    fn on_redis_unavailable(&self, provider: &str) -> Admission {
+        self.degraded();
+        let until = self.known_unhealthy.lock().unwrap().get(provider).copied();
+        match until {
+            Some(t) if Instant::now() < t => Admission::Deny,
+            _ => Admission::Allow,
+        }
     }
 }
 
 #[async_trait]
 impl CircuitBreaker for RedisCircuitBreaker {
     async fn is_available(&self, provider_id: &str) -> bool {
-        // 1. Local read-through cache (no Redis round-trip on hit).
-        if let Some(avail) = self.cached(provider_id) {
-            return avail;
+        let lease = Duration::from_secs(self.config.open_ttl_secs.max(1));
+        self.admit(provider_id, lease).await != Admission::Deny
+    }
+
+    async fn record_result(&self, provider_id: &str, result: CallResult) {
+        self.record_outcome(provider_id, result, &Admission::Allow)
+            .await
+    }
+
+    async fn admit(&self, provider_id: &str, probe_lease: Duration) -> Admission {
+        // 1. Local read-through cache (Allow/Deny only) — no Redis round-trip.
+        if let Some(available) = self.cached(provider_id) {
+            return if available {
+                Admission::Allow
+            } else {
+                Admission::Deny
+            };
         }
 
+        // 2. Redis recently failed: don't touch it (bounded outage cost).
+        if self.gate.suppressed() {
+            return self.on_redis_unavailable(provider_id);
+        }
+
+        // How long "unhealthy" knowledge stays valid if Redis then becomes
+        // unreadable: the longest open window plus one probe lease. After that the
+        // replica fails open again (Redis outage must not block traffic forever).
+        let unhealthy_horizon = Duration::from_secs(self.config.max_ttl_secs) + probe_lease;
+
+        // 3. Atomic decision (+ probe lease claim) in Redis.
         use fred::interfaces::LuaInterface;
-        let probe_ttl = self.config.open_ttl_secs.max(1);
-        let result: Result<i64, _> = self
-            .client
-            .eval(
-                CB_AVAILABLE_LUA,
-                vec![
-                    Self::state_key(provider_id),
-                    Self::failures_key(provider_id),
-                    Self::requests_key(provider_id),
-                    Self::backoff_key(provider_id),
-                    Self::probe_key(provider_id),
-                ],
-                vec![probe_ttl.to_string()],
-            )
+        let token = self.unique();
+        let lease_secs = probe_lease.as_secs_f64().ceil().max(1.0) as u64;
+        let reply: Option<String> = self
+            .gate
+            .run(self.client.eval::<String, _, _, _>(
+                CB_ADMIT_LUA,
+                Self::keys(provider_id),
+                vec![lease_secs.to_string(), token],
+            ))
             .await;
 
-        match result {
-            Ok(code) => {
-                let available = code == 0 || code == 2;
-                let state_metric = match code {
-                    0 => 0,     // closed
-                    2 | 3 => 2, // half-open (probe cycle)
-                    _ => 1,     // open
-                };
-                self.set_state_metric(provider_id, state_metric);
-                self.put_cache(provider_id, available);
-                available
+        let Some(reply) = reply else {
+            return self.on_redis_unavailable(provider_id);
+        };
+
+        let (code, tok) = reply.split_once(':').unwrap_or(("0", ""));
+        match code {
+            "1" => {
+                self.mark_unhealthy(provider_id, unhealthy_horizon);
+                self.set_state_metric(provider_id, 1);
+                self.put_cache(provider_id, false);
+                Admission::Deny
             }
-            Err(e) => {
-                // Fail-open: Redis unavailable must never take all traffic down.
-                self.degrade(&e.to_string());
-                true
+            "2" => {
+                // Probe granted to THIS attempt only. Deliberately not cached: a
+                // cached "available" would let a window of traffic through.
+                self.mark_unhealthy(provider_id, unhealthy_horizon);
+                self.set_state_metric(provider_id, 2);
+                self.invalidate_cache(provider_id);
+                Admission::Probe(tok.to_string())
+            }
+            "3" => {
+                self.mark_unhealthy(provider_id, unhealthy_horizon);
+                self.set_state_metric(provider_id, 2);
+                self.put_cache(provider_id, false);
+                Admission::Deny
+            }
+            _ => {
+                self.clear_unhealthy(provider_id);
+                self.set_state_metric(provider_id, 0);
+                self.put_cache(provider_id, true);
+                Admission::Allow
             }
         }
     }
 
-    async fn record_result(&self, provider_id: &str, result: CallResult) {
-        use fred::interfaces::LuaInterface;
+    async fn record_outcome(&self, provider_id: &str, result: CallResult, admission: &Admission) {
+        if self.gate.suppressed() {
+            self.degraded();
+            return;
+        }
 
         let is_failure = matches!(result, CallResult::Failure | CallResult::Timeout);
         let is_rate_limited = matches!(result, CallResult::RateLimited);
         let is_success = matches!(result, CallResult::Success);
+        let token = match admission {
+            Admission::Probe(t) => t.clone(),
+            _ => String::new(),
+        };
+        let was_probe = !token.is_empty();
 
-        // Unique member for the sliding-window sorted sets.
-        let member = format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-
-        let eval: Result<i64, _> = self
-            .client
-            .eval(
+        use fred::interfaces::LuaInterface;
+        let code: Option<i64> = self
+            .gate
+            .run(self.client.eval::<i64, _, _, _>(
                 CB_RECORD_LUA,
-                vec![
-                    Self::state_key(provider_id),
-                    Self::failures_key(provider_id),
-                    Self::requests_key(provider_id),
-                    Self::backoff_key(provider_id),
-                    Self::probe_key(provider_id),
-                ],
+                Self::keys(provider_id),
                 vec![
                     (is_failure as u8).to_string(),
                     (is_rate_limited as u8).to_string(),
@@ -497,26 +631,35 @@ impl CircuitBreaker for RedisCircuitBreaker {
                     self.config.open_ttl_secs.to_string(),
                     self.config.max_ttl_secs.to_string(),
                     self.config.backoff_factor.to_string(),
-                    member,
+                    self.unique(),
+                    token,
                 ],
-            )
+            ))
             .await;
 
-        match eval {
-            Ok(state_code) => {
-                // Write-through: a result that (re)opens the circuit invalidates our
-                // own local cache immediately so this replica converges without waiting
-                // for the TTL; other replicas converge via their own short TTLs.
-                if state_code == 1 {
-                    self.invalidate_cache(provider_id);
-                    self.set_state_metric(provider_id, 1);
-                } else if state_code == 0 && is_success {
-                    // Closed (possibly after a successful probe).
-                    self.invalidate_cache(provider_id);
-                    self.set_state_metric(provider_id, 0);
-                }
+        match code {
+            Some(1) => {
+                // Write-through: this replica sees the (re)open immediately.
+                self.invalidate_cache(provider_id);
+                self.mark_unhealthy(
+                    provider_id,
+                    Duration::from_secs(self.config.max_ttl_secs + self.config.open_ttl_secs),
+                );
+                self.set_state_metric(provider_id, 1);
             }
-            Err(e) => self.degrade(&e.to_string()),
+            Some(0) if was_probe => {
+                self.invalidate_cache(provider_id);
+                self.clear_unhealthy(provider_id);
+                self.set_state_metric(provider_id, 0);
+            }
+            Some(4) => {
+                tracing::info!(
+                    provider = provider_id,
+                    "ignored completion of a superseded/expired probe"
+                );
+            }
+            Some(_) => {}
+            None => self.degraded(),
         }
     }
 }
@@ -942,40 +1085,88 @@ mod proptest_tests {
     }
 }
 
-// ─── Redis integration tests (require a live Redis at localhost:6379) ──────────
+// ─── Redis integration tests ──────────────────────────────────────────────────
+//
+// These need a real Redis at 127.0.0.1:6379 and are `#[ignore]`d by default.
+// Run them with:
+//
+//   cargo test --bin melis-gateway circuit_breaker::redis_it:: -- --ignored --test-threads=1
+//
+// The degradation/recovery tests put a controllable TCP proxy between the gateway
+// client and Redis, so an outage can be simulated (and healed) inside the test.
 
 #[cfg(test)]
 mod redis_it {
     use super::*;
-    use std::sync::Arc;
+    use crate::config::{CircuitBreakerBackend, RedisConfig};
+    use crate::redis_client::{RedisGate, SharedRedis};
+    use fred::interfaces::KeysInterface;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::watch;
 
-    /// Connect a fred client to a local Redis. Returns `None` if unavailable so the
-    /// (ignored) tests can be skipped gracefully when run without a server.
-    async fn connect() -> Option<fred::clients::RedisClient> {
-        use fred::prelude::*;
-        let cfg = fred::types::RedisConfig::from_url("redis://localhost:6379").ok()?;
-        let client = Builder::from_config(cfg).build().ok()?;
-        if client.connect().await.is_err() || client.wait_for_connect().await.is_err() {
-            return None;
-        }
-        Some(client)
-    }
+    const REDIS: &str = "127.0.0.1:6379";
 
-    fn cfg() -> CircuitBreakerConfig {
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    fn cfg(open_ttl: u64, cache_ms: u64) -> CircuitBreakerConfig {
         CircuitBreakerConfig {
             failure_threshold_percent: 50.0,
             window_duration_secs: 60,
             min_requests_in_window: 2,
-            open_ttl_secs: 2,
-            max_ttl_secs: 30,
+            open_ttl_secs: open_ttl,
+            max_ttl_secs: 60,
             backoff_factor: 2.0,
-            backend: crate::config::CircuitBreakerBackend::Redis,
-            redis_state_cache_ms: 0, // disable local cache so reads hit Redis directly
+            backend: CircuitBreakerBackend::Redis,
+            redis_state_cache_ms: cache_ms,
         }
     }
 
-    /// Unique provider id per test run to avoid cross-test key collisions.
-    fn provider_id(tag: &str) -> String {
+    fn redis_cfg(addr: &str, boot_timeout_secs: u64) -> RedisConfig {
+        RedisConfig {
+            cluster_urls: vec![format!("redis://{}", addr)],
+            pool_size: 1,
+            connect_timeout_secs: boot_timeout_secs,
+            command_timeout_secs: 1,
+        }
+    }
+
+    async fn shared(addr: &str) -> Arc<SharedRedis> {
+        SharedRedis::connect(&redis_cfg(addr, 3)).await
+    }
+
+    fn metrics() -> Arc<crate::observability::Metrics> {
+        Arc::new(crate::observability::Metrics::new())
+    }
+
+    fn breaker(
+        sr: &SharedRedis,
+        c: CircuitBreakerConfig,
+        m: &Arc<crate::observability::Metrics>,
+    ) -> Arc<RedisCircuitBreaker> {
+        Arc::new(RedisCircuitBreaker::new(
+            sr.client().expect("client").clone(),
+            c,
+            m.clone(),
+        ))
+    }
+
+    /// Breaker with a fast gate so outage tests don't take long.
+    fn fast_breaker(
+        sr: &SharedRedis,
+        c: CircuitBreakerConfig,
+        m: &Arc<crate::observability::Metrics>,
+    ) -> Arc<RedisCircuitBreaker> {
+        Arc::new(RedisCircuitBreaker::with_gate(
+            sr.client().expect("client").clone(),
+            c,
+            m.clone(),
+            RedisGate::new(Duration::from_millis(200), Duration::from_millis(300)),
+        ))
+    }
+
+    fn pid(tag: &str) -> String {
         format!(
             "it-{}-{}",
             tag,
@@ -986,182 +1177,627 @@ mod redis_it {
         )
     }
 
-    async fn cleanup(client: &fred::clients::RedisClient, provider: &str) {
-        use fred::interfaces::KeysInterface;
-        for suffix in ["state", "failures", "requests", "backoff", "probe"] {
-            let _: Result<(), _> = client
-                .del::<i64, _>(format!("melis:cb:{}:{}", provider, suffix))
-                .await
-                .map(|_| ());
+    fn key(p: &str, suffix: &str) -> String {
+        format!("melis:cb:{}:{}", p, suffix)
+    }
+
+    async fn get(sr: &SharedRedis, p: &str, suffix: &str) -> Option<String> {
+        sr.client()
+            .unwrap()
+            .get::<Option<String>, _>(key(p, suffix))
+            .await
+            .unwrap()
+    }
+
+    async fn cleanup(sr: &SharedRedis, p: &str) {
+        for s in ["state", "failures", "requests", "backoff", "probe"] {
+            let _ = sr.client().unwrap().del::<i64, _>(key(p, s)).await;
         }
     }
 
-    #[tokio::test]
-    #[ignore = "requires a live Redis at localhost:6379; run in pre-merge env (G1)"]
-    async fn two_instances_share_state() {
-        let client = match connect().await {
-            Some(c) => c,
-            None => return, // Redis not available; skip.
-        };
-        let provider = provider_id("share");
-        let metrics = Arc::new(crate::observability::Metrics::new());
-        let a = RedisCircuitBreaker::new(client.clone(), cfg(), metrics.clone());
-        let b = RedisCircuitBreaker::new(client.clone(), cfg(), metrics.clone());
-
-        // A observes a 429 → opens the circuit in shared Redis state.
-        a.record_result(&provider, CallResult::RateLimited).await;
-
-        // B (a different instance) must see the provider as unavailable.
-        assert!(
-            !b.is_available(&provider).await,
-            "B should see the circuit opened by A via shared Redis state"
-        );
-
-        cleanup(&client, &provider).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live Redis at localhost:6379; run in pre-merge env (G1)"]
-    async fn single_probe_under_concurrent_half_open() {
-        let client = match connect().await {
-            Some(c) => c,
-            None => return,
-        };
-        let provider = provider_id("probe");
-        let metrics = Arc::new(crate::observability::Metrics::new());
-
-        // Open the circuit, then wait for the state TTL to expire (half-open).
-        let opener = RedisCircuitBreaker::new(client.clone(), cfg(), metrics.clone());
-        opener
-            .record_result(&provider, CallResult::RateLimited)
-            .await;
-        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
-
-        // Many instances race to probe; only one must win the claim.
-        let mut instances = Vec::new();
-        for _ in 0..8 {
-            instances.push(RedisCircuitBreaker::new(
-                client.clone(),
-                cfg(),
-                metrics.clone(),
-            ));
-        }
-        let mut probes = 0;
-        for inst in &instances {
-            if inst.is_available(&provider).await {
-                probes += 1;
+    /// Fire `n` concurrent admissions per breaker; return (probes, allows, denies).
+    async fn race(
+        cbs: &[Arc<RedisCircuitBreaker>],
+        n: usize,
+        p: &str,
+        lease: Duration,
+    ) -> (usize, usize, usize) {
+        let mut tasks = Vec::new();
+        for cb in cbs {
+            for _ in 0..n {
+                let cb = cb.clone();
+                let p = p.to_string();
+                tasks.push(tokio::spawn(async move { cb.admit(&p, lease).await }));
             }
         }
-        assert_eq!(probes, 1, "exactly one instance should win the probe claim");
-
-        cleanup(&client, &provider).await;
+        let (mut probes, mut allows, mut denies) = (0, 0, 0);
+        for t in tasks {
+            match t.await.unwrap() {
+                Admission::Probe(_) => probes += 1,
+                Admission::Allow => allows += 1,
+                Admission::Deny => denies += 1,
+            }
+        }
+        (probes, allows, denies)
     }
 
-    #[tokio::test]
-    #[ignore = "requires a live Redis at localhost:6379; run in pre-merge env (G1)"]
-    async fn parity_open_probe_success_closes() {
-        let client = match connect().await {
-            Some(c) => c,
-            None => return,
-        };
-        let provider = provider_id("probe-success");
-        let metrics = Arc::new(crate::observability::Metrics::new());
-        let cb = RedisCircuitBreaker::new(client.clone(), cfg(), metrics.clone());
-
-        cb.record_result(&provider, CallResult::RateLimited).await; // open
-        assert!(!cb.is_available(&provider).await, "should be open");
-
-        tokio::time::sleep(std::time::Duration::from_millis(2100)).await; // TTL expires
-        assert!(
-            cb.is_available(&provider).await,
-            "should be half-open probe"
-        );
-
-        // Probe succeeds → circuit closes.
-        cb.record_result(&provider, CallResult::Success).await;
-        assert!(
-            cb.is_available(&provider).await,
-            "should be closed after success"
-        );
-
-        cleanup(&client, &provider).await;
+    /// Open the circuit with a 429 and wait for the OPEN window to expire.
+    async fn open_then_expire(cb: &RedisCircuitBreaker, p: &str, open_ttl: u64) {
+        cb.record_result(p, CallResult::RateLimited).await;
+        tokio::time::sleep(Duration::from_millis(open_ttl * 1000 + 150)).await;
     }
 
+    // ── controllable TCP proxy (to simulate Redis outages) ───────────────────
+
+    struct Proxy {
+        addr: SocketAddr,
+        kill: watch::Sender<bool>,
+    }
+
+    impl Proxy {
+        async fn start(listen: &str, upstream: &'static str) -> Proxy {
+            let listener = TcpListener::bind(listen).await.expect("bind proxy");
+            let addr = listener.local_addr().unwrap();
+            let (kill, rx) = watch::channel(false);
+            let mut accept_rx = rx.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = accept_rx.changed() => break,
+                        res = listener.accept() => {
+                            let Ok((mut inbound, _)) = res else { break };
+                            let mut conn_rx = rx.clone();
+                            tokio::spawn(async move {
+                                if let Ok(mut out) = TcpStream::connect(upstream).await {
+                                    tokio::select! {
+                                        _ = conn_rx.changed() => {}
+                                        _ = tokio::io::copy_bidirectional(&mut inbound, &mut out) => {}
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            });
+            Proxy { addr, kill }
+        }
+
+        /// Stop accepting and drop every established connection.
+        fn stop(&self) {
+            let _ = self.kill.send(true);
+        }
+    }
+
+    /// A currently-free local port (bind, read, drop).
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    // ── shared state & parity ────────────────────────────────────────────────
+
     #[tokio::test]
-    #[ignore = "requires a live Redis at localhost:6379; run in pre-merge env (G1)"]
-    async fn parity_open_probe_failure_reopens_with_larger_ttl() {
-        use fred::interfaces::KeysInterface;
-        let client = match connect().await {
-            Some(c) => c,
-            None => return,
-        };
-        let provider = provider_id("probe-fail");
-        let metrics = Arc::new(crate::observability::Metrics::new());
-        let cb = RedisCircuitBreaker::new(client.clone(), cfg(), metrics.clone());
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn two_instances_share_state() {
+        let sr = shared(REDIS).await;
+        let p = pid("share");
+        let m = metrics();
+        let a = breaker(&sr, cfg(5, 0), &m);
+        let b = breaker(&sr, cfg(5, 0), &m);
 
-        cb.record_result(&provider, CallResult::RateLimited).await; // open, backoff=open_ttl(2)
-        tokio::time::sleep(std::time::Duration::from_millis(2100)).await; // half-open
-        assert!(cb.is_available(&provider).await, "half-open probe");
-
-        // Probe fails → re-open with backoff * factor (2 * 2 = 4).
-        cb.record_result(&provider, CallResult::Failure).await;
-        let backoff: Option<String> = client
-            .get(format!("melis:cb:{}:backoff", provider))
-            .await
-            .ok()
-            .flatten();
+        a.record_result(&p, CallResult::RateLimited).await;
         assert_eq!(
-            backoff.as_deref(),
-            Some("4"),
-            "backoff should grow between probe rounds (2 → 4)"
+            b.admit(&p, Duration::from_secs(5)).await,
+            Admission::Deny,
+            "B must see the circuit opened by A"
         );
-        assert!(!cb.is_available(&provider).await, "should be open again");
-
-        cleanup(&client, &provider).await;
+        cleanup(&sr, &p).await;
     }
 
     #[tokio::test]
-    #[ignore = "requires a live Redis at localhost:6379; run in pre-merge env (G1)"]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
     async fn parity_failure_rate_opens() {
-        let client = match connect().await {
-            Some(c) => c,
-            None => return,
-        };
-        let provider = provider_id("rate");
-        let metrics = Arc::new(crate::observability::Metrics::new());
-        let cb = RedisCircuitBreaker::new(client.clone(), cfg(), metrics.clone());
-
-        // 2 failures over 2 requests = 100% > 50% threshold, min_requests=2.
-        cb.record_result(&provider, CallResult::Failure).await;
-        cb.record_result(&provider, CallResult::Failure).await;
-        assert!(
-            !cb.is_available(&provider).await,
-            "circuit should open on failure-rate threshold"
-        );
-
-        cleanup(&client, &provider).await;
+        let sr = shared(REDIS).await;
+        let p = pid("rate");
+        let cb = breaker(&sr, cfg(5, 0), &metrics());
+        // 2 failures / 2 requests = 100% > 50%, min_requests = 2.
+        cb.record_result(&p, CallResult::Failure).await;
+        cb.record_result(&p, CallResult::Failure).await;
+        assert_eq!(cb.admit(&p, Duration::from_secs(5)).await, Admission::Deny);
+        cleanup(&sr, &p).await;
     }
 
     #[tokio::test]
-    #[ignore = "timing-sensitive on fred reconnection; run in pre-merge env (G1)"]
-    async fn redis_down_fails_open() {
-        // A client pointed at a dead port: record/is_available must fail open and
-        // bump the degraded metric.
-        use fred::prelude::*;
-        let cfg_bad = fred::types::RedisConfig::from_url("redis://127.0.0.1:59998").unwrap();
-        let client = Builder::from_config(cfg_bad).build().unwrap();
-        // Do not wait_for_connect: commands will error → fail-open path.
-        let _conn = client.connect();
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn parity_below_min_requests_stays_closed() {
+        let sr = shared(REDIS).await;
+        let p = pid("minreq");
+        let cb = breaker(&sr, cfg(5, 0), &metrics());
+        cb.record_result(&p, CallResult::Failure).await; // 1 < min_requests(2)
+        assert_eq!(cb.admit(&p, Duration::from_secs(5)).await, Admission::Allow);
+        cleanup(&sr, &p).await;
+    }
 
-        let metrics = Arc::new(crate::observability::Metrics::new());
-        let cb = RedisCircuitBreaker::new(client, cfg(), metrics.clone());
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn full_sequence_open_expire_probe_success_closes() {
+        let sr = shared(REDIS).await;
+        let p = pid("seq-ok");
+        let m = metrics();
+        let cb = breaker(&sr, cfg(2, 0), &m);
 
-        // is_available must fail open (true) and increment degraded.
-        let available = cb.is_available("whatever").await;
-        assert!(available, "must fail open when Redis is unreachable");
-        assert!(
-            metrics.circuit_breaker_degraded.get() >= 1,
-            "degraded metric should increment on Redis failure"
+        cb.record_result(&p, CallResult::RateLimited).await;
+        assert_eq!(cb.admit(&p, Duration::from_secs(5)).await, Admission::Deny);
+
+        tokio::time::sleep(Duration::from_millis(2150)).await;
+        let adm = cb.admit(&p, Duration::from_secs(5)).await;
+        assert!(matches!(adm, Admission::Probe(_)), "got {:?}", adm);
+
+        cb.record_outcome(&p, CallResult::Success, &adm).await;
+        // Closed: every cycle key is gone and traffic flows without a probe.
+        for s in ["state", "backoff", "probe"] {
+            assert_eq!(get(&sr, &p, s).await, None, "{s} should be deleted");
+        }
+        assert_eq!(cb.admit(&p, Duration::from_secs(5)).await, Admission::Allow);
+        assert_eq!(
+            m.circuit_breaker_state.with_label_values(&[&p]).get(),
+            0,
+            "metric reflects Closed"
         );
+        cleanup(&sr, &p).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn full_sequence_open_expire_probe_failure_reopens_with_growing_backoff() {
+        let sr = shared(REDIS).await;
+        let p = pid("seq-fail");
+        let cb = breaker(&sr, cfg(2, 0), &metrics());
+
+        cb.record_result(&p, CallResult::RateLimited).await;
+        assert_eq!(get(&sr, &p, "backoff").await.as_deref(), Some("2"));
+
+        // Round 1: probe fails → re-open with 2 * 2 = 4.
+        tokio::time::sleep(Duration::from_millis(2150)).await;
+        let a1 = cb.admit(&p, Duration::from_secs(5)).await;
+        assert!(matches!(a1, Admission::Probe(_)));
+        cb.record_outcome(&p, CallResult::Failure, &a1).await;
+        assert_eq!(get(&sr, &p, "backoff").await.as_deref(), Some("4"));
+        assert!(get(&sr, &p, "state").await.is_some(), "re-opened");
+        assert_eq!(cb.admit(&p, Duration::from_secs(5)).await, Admission::Deny);
+
+        // Round 2: probe fails again → 4 * 2 = 8 (backoff keeps growing between rounds).
+        tokio::time::sleep(Duration::from_millis(4150)).await;
+        let a2 = cb.admit(&p, Duration::from_secs(5)).await;
+        assert!(matches!(a2, Admission::Probe(_)));
+        cb.record_outcome(&p, CallResult::Timeout, &a2).await;
+        assert_eq!(get(&sr, &p, "backoff").await.as_deref(), Some("8"));
+        cleanup(&sr, &p).await;
+    }
+
+    // ── Closed vs Half-Open ──────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn healthy_circuit_allows_traffic_and_never_requires_a_probe() {
+        let sr = shared(REDIS).await;
+        let p = pid("healthy");
+        let cb = breaker(&sr, cfg(2, 0), &metrics());
+
+        let (probes, allows, denies) =
+            race(std::slice::from_ref(&cb), 32, &p, Duration::from_secs(5)).await;
+        assert_eq!((probes, allows, denies), (0, 32, 0));
+
+        // Successes keep it healthy and create no cycle/probe keys.
+        for _ in 0..5 {
+            cb.record_result(&p, CallResult::Success).await;
+        }
+        assert_eq!(get(&sr, &p, "backoff").await, None);
+        assert_eq!(get(&sr, &p, "probe").await, None);
+        cleanup(&sr, &p).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn open_expiry_is_not_closure() {
+        let sr = shared(REDIS).await;
+        let p = pid("expiry");
+        let cb = breaker(&sr, cfg(2, 0), &metrics());
+        open_then_expire(&cb, &p, 2).await;
+
+        assert_eq!(get(&sr, &p, "state").await, None, "OPEN window expired");
+        assert!(
+            get(&sr, &p, "backoff").await.is_some(),
+            "persistent marker survives the expiry"
+        );
+        // First caller gets the (single) probe; nobody else gets a free pass.
+        assert!(matches!(
+            cb.admit(&p, Duration::from_secs(5)).await,
+            Admission::Probe(_)
+        ));
+        for _ in 0..5 {
+            assert_eq!(cb.admit(&p, Duration::from_secs(5)).await, Admission::Deny);
+        }
+        cleanup(&sr, &p).await;
+    }
+
+    // ── single probe: cache + concurrency ────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn probe_grant_is_never_cached_locally() {
+        // A very long local cache: if a grant were cached as "available", the next
+        // call would be Allow instead of Deny.
+        let sr = shared(REDIS).await;
+        let p = pid("nocache");
+        let cb = breaker(&sr, cfg(2, 60_000), &metrics());
+        open_then_expire(&cb, &p, 2).await;
+        // The Deny cached while OPEN would mask this; use a fresh breaker to read Redis.
+        let cb = breaker(&sr, cfg(2, 60_000), &metrics());
+
+        let first = cb.admit(&p, Duration::from_secs(5)).await;
+        assert!(matches!(first, Admission::Probe(_)), "got {:?}", first);
+        let second = cb.admit(&p, Duration::from_secs(5)).await;
+        assert_eq!(
+            second,
+            Admission::Deny,
+            "a grant must authorize one attempt only"
+        );
+        cleanup(&sr, &p).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn single_probe_concurrent_requests_same_replica() {
+        let sr = shared(REDIS).await;
+        let p = pid("same");
+        let setup = breaker(&sr, cfg(2, 150), &metrics());
+        open_then_expire(&setup, &p, 2).await;
+
+        // Long local cache on purpose: if a grant were cached as "available",
+        // requests arriving while the probe is in flight would get Allow.
+        let cb = breaker(&sr, cfg(2, 5_000), &metrics());
+        let lease = Duration::from_secs(5);
+
+        // (a) A burst at the instant half-open starts: exactly one probe.
+        let (p1, a1, d1) = race(std::slice::from_ref(&cb), 32, &p, lease).await;
+        assert_eq!((p1, a1, d1), (1, 0, 31), "burst at half-open start");
+
+        // (b) Requests arriving one after another WHILE the probe is in flight
+        // (no concurrent reply overwrites the replica's cache in this pattern).
+        cleanup(&sr, &p).await;
+        open_then_expire(&setup, &p, 2).await;
+        let cb = breaker(&sr, cfg(2, 5_000), &metrics());
+        let first = cb.admit(&p, lease).await;
+        assert!(matches!(first, Admission::Probe(_)), "got {:?}", first);
+        let (p2, a2, d2) = race(&[cb], 32, &p, lease).await;
+        assert_eq!(
+            (p2, a2, d2),
+            (0, 0, 32),
+            "nothing else may reach the provider while the probe is in flight"
+        );
+        cleanup(&sr, &p).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn single_probe_concurrent_requests_across_two_replicas() {
+        let sr = shared(REDIS).await;
+        let p = pid("two");
+        let setup = breaker(&sr, cfg(2, 150), &metrics());
+        let lease = Duration::from_secs(5);
+
+        // (a) Simultaneous burst on both replicas at half-open start.
+        open_then_expire(&setup, &p, 2).await;
+        let a = breaker(&sr, cfg(2, 5_000), &metrics());
+        let b = breaker(&sr, cfg(2, 5_000), &metrics());
+        let (p1, a1, d1) = race(&[a, b], 16, &p, lease).await;
+        assert_eq!((p1, a1, d1), (1, 0, 31), "one probe across both replicas");
+
+        // (b) Replica A holds the probe; traffic then spreads over A and B.
+        cleanup(&sr, &p).await;
+        open_then_expire(&setup, &p, 2).await;
+        let a = breaker(&sr, cfg(2, 5_000), &metrics());
+        let b = breaker(&sr, cfg(2, 5_000), &metrics());
+        let first = a.admit(&p, lease).await;
+        assert!(matches!(first, Admission::Probe(_)), "got {:?}", first);
+        let (p2, a2, d2) = race(&[a, b], 16, &p, lease).await;
+        assert_eq!(
+            (p2, a2, d2),
+            (0, 0, 32),
+            "no attempt from either replica while A's probe is in flight"
+        );
+        cleanup(&sr, &p).await;
+    }
+
+    // ── probe identity / late completion ─────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn late_probe_completion_cannot_close_a_newer_round() {
+        let sr = shared(REDIS).await;
+        let p = pid("late");
+        let m = metrics();
+        let a = breaker(&sr, cfg(2, 0), &m);
+        let b = breaker(&sr, cfg(2, 0), &m);
+
+        open_then_expire(&a, &p, 2).await;
+
+        // Replica A wins probe #1 with a 1s lease, then is slow to finish.
+        let t1 = a.admit(&p, Duration::from_secs(1)).await;
+        assert!(matches!(t1, Admission::Probe(_)));
+        tokio::time::sleep(Duration::from_millis(1250)).await; // lease expires
+
+        // A new round: replica B wins probe #2.
+        let t2 = b.admit(&p, Duration::from_secs(30)).await;
+        assert!(matches!(t2, Admission::Probe(_)));
+        assert_ne!(t1, t2, "each probe has its own identity");
+        let token2 = get(&sr, &p, "probe").await;
+
+        // A's LATE success (probe #1) must NOT close the circuit nor touch probe #2.
+        a.record_outcome(&p, CallResult::Success, &t1).await;
+        assert!(
+            get(&sr, &p, "backoff").await.is_some(),
+            "still unhealthy cycle"
+        );
+        assert_eq!(get(&sr, &p, "probe").await, token2, "probe #2 untouched");
+        assert_eq!(
+            b.admit(&p, Duration::from_secs(30)).await,
+            Admission::Deny,
+            "circuit is not closed by a stale completion"
+        );
+
+        // B's probe fails → re-open; then A's late success arrives AGAIN.
+        b.record_outcome(&p, CallResult::Failure, &t2).await;
+        assert!(
+            get(&sr, &p, "state").await.is_some(),
+            "re-opened by probe #2"
+        );
+        a.record_outcome(&p, CallResult::Success, &t1).await;
+        assert!(get(&sr, &p, "state").await.is_some(), "still open");
+        assert_eq!(a.admit(&p, Duration::from_secs(30)).await, Admission::Deny);
+        cleanup(&sr, &p).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn inflight_result_from_before_opening_does_not_alter_state() {
+        let sr = shared(REDIS).await;
+        let p = pid("inflight");
+        let cb = breaker(&sr, cfg(5, 0), &metrics());
+
+        cb.record_result(&p, CallResult::RateLimited).await; // OPEN
+                                                             // A request admitted before the circuit opened finishes successfully now.
+        cb.record_result(&p, CallResult::Success).await;
+        assert!(get(&sr, &p, "state").await.is_some(), "must stay open");
+        assert_eq!(cb.admit(&p, Duration::from_secs(5)).await, Admission::Deny);
+        cleanup(&sr, &p).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn abandoned_probe_lease_expires_and_another_probe_runs() {
+        // The request carrying the probe dies (client disconnect): nothing is
+        // recorded. The lease must expire by itself so the probe is never stuck.
+        let sr = shared(REDIS).await;
+        let p = pid("abandoned");
+        let cb = breaker(&sr, cfg(2, 0), &metrics());
+        open_then_expire(&cb, &p, 2).await;
+
+        assert!(matches!(
+            cb.admit(&p, Duration::from_secs(1)).await,
+            Admission::Probe(_)
+        ));
+        assert_eq!(cb.admit(&p, Duration::from_secs(1)).await, Admission::Deny);
+        tokio::time::sleep(Duration::from_millis(1250)).await;
+        assert!(
+            matches!(
+                cb.admit(&p, Duration::from_secs(1)).await,
+                Admission::Probe(_)
+            ),
+            "a new probe must be grantable after the lease expires"
+        );
+        cleanup(&sr, &p).await;
+    }
+
+    // ── degradation & recovery policy ────────────────────────────────────────
+    //
+    // Policy (identical whenever the failure happens): `backend: redis` stays
+    // `redis`. Redis unreachable ⇒ melis_circuit_breaker_degraded + a short
+    // suppression window, and:
+    //   - provider not known to be unhealthy by this replica → fail open (Allow);
+    //   - provider this replica saw OPEN/HALF-OPEN recently    → keep Deny
+    //     (bounded by max_ttl + probe lease), so an outage mid-cycle can't leak.
+    // Recovery is automatic when Redis answers again (no restart).
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn degradation_redis_down_at_boot_fails_open() {
+        let dead = format!("127.0.0.1:{}", free_port());
+        let started = std::time::Instant::now();
+        let sr = SharedRedis::connect(&redis_cfg(&dead, 1)).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "boot must be bounded by connect_timeout, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            sr.client().is_some(),
+            "client exists so it can recover later"
+        );
+        assert!(!sr.connected_at_boot());
+        assert!(!sr.is_healthy().await);
+
+        let m = metrics();
+        let cb = fast_breaker(&sr, cfg(2, 0), &m);
+        let t = std::time::Instant::now();
+        assert_eq!(
+            cb.admit("any", Duration::from_secs(5)).await,
+            Admission::Allow
+        );
+        assert!(
+            t.elapsed() < Duration::from_secs(1),
+            "bounded: {:?}",
+            t.elapsed()
+        );
+        assert!(m.circuit_breaker_degraded.get() >= 1);
+
+        // While suppressed, calls don't even touch Redis (no per-request timeout).
+        let t = std::time::Instant::now();
+        assert_eq!(
+            cb.admit("any", Duration::from_secs(5)).await,
+            Admission::Allow
+        );
+        assert!(t.elapsed() < Duration::from_millis(50), "{:?}", t.elapsed());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn degradation_redis_goes_down_after_operating_fails_open() {
+        let proxy = Proxy::start("127.0.0.1:0", REDIS).await;
+        let sr = shared(&proxy.addr.to_string()).await;
+        assert!(sr.connected_at_boot());
+        let healthy = pid("runtime-down-healthy");
+        let m = metrics();
+        let cb = fast_breaker(&sr, cfg(30, 0), &m);
+
+        // Gateway operating normally against Redis.
+        assert_eq!(
+            cb.admit(&healthy, Duration::from_secs(5)).await,
+            Admission::Allow
+        );
+
+        proxy.stop(); // Redis "goes away" while the gateway is running.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let t = std::time::Instant::now();
+        assert_eq!(
+            cb.admit(&healthy, Duration::from_secs(5)).await,
+            Admission::Allow,
+            "fail open: an unreadable breaker must not take healthy traffic down"
+        );
+        assert!(
+            t.elapsed() < Duration::from_secs(1),
+            "bounded: {:?}",
+            t.elapsed()
+        );
+        assert!(m.circuit_breaker_degraded.get() >= 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn redis_outage_during_unhealthy_cycle_keeps_denying() {
+        // Fail-open must not undo the single-probe guarantee: a replica that KNOWS
+        // the circuit is open / half-open keeps denying while Redis is unreadable.
+        let proxy = Proxy::start("127.0.0.1:0", REDIS).await;
+        let sr = shared(&proxy.addr.to_string()).await;
+        let p = pid("outage-cycle");
+        let m = metrics();
+        let cb = fast_breaker(&sr, cfg(2, 0), &m);
+
+        cb.record_result(&p, CallResult::RateLimited).await;
+        tokio::time::sleep(Duration::from_millis(2150)).await; // half-open
+        let probe = cb.admit(&p, Duration::from_secs(5)).await;
+        assert!(matches!(probe, Admission::Probe(_)), "got {:?}", probe);
+
+        proxy.stop(); // Redis unreachable while the probe is in flight
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut allows = 0;
+        for _ in 0..20 {
+            if cb.admit(&p, Duration::from_secs(5)).await != Admission::Deny {
+                allows += 1;
+            }
+        }
+        assert_eq!(allows, 0, "no traffic may leak during an unhealthy cycle");
+        assert!(m.circuit_breaker_degraded.get() >= 1);
+
+        // A provider this replica has never seen unhealthy still fails open.
+        assert_eq!(
+            cb.admit(&pid("never-seen"), Duration::from_secs(5)).await,
+            Admission::Allow
+        );
+
+        let direct = shared(REDIS).await;
+        cleanup(&direct, &p).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn recovery_after_runtime_outage_without_restart() {
+        let proxy = Proxy::start("127.0.0.1:0", REDIS).await;
+        let port = proxy.addr.port();
+        let sr = shared(&proxy.addr.to_string()).await;
+        let m = metrics();
+        let cb = fast_breaker(&sr, cfg(30, 0), &m);
+
+        proxy.stop();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let p = pid("recover-runtime");
+        assert_eq!(cb.admit(&p, Duration::from_secs(5)).await, Admission::Allow);
+
+        // While this gateway can't reach Redis, another replica opens the circuit.
+        let direct = shared(REDIS).await;
+        breaker(&direct, cfg(30, 0), &metrics())
+            .record_result(&p, CallResult::RateLimited)
+            .await;
+
+        // Redis returns on the same address: the SAME gateway objects must resume
+        // reading the shared state (and therefore start denying) with no restart.
+        let _proxy2 = Proxy::start(&format!("127.0.0.1:{}", port), REDIS).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut recovered = false;
+        while std::time::Instant::now() < deadline {
+            if cb.admit(&p, Duration::from_secs(5)).await == Admission::Deny {
+                recovered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(
+            recovered,
+            "breaker must resume reading Redis state by itself"
+        );
+        assert!(sr.is_healthy().await);
+        cleanup(&direct, &p).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn recovery_after_boot_outage_without_restart() {
+        // Redis is NOT reachable at boot...
+        let port = free_port();
+        let addr = format!("127.0.0.1:{}", port);
+        let sr = SharedRedis::connect(&redis_cfg(&addr, 1)).await;
+        assert!(!sr.connected_at_boot());
+        let p = pid("recover-boot");
+        let m = metrics();
+        let cb = fast_breaker(&sr, cfg(30, 0), &m);
+        assert_eq!(cb.admit(&p, Duration::from_secs(5)).await, Admission::Allow);
+
+        // ...and another replica (talking to real Redis) opens the circuit.
+        let direct = shared(REDIS).await;
+        breaker(&direct, cfg(30, 0), &metrics())
+            .record_result(&p, CallResult::RateLimited)
+            .await;
+
+        // Redis becomes reachable for the first gateway later: no restart.
+        let _proxy = Proxy::start(&addr, REDIS).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut recovered = false;
+        while std::time::Instant::now() < deadline {
+            if cb.admit(&p, Duration::from_secs(5)).await == Admission::Deny {
+                recovered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(
+            recovered,
+            "a Redis that was down at boot must be picked up later"
+        );
+        cleanup(&direct, &p).await;
     }
 }

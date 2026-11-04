@@ -50,6 +50,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Redis-dependent tests are `#[ignore]` and run in the pre-merge verification (G1)
   against a live Redis, alongside the Phase 1 Ollama tests.
 
+#### Fixed (Phase 4 follow-up, found by running against a real Redis)
+
+- **Boot hang:** `SharedRedis::connect` awaited the connection-driver handle, which
+  only resolves when the connection closes, so boot blocked whenever Redis *was*
+  reachable. Now waits only for the first connection, bounded by
+  `redis.connect_timeout_secs`.
+- **Closed vs half-open ambiguity:** an expired open window looked identical to a
+  healthy circuit. `:backoff` is now a persistent cycle marker (no TTL, deleted only
+  by a successful probe); expiry of `:state` never means closed.
+- **Probe grant cached locally:** a granted probe could be served from the local
+  cache as "available", letting a window of traffic through. Grants are no longer
+  cached.
+- **Late probe completion:** probes now carry an identity token; a completion that
+  isn't the current probe is rejected atomically and cannot close a newer round.
+  Results from requests admitted before the circuit opened no longer alter state.
+- **Traffic leak when Redis was slow/unreachable during half-open:** fail-open
+  admitted requests mid-cycle. A replica that saw the circuit open/half-open now
+  keeps denying (bounded) while Redis is unreadable; others still fail open.
+- **Inconsistent degradation policy:** previously local fallback at boot but
+  fail-open at runtime. Now `backend: redis` stays `redis` in both cases, Redis is
+  reconnected in the background and picked up again without a restart. Local
+  fallback only when no usable Redis URL is configured.
+- Redis calls from the breaker and semantic cache are bounded (100ms) and skipped
+  for 1s after a failure.
+
+#### Added (follow-up)
+
+- `CircuitBreaker::admit` / `record_outcome` with `Admission { Allow, Probe(token),
+  Deny }` (default implementations keep the local breaker unchanged).
+- `melis_redis_up` gauge; `/readyz` now reflects a periodic real PING.
+- 18 real-Redis integration tests (concurrency on one and two replicas, late probe,
+  healthy-vs-half-open, abandoned probe, degradation at boot / at runtime /
+  recovery via a controllable TCP proxy, parity).
+
 ### Phase 3 — Bidirectional Guardrails
 
 #### Added

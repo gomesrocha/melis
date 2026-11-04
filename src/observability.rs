@@ -150,6 +150,8 @@ pub struct Metrics {
     pub circuit_breaker_degraded: IntCounter,
     /// Histogram of embedding computation time in the cache lookup path.
     pub cache_embed_seconds: Histogram,
+    /// 1 when the shared Redis answers PING, 0 otherwise (refreshed periodically).
+    pub redis_up: prometheus::IntGauge,
     /// The Prometheus registry holding all metrics.
     pub registry: Registry,
 }
@@ -404,6 +406,12 @@ impl Metrics {
         ))
         .expect("failed to create melis_circuit_breaker_degraded metric");
 
+        let redis_up = prometheus::IntGauge::with_opts(Opts::new(
+            "melis_redis_up",
+            "Shared Redis reachability (1 = PING ok, 0 = unreachable or not configured)",
+        ))
+        .expect("failed to create melis_redis_up metric");
+
         let cache_embed_buckets = vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0];
         let cache_embed_seconds = Histogram::with_opts(
             HistogramOpts::new(
@@ -504,6 +512,9 @@ impl Metrics {
         registry
             .register(Box::new(cache_embed_seconds.clone()))
             .expect("failed to register melis_cache_embed_seconds");
+        registry
+            .register(Box::new(redis_up.clone()))
+            .expect("failed to register melis_redis_up");
 
         // Initialize metrics with known labels so they appear in /metrics even before first use
         provider_errors_total
@@ -566,6 +577,7 @@ impl Metrics {
             circuit_breaker_backend,
             circuit_breaker_degraded,
             cache_embed_seconds,
+            redis_up,
             registry,
         }
     }

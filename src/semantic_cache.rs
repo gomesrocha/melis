@@ -316,6 +316,8 @@ pub type EntryCountHook = std::sync::Arc<dyn Fn(&str, i64) + Send + Sync>;
 /// Embeddings are computed by the caller and passed in; this type only talks to Redis.
 pub struct RedisSemanticCache {
     client: fred::clients::RedisClient,
+    /// Bounds Redis calls on the request path and skips Redis briefly after a failure.
+    gate: crate::redis_client::RedisGate,
     /// Optional hook to report entry count per namespace (gauge update).
     on_entry_count: Option<EntryCountHook>,
 }
@@ -324,6 +326,10 @@ impl RedisSemanticCache {
     pub fn new(client: fred::clients::RedisClient) -> Self {
         Self {
             client,
+            gate: crate::redis_client::RedisGate::new(
+                crate::redis_client::DEFAULT_OP_TIMEOUT,
+                crate::redis_client::DEFAULT_DEGRADED_BACKOFF,
+            ),
             on_entry_count: None,
         }
     }
@@ -346,21 +352,24 @@ impl SemanticCache for RedisSemanticCache {
     async fn lookup(&self, ctx: &CacheKeyCtx, embedding: &[f64]) -> CacheLookup {
         use fred::interfaces::LuaInterface;
 
-        // Single-round-trip batch fetch of all candidate entries in the namespace.
+        // Redis recently failed: fail open without touching it.
+        if self.gate.suppressed() {
+            return CacheLookup::Degraded(DegradeReason::Redis);
+        }
+
+        // Single-round-trip batch fetch of all candidate entries in the namespace,
+        // bounded by the gate's timeout so an outage cannot stall the request.
         let flat: Vec<String> = match self
-            .client
-            .eval(
+            .gate
+            .run(self.client.eval::<Vec<String>, _, _, _>(
                 CACHE_LOOKUP_LUA,
                 vec![ctx.index_key()],
                 vec![ctx.namespace()],
-            )
+            ))
             .await
         {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("semantic cache lookup redis error (fail-open): {}", e);
-                return CacheLookup::Degraded(DegradeReason::Redis);
-            }
+            Some(v) => v,
+            None => return CacheLookup::Degraded(DegradeReason::Redis),
         };
 
         self.report_count(&ctx.namespace(), (flat.len() / 2) as i64);
@@ -414,9 +423,12 @@ impl SemanticCache for RedisSemanticCache {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        let count: Result<i64, _> = self
-            .client
-            .eval(
+        if self.gate.suppressed() {
+            return;
+        }
+        let count: Option<i64> = self
+            .gate
+            .run(self.client.eval::<i64, _, _, _>(
                 CACHE_STORE_LUA,
                 vec![ctx.index_key()],
                 vec![
@@ -427,12 +439,11 @@ impl SemanticCache for RedisSemanticCache {
                     now_ms.to_string(),
                     ctx.max_entries.to_string(),
                 ],
-            )
+            ))
             .await;
 
-        match count {
-            Ok(c) => self.report_count(&ctx.namespace(), c),
-            Err(e) => tracing::warn!("semantic cache store redis error (fail-open): {}", e),
+        if let Some(c) = count {
+            self.report_count(&ctx.namespace(), c);
         }
     }
 

@@ -79,9 +79,26 @@ async fn main() {
     let metrics = Arc::new(Metrics::new());
 
     // Shared Redis client (Phase 4): one pool reused by cache and circuit breaker.
-    // Fail-open: a `None` client means Redis features degrade, boot never blocks.
+    // The client exists whenever a Redis URL is configured, even if Redis is down
+    // at boot; it reconnects in the background. Boot never blocks on Redis.
     let shared_redis = redis_client::SharedRedis::connect(&gateway_config.redis).await;
     let redis_healthy = shared_redis.is_healthy().await;
+    let redis_available = Arc::new(AtomicBool::new(redis_healthy));
+    metrics.redis_up.set(redis_healthy as i64);
+    {
+        // Keep `redis_available` (/readyz) and `melis_redis_up` real over time.
+        let flag = redis_available.clone();
+        let redis = shared_redis.clone();
+        let metrics = metrics.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let healthy = redis.is_healthy().await;
+                flag.store(healthy, std::sync::atomic::Ordering::Relaxed);
+                metrics.redis_up.set(healthy as i64);
+            }
+        });
+    }
 
     // Select circuit breaker backend (default local; backward compatible).
     let circuit_breaker: Arc<dyn circuit_breaker::CircuitBreaker> =
@@ -100,9 +117,13 @@ async fn main() {
                     ))
                 }
                 None => {
+                    // Reached ONLY when no usable Redis URL is configured (a config
+                    // problem). A Redis that is merely down/unreachable still selects
+                    // the Redis backend: it fails open and recovers by itself.
                     tracing::warn!(
-                    "circuit_breaker.backend=redis but Redis is unavailable; using local breaker"
-                );
+                        "circuit_breaker.backend=redis but no usable Redis URL is configured; \
+                         using the local breaker"
+                    );
                     metrics
                         .circuit_breaker_backend
                         .with_label_values(&["local"])
@@ -176,7 +197,7 @@ async fn main() {
         circuit_breaker,
         http_client,
         metrics,
-        redis_available: Arc::new(AtomicBool::new(redis_healthy)),
+        redis_available,
         semantic_cache,
         outbound_guardrail: Arc::new(semantic_cache::NoopOutboundGuardrail),
         guardrails,
@@ -243,7 +264,7 @@ fn build_semantic_cache(
 ) -> Arc<dyn semantic_cache::SemanticCache> {
     match client {
         Some(c) => {
-            let hook: Arc<dyn Fn(&str, i64) + Send + Sync> = {
+            let hook: semantic_cache::EntryCountHook = {
                 let metrics = metrics.clone();
                 Arc::new(move |namespace: &str, count: i64| {
                     metrics

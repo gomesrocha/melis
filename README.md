@@ -348,23 +348,44 @@ instance protects all of them. Same semantics as the local breaker (429 opens
 immediately; failure-rate threshold with a minimum request count; single-probe
 half-open with exponential backoff).
 
-Key design points:
+State is encoded in Redis keys:
 
-- **State encoded in Redis keys:** `:state` present = Open, `:probe` present =
-  half-open probe in flight, both absent = Closed.
-- **Single probe across replicas:** the half-open probe is claimed atomically
-  (`SET ... NX EX` in a Lua script), so only one replica probes the provider —
-  avoiding the exact stampede the breaker prevents. The probe TTL is aligned to the
-  provider timeout, so a client disconnect mid-probe never leaves the probe stuck.
-- **Server clock:** sliding windows use the Redis server `TIME`, not replica
-  process clocks (which drift).
-- **No per-request round-trip:** `is_available` reads through a short-TTL local
-  cache (`redis_state_cache_ms`, default 150ms); writes go to Redis. On a locally
-  observed 429, the replica invalidates its own cached copy immediately
-  (write-through) so it converges without waiting for the TTL.
-- **Fail-open:** if Redis is unreachable, the breaker treats providers as available
-  (never takes all traffic down), logs a warning, and increments
-  `melis_circuit_breaker_degraded`.
+| State | `:state` | `:backoff` | `:probe` |
+|-------|----------|------------|----------|
+| Closed (healthy) | absent | absent | absent |
+| Open | present (TTL) | present | — |
+| Half-open, probe available | absent (expired) | present | absent |
+| Half-open, probe in flight | absent | present | present (TTL = lease) |
+
+`:backoff` has no TTL and is deleted only by a successful probe, so an expired
+open window is never mistaken for a healthy circuit.
+
+Key behaviors:
+
+- **Single probe across replicas:** the probe is claimed atomically (Lua,
+  `SET NX EX`). Only one attempt reaches the provider while it is in flight —
+  on the same replica or across replicas. A probe grant is never cached locally.
+- **Probe identity:** each probe carries a token; its completion changes state
+  only if it is still the current probe (checked atomically). A late response
+  can't close a newer round. The probe lease is the provider timeout + 1s, so a
+  client disconnect mid-probe never leaves the probe stuck.
+- **Server clock:** sliding windows use Redis `TIME`, not replica clocks.
+- **No per-request round-trip:** reads go through a short-TTL local cache
+  (`redis_state_cache_ms`, default 150ms); writes go to Redis.
+
+**Degradation policy** (the same whether Redis fails at boot or later):
+
+| Situation | Active backend | Behavior |
+|-----------|----------------|----------|
+| Redis down at boot | `redis` | boot continues after `redis.connect_timeout_secs`; reconnects in background |
+| Redis goes down while running | `redis` | providers this replica saw open/half-open stay denied (bounded); all others fail open |
+| Redis comes back | `redis` | recovers automatically, no restart |
+| No usable Redis URL configured | `local` | config error → local breaker + warning |
+
+Redis operations are bounded (100ms timeout) and skipped for 1s after a failure,
+so an outage costs at most one timeout per second, not one per request. Watch
+`melis_circuit_breaker_backend`, `melis_circuit_breaker_degraded` and
+`melis_redis_up`.
 
 ### Retry/Failover Loop
 
@@ -717,6 +738,7 @@ Melis exposes all metrics at `GET /metrics` in Prometheus text exposition format
 | `melis_guardrail_actions_total` | Counter | `rule`, `direction`, `action` | Guardrail actions taken (block/redact/warn) |
 | `melis_circuit_breaker_backend` | Gauge | `backend` | Active circuit breaker backend (`local` or `redis`); value 1 for the active one |
 | `melis_circuit_breaker_degraded` | Counter | — | Redis circuit breaker fail-open degradations |
+| `melis_redis_up` | Gauge | — | Shared Redis reachability (1 = PING ok), refreshed every 5s; also drives `/readyz` |
 | `melis_cache_embed_seconds` | Histogram | — | Embedding computation time in the cache lookup path |
 
 > **Note on `melis_circuit_breaker_state` with the Redis backend:** replicas read

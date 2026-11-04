@@ -593,8 +593,22 @@ async fn chat_completions_handler(
             };
             let selected_name = selected.name.clone();
 
-            // Check circuit breaker
-            if !state.circuit_breaker.is_available(&selected_name).await {
+            // Check circuit breaker. A half-open probe lease must outlive the provider
+            // call (timeout + margin) so it neither expires mid-call nor stays stuck
+            // if the client disconnects: it then simply expires and another probe runs.
+            let probe_lease = state
+                .gateway_config
+                .providers
+                .iter()
+                .find(|p| p.id == selected_name || p.provider_type == selected_name)
+                .map(|p| p.timeout())
+                .unwrap_or(Duration::from_secs(120))
+                + Duration::from_secs(1);
+            let admission = state
+                .circuit_breaker
+                .admit(&selected_name, probe_lease)
+                .await;
+            if admission == crate::circuit_breaker::Admission::Deny {
                 state
                     .metrics
                     .failover_total
@@ -725,7 +739,7 @@ async fn chat_completions_handler(
 
                 state
                     .circuit_breaker
-                    .record_result(&selected_name, CallResult::Success)
+                    .record_outcome(&selected_name, CallResult::Success, &admission)
                     .await;
 
                 let transpiler = crate::transpiler::get_transpiler(&ptype);
@@ -759,7 +773,7 @@ async fn chat_completions_handler(
 
                     state
                         .circuit_breaker
-                        .record_result(&selected_name, CallResult::Success)
+                        .record_outcome(&selected_name, CallResult::Success, &admission)
                         .await;
 
                     match serde_json::from_slice::<Value>(&response_bytes) {
@@ -876,12 +890,12 @@ async fn chat_completions_handler(
                         if status == 429 {
                             state
                                 .circuit_breaker
-                                .record_result(&selected_name, CallResult::RateLimited)
+                                .record_outcome(&selected_name, CallResult::RateLimited, &admission)
                                 .await;
                         } else if status >= 500 {
                             state
                                 .circuit_breaker
-                                .record_result(&selected_name, CallResult::Failure)
+                                .record_outcome(&selected_name, CallResult::Failure, &admission)
                                 .await;
                         }
                         break 'failover Err(crate::bedrock::http_status_error(
@@ -915,7 +929,7 @@ async fn chat_completions_handler(
                         429 => {
                             state
                                 .circuit_breaker
-                                .record_result(&selected_name, CallResult::RateLimited)
+                                .record_outcome(&selected_name, CallResult::RateLimited, &admission)
                                 .await;
                             state
                                 .metrics
@@ -930,7 +944,7 @@ async fn chat_completions_handler(
                         s if s >= 500 => {
                             state
                                 .circuit_breaker
-                                .record_result(&selected_name, CallResult::Failure)
+                                .record_outcome(&selected_name, CallResult::Failure, &admission)
                                 .await;
                             state
                                 .metrics
@@ -956,7 +970,7 @@ async fn chat_completions_handler(
                     if !crate::bedrock::retries_another_provider(&ptype) {
                         state
                             .circuit_breaker
-                            .record_result(&selected_name, CallResult::Timeout)
+                            .record_outcome(&selected_name, CallResult::Timeout, &admission)
                             .await;
                         state
                             .metrics
@@ -973,7 +987,7 @@ async fn chat_completions_handler(
                         .observe(backend_elapsed_time);
                     state
                         .circuit_breaker
-                        .record_result(&selected_name, CallResult::Timeout)
+                        .record_outcome(&selected_name, CallResult::Timeout, &admission)
                         .await;
                     state
                         .metrics
@@ -995,7 +1009,7 @@ async fn chat_completions_handler(
                         let safe = crate::bedrock::redact(&e.to_string(), &bearer_secret);
                         state
                             .circuit_breaker
-                            .record_result(&selected_name, CallResult::Failure)
+                            .record_outcome(&selected_name, CallResult::Failure, &admission)
                             .await;
                         break 'failover Err(GatewayError::ServiceUnavailable(format!(
                             "Provider unavailable: {safe}"
@@ -1009,7 +1023,7 @@ async fn chat_completions_handler(
                         .observe(backend_elapsed_time);
                     state
                         .circuit_breaker
-                        .record_result(&selected_name, CallResult::Failure)
+                        .record_outcome(&selected_name, CallResult::Failure, &admission)
                         .await;
                     state
                         .metrics
