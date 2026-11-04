@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 4 — Shared Redis Circuit Breaker
+
+#### Added
+
+- **Shared Redis client** (`src/redis_client.rs`, `SharedRedis`): a single fred pool
+  built once at boot from `config.redis`, reused by the semantic cache and the
+  circuit breaker. Fail-open — if Redis can't be reached, components degrade and the
+  gateway still boots. Closes the Phase 2 debt of each component opening its own
+  connection; `redis_available` (previously hardcoded) now reflects a real PING.
+- **`RedisCircuitBreaker`** with state shared across replicas, full semantic parity
+  with the local breaker (429 opens immediately; failure-rate threshold with minimum
+  request count; single-probe half-open with exponential backoff up to `max_ttl`).
+  - State encoded in keys: `:state` (Open), `:probe` (half-open probe in flight),
+    both absent (Closed); plus `:failures`, `:requests`, `:backoff`.
+  - All transitions are atomic via Lua using the Redis server `TIME` (no replica
+    clock skew). The half-open probe is claimed with `SET NX EX` so exactly one
+    replica probes.
+  - `is_available` uses a short-TTL local read-through cache
+    (`circuit_breaker.redis_state_cache_ms`, default 150ms) to avoid a Redis
+    round-trip per request; a locally observed 429 invalidates the local copy
+    immediately (write-through).
+  - Fail-open on Redis errors (never blocks all traffic) with a warning and
+    `melis_circuit_breaker_degraded`.
+- **Backend selection**: `circuit_breaker.backend: local | redis` (default `local`,
+  backward compatible). If `redis` is selected but Redis is unavailable, falls back
+  to the local breaker with a warning.
+- **Injectable embeddings** (`EmbeddingProvider` trait + `OllamaEmbeddingProvider`
+  default): decouples the cache's embedding step from a live Ollama, enabling
+  deterministic end-to-end tests. The two Phase 3 cache×guardrail scenarios
+  (redact feeds the cache key; cache hit passes the outbound guardrail) are now real
+  end-to-end HTTP tests. Closes the Phase 2 follow-up: `melis_cache_embed_seconds`
+  measures the real embedding path.
+- **New metrics**: `melis_circuit_breaker_backend{backend}`,
+  `melis_circuit_breaker_degraded`, `melis_cache_embed_seconds`.
+- Documentation: `config.yaml.example`, README "Shared Circuit Breaker" section and
+  metrics reference (including the transient per-replica divergence note).
+
+#### Notes
+
+- Backward compatible: default `backend: local` preserves current behavior; new
+  config fields are optional.
+- Redis-dependent tests are `#[ignore]` and run in the pre-merge verification (G1)
+  against a live Redis, alongside the Phase 1 Ollama tests.
+
 ### Phase 3 — Bidirectional Guardrails
 
 #### Added

@@ -325,6 +325,28 @@ pub struct CircuitBreakerConfig {
     pub max_ttl_secs: u64,
     #[serde(default = "default_backoff_factor")]
     pub backoff_factor: f64,
+    /// Backend for circuit breaker state. `local` (default) or `redis` (shared).
+    #[serde(default)]
+    pub backend: CircuitBreakerBackend,
+    /// TTL (ms) of the local read-through cache of breaker state, to avoid a Redis
+    /// round-trip per request. Default 150ms.
+    #[serde(default = "default_redis_state_cache_ms")]
+    pub redis_state_cache_ms: u64,
+}
+
+/// Circuit breaker state backend selector.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CircuitBreakerBackend {
+    /// In-process state (default; backward compatible).
+    #[default]
+    Local,
+    /// Shared state in Redis across replicas.
+    Redis,
+}
+
+fn default_redis_state_cache_ms() -> u64 {
+    150
 }
 
 impl CircuitBreakerConfig {
@@ -350,6 +372,8 @@ impl Default for CircuitBreakerConfig {
             open_ttl_secs: default_open_ttl_secs(),
             max_ttl_secs: default_max_ttl_secs(),
             backoff_factor: default_backoff_factor(),
+            backend: CircuitBreakerBackend::default(),
+            redis_state_cache_ms: default_redis_state_cache_ms(),
         }
     }
 }
@@ -679,6 +703,32 @@ providers:
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.providers[0].id, "openai-1");
         assert_eq!(config.routes_config_path, PathBuf::from("./routes.yaml"));
+    }
+
+    #[test]
+    fn test_circuit_breaker_backend_defaults_local() {
+        let config = GatewayConfig::from_yaml(&minimal_valid_yaml()).unwrap();
+        // Backward compat: no `backend` field → Local.
+        assert_eq!(config.circuit_breaker.backend, CircuitBreakerBackend::Local);
+        assert_eq!(config.circuit_breaker.redis_state_cache_ms, 150);
+    }
+
+    #[test]
+    fn test_circuit_breaker_backend_redis_parsed() {
+        let yaml = r#"
+server:
+  host: "0.0.0.0"
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+circuit_breaker:
+  backend: "redis"
+  redis_state_cache_ms: 200
+"#;
+        let config = GatewayConfig::from_yaml(yaml).unwrap();
+        assert_eq!(config.circuit_breaker.backend, CircuitBreakerBackend::Redis);
+        assert_eq!(config.circuit_breaker.redis_state_cache_ms, 200);
     }
 
     #[test]

@@ -472,6 +472,7 @@ mod tests {
                 },
                 Default::default(),
             )),
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
         };
 
         Router::new()
@@ -644,6 +645,7 @@ rate_limit:
                 },
                 Default::default(),
             )),
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
         };
 
         let app = Router::new()

@@ -44,4 +44,6 @@ pub struct AppState {
     pub outbound_guardrail: Arc<dyn crate::semantic_cache::OutboundGuardrail>,
     /// Compiled guardrails per route (Phase 3), recompiled on hot reload.
     pub guardrails: Arc<crate::guardrails::GuardrailEngine>,
+    /// Embedding backend for the semantic cache (Phase 4: injectable).
+    pub embeddings: Arc<dyn crate::embeddings::EmbeddingProvider>,
 }

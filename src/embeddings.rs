@@ -200,27 +200,37 @@ pub async fn embeddings_handler(
             )
         })?;
 
-    let base_url = &provider_config.base_url;
+    let base_url = provider_config.base_url.clone();
     let timeout = provider_config.timeout();
+    let http_client = state.http_client.clone();
 
     // Try modern /api/embed first
-    let embeddings = match call_ollama_embed(&state, base_url, &model, &inputs, timeout).await {
-        Ok(embs) => embs,
-        Err(EmbeddingProviderError::NotFound) => {
-            // Fallback to legacy /api/embeddings
-            tracing::info!("Ollama /api/embed returned 404, falling back to /api/embeddings");
-            match call_ollama_embeddings_legacy(&state, base_url, &model, &inputs, timeout).await {
-                Ok(embs) => embs,
-                Err(EmbeddingProviderError::NotFound) => {
-                    return Err(GatewayError::ServiceUnavailable(
-                        "Ollama does not support embeddings endpoints.".to_string(),
-                    ));
+    let embeddings =
+        match call_ollama_embed(http_client.as_ref(), &base_url, &model, &inputs, timeout).await {
+            Ok(embs) => embs,
+            Err(EmbeddingProviderError::NotFound) => {
+                // Fallback to legacy /api/embeddings
+                tracing::info!("Ollama /api/embed returned 404, falling back to /api/embeddings");
+                match call_ollama_embeddings_legacy(
+                    http_client.as_ref(),
+                    &base_url,
+                    &model,
+                    &inputs,
+                    timeout,
+                )
+                .await
+                {
+                    Ok(embs) => embs,
+                    Err(EmbeddingProviderError::NotFound) => {
+                        return Err(GatewayError::ServiceUnavailable(
+                            "Ollama does not support embeddings endpoints.".to_string(),
+                        ));
+                    }
+                    Err(EmbeddingProviderError::Gateway(e)) => return Err(e),
                 }
-                Err(EmbeddingProviderError::Gateway(e)) => return Err(e),
             }
-        }
-        Err(EmbeddingProviderError::Gateway(e)) => return Err(e),
-    };
+            Err(EmbeddingProviderError::Gateway(e)) => return Err(e),
+        };
 
     // Validate response count matches input count
     if embeddings.len() != input_count {
@@ -288,6 +298,96 @@ pub async fn embeddings_handler(
     Ok(Json(response).into_response())
 }
 
+// ─── Injectable embedding provider (Phase 4) ──────────────────────────────────
+
+/// Abstraction over the embedding backend used by the semantic cache.
+///
+/// Injected into `AppState` so tests can supply a deterministic stub (enabling
+/// end-to-end cache/guardrail tests without a live Ollama), while production uses
+/// the Ollama-backed implementation.
+#[async_trait::async_trait]
+pub trait EmbeddingProvider: Send + Sync {
+    /// Compute the embedding for `text` using `model`. Returns `None` on failure
+    /// (callers fail open).
+    async fn embed(&self, model: &str, text: &str) -> Option<Vec<f64>>;
+}
+
+/// Production embedding provider backed by Ollama via the gateway HTTP client.
+///
+/// Holds only what embedding needs (provider config + HTTP client), not the full
+/// `AppState`, to avoid an `AppState` ⇄ provider reference cycle.
+pub struct OllamaEmbeddingProvider {
+    providers: Vec<crate::config::ProviderConfig>,
+    http_client: std::sync::Arc<dyn crate::client::LlmHttpClient>,
+}
+
+impl OllamaEmbeddingProvider {
+    pub fn new(
+        providers: Vec<crate::config::ProviderConfig>,
+        http_client: std::sync::Arc<dyn crate::client::LlmHttpClient>,
+    ) -> Self {
+        Self {
+            providers,
+            http_client,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingProvider for OllamaEmbeddingProvider {
+    async fn embed(&self, model: &str, text: &str) -> Option<Vec<f64>> {
+        embed_single_with(&self.providers, self.http_client.as_ref(), model, text).await
+    }
+}
+
+/// Deterministic embedding provider for tests.
+///
+/// Maps text to a fixed-dimension vector seeded by a content hash, so equivalent
+/// inputs embed identically and distinct inputs embed differently — enough to
+/// drive cache hit/miss deterministically without a live Ollama.
+#[cfg(test)]
+pub struct StubEmbeddingProvider {
+    /// If set, always returns this vector regardless of input (for forced hits).
+    pub fixed: Option<Vec<f64>>,
+    /// If true, `embed` returns `None` (simulates embeddings backend down).
+    pub unavailable: bool,
+}
+
+#[cfg(test)]
+impl StubEmbeddingProvider {
+    pub fn deterministic() -> Self {
+        Self {
+            fixed: None,
+            unavailable: false,
+        }
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl EmbeddingProvider for StubEmbeddingProvider {
+    async fn embed(&self, _model: &str, text: &str) -> Option<Vec<f64>> {
+        if self.unavailable {
+            return None;
+        }
+        if let Some(v) = &self.fixed {
+            return Some(v.clone());
+        }
+        // 8-dim vector seeded by an FNV-1a hash of the text; deterministic.
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for b in text.as_bytes() {
+            hash ^= *b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let mut v = vec![0.0f64; 8];
+        for (i, slot) in v.iter_mut().enumerate() {
+            let byte = (hash >> (i * 8)) & 0xff;
+            *slot = byte as f64 / 255.0;
+        }
+        Some(v)
+    }
+}
+
 // ─── Reusable single-text embedding (used by the semantic cache) ──────────────
 
 /// Compute the embedding of a single text using the configured Ollama provider.
@@ -296,20 +396,34 @@ pub async fn embeddings_handler(
 /// so callers can fail open. Reuses the same `/api/embed` → `/api/embeddings`
 /// fallback path as the public embeddings endpoint.
 pub async fn embed_single(state: &AppState, model: &str, text: &str) -> Option<Vec<f64>> {
-    let provider_config = state
-        .gateway_config
-        .providers
-        .iter()
-        .find(|p| p.provider_type == "ollama")?;
+    embed_single_with(
+        &state.gateway_config.providers,
+        state.http_client.as_ref(),
+        model,
+        text,
+    )
+    .await
+}
+
+/// Like [`embed_single`] but takes the provider list and HTTP client directly,
+/// so it can be used by the injectable `OllamaEmbeddingProvider` without holding
+/// a full `AppState`.
+pub async fn embed_single_with(
+    providers: &[crate::config::ProviderConfig],
+    http_client: &dyn crate::client::LlmHttpClient,
+    model: &str,
+    text: &str,
+) -> Option<Vec<f64>> {
+    let provider_config = providers.iter().find(|p| p.provider_type == "ollama")?;
 
     let base_url = &provider_config.base_url;
     let timeout = provider_config.timeout();
     let inputs = vec![text.to_string()];
 
-    let result = match call_ollama_embed(state, base_url, model, &inputs, timeout).await {
+    let result = match call_ollama_embed(http_client, base_url, model, &inputs, timeout).await {
         Ok(embs) => Ok(embs),
         Err(EmbeddingProviderError::NotFound) => {
-            call_ollama_embeddings_legacy(state, base_url, model, &inputs, timeout).await
+            call_ollama_embeddings_legacy(http_client, base_url, model, &inputs, timeout).await
         }
         Err(e) => Err(e),
     };
@@ -332,7 +446,7 @@ enum EmbeddingProviderError {
 
 /// Calls Ollama's modern /api/embed endpoint.
 async fn call_ollama_embed(
-    state: &AppState,
+    http_client: &dyn crate::client::LlmHttpClient,
     base_url: &str,
     model: &str,
     inputs: &[String],
@@ -358,8 +472,7 @@ async fn call_ollama_embed(
         "application/json".parse().unwrap(),
     );
 
-    match state
-        .http_client
+    match http_client
         .send(&url, headers, bytes::Bytes::from(body_bytes), timeout)
         .await
     {
@@ -387,7 +500,7 @@ async fn call_ollama_embed(
 
 /// Calls Ollama's legacy /api/embeddings endpoint (one input at a time).
 async fn call_ollama_embeddings_legacy(
-    state: &AppState,
+    http_client: &dyn crate::client::LlmHttpClient,
     base_url: &str,
     model: &str,
     inputs: &[String],
@@ -415,8 +528,7 @@ async fn call_ollama_embeddings_legacy(
             "application/json".parse().unwrap(),
         );
 
-        match state
-            .http_client
+        match http_client
             .send(&url, headers, bytes::Bytes::from(body_bytes), timeout)
             .await
         {

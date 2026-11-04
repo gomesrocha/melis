@@ -144,6 +144,12 @@ pub struct Metrics {
     pub cache_entries: IntGaugeVec,
     /// Counter of guardrail actions, labeled by rule, direction, and action.
     pub guardrail_actions_total: IntCounterVec,
+    /// Gauge indicating the active circuit breaker backend (label `backend`, value 1).
+    pub circuit_breaker_backend: IntGaugeVec,
+    /// Counter of Redis circuit breaker fail-open degradations.
+    pub circuit_breaker_degraded: IntCounter,
+    /// Histogram of embedding computation time in the cache lookup path.
+    pub cache_embed_seconds: Histogram,
     /// The Prometheus registry holding all metrics.
     pub registry: Registry,
 }
@@ -383,6 +389,31 @@ impl Metrics {
         )
         .expect("failed to create melis_guardrail_actions_total metric");
 
+        let circuit_breaker_backend = IntGaugeVec::new(
+            Opts::new(
+                "melis_circuit_breaker_backend",
+                "Active circuit breaker backend (local or redis); value 1 for the active one",
+            ),
+            &["backend"],
+        )
+        .expect("failed to create melis_circuit_breaker_backend metric");
+
+        let circuit_breaker_degraded = IntCounter::with_opts(Opts::new(
+            "melis_circuit_breaker_degraded",
+            "Total Redis circuit breaker fail-open degradations",
+        ))
+        .expect("failed to create melis_circuit_breaker_degraded metric");
+
+        let cache_embed_buckets = vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0];
+        let cache_embed_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "melis_cache_embed_seconds",
+                "Embedding computation time in the cache lookup path (seconds)",
+            )
+            .buckets(cache_embed_buckets),
+        )
+        .expect("failed to create melis_cache_embed_seconds metric");
+
         registry
             .register(Box::new(requests_total.clone()))
             .expect("failed to register melis_gateway_requests_total");
@@ -464,6 +495,15 @@ impl Metrics {
         registry
             .register(Box::new(guardrail_actions_total.clone()))
             .expect("failed to register melis_guardrail_actions_total");
+        registry
+            .register(Box::new(circuit_breaker_backend.clone()))
+            .expect("failed to register melis_circuit_breaker_backend");
+        registry
+            .register(Box::new(circuit_breaker_degraded.clone()))
+            .expect("failed to register melis_circuit_breaker_degraded");
+        registry
+            .register(Box::new(cache_embed_seconds.clone()))
+            .expect("failed to register melis_cache_embed_seconds");
 
         // Initialize metrics with known labels so they appear in /metrics even before first use
         provider_errors_total
@@ -523,6 +563,9 @@ impl Metrics {
             cache_degraded,
             cache_entries,
             guardrail_actions_total,
+            circuit_breaker_backend,
+            circuit_breaker_degraded,
+            cache_embed_seconds,
             registry,
         }
     }

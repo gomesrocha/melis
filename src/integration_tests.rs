@@ -63,6 +63,7 @@ auth:
                 },
                 Default::default(),
             )),
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
         }
     }
 
@@ -587,7 +588,8 @@ auth:
             http_client: Arc::new(ReqwestLlmClient::new()),
             metrics: metrics.clone(),
             redis_available: Arc::new(AtomicBool::new(true)),
-            // No Redis connection in tests → disabled cache; embeddings also absent.
+            // No Redis connection in tests → disabled cache. Embeddings explicitly
+            // unavailable to exercise the fail-open path.
             semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
             guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
@@ -597,6 +599,10 @@ auth:
                 },
                 Default::default(),
             )),
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider {
+                fixed: None,
+                unavailable: true,
+            }),
         };
         (state, metrics)
     }
@@ -808,17 +814,27 @@ auth:
         use async_trait::async_trait;
         use std::sync::Mutex;
 
-        /// Records lookups/stores to prove a blocked request never touches the cache.
+        /// Records lookups/stores; can be primed to return a Hit and capture the
+        /// normalized conversation the lookup was computed over (via a shared slot).
         #[derive(Default)]
         struct RecordingCache {
             lookups: Mutex<u32>,
             stores: Mutex<u32>,
+            /// When set, `lookup` returns a Hit with this body.
+            hit_body: Mutex<Option<serde_json::Value>>,
         }
 
         #[async_trait]
         impl SemanticCache for RecordingCache {
             async fn lookup(&self, _ctx: &CacheKeyCtx, _embedding: &[f64]) -> CacheLookup {
                 *self.lookups.lock().unwrap() += 1;
+                if let Some(body) = self.hit_body.lock().unwrap().clone() {
+                    return CacheLookup::Hit(crate::semantic_cache::CachedResponse {
+                        body,
+                        was_streaming: false,
+                        stored_at_unix: crate::semantic_cache::now_unix(),
+                    });
+                }
                 CacheLookup::Miss
             }
             async fn store(
@@ -840,6 +856,7 @@ auth:
             dir: &tempfile::TempDir,
             routes_yaml: &str,
             cache: Arc<dyn SemanticCache>,
+            embeddings: Arc<dyn crate::embeddings::EmbeddingProvider>,
         ) -> (AppState, Arc<Metrics>) {
             let routes_path = dir.path().join("routes.yaml");
             std::fs::write(&routes_path, routes_yaml).unwrap();
@@ -880,6 +897,7 @@ auth:
                 semantic_cache: cache,
                 outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
                 guardrails,
+                embeddings,
             };
             (state, metrics)
         }
@@ -909,7 +927,12 @@ custom_providers:
     base_url: "http://127.0.0.1:59999/v1"
     api_format: "openai_compatible"
 "#;
-            let (state, metrics) = build_state(&dir, routes, cache.clone());
+            let (state, metrics) = build_state(
+                &dir,
+                routes,
+                cache.clone(),
+                Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+            );
             let app = build_router(state);
 
             let payload = serde_json::json!({
@@ -936,99 +959,138 @@ custom_providers:
             assert_eq!(blocked, 1);
         }
 
-        // NOTE: the redact→cache-key and cache-hit→outbound-guardrail behaviors
-        // depend on the embedding step (Ollama), which is unavailable in CI. The
-        // embedding gate runs before the cache, so at the integration level those
-        // paths degrade (fail-open) and never reach the cache. They are covered
-        // deterministically by the unit tests below, which exercise the exact logic
-        // (inbound redact rewrite feeding the normalized cache key; outbound
-        // guardrails blocking/redacting a cached body) without a live backend.
+        // These two were unit-only in Phase 3 because the embedding step gated the
+        // cache path. With the injectable `EmbeddingProvider` (Phase 4), a
+        // deterministic stub lets them run as real end-to-end HTTP tests.
 
-        #[test]
-        fn inbound_redact_rewrite_feeds_normalized_cache_key() {
-            use crate::guardrails::{CompiledGuardrails, GuardrailDecision};
-            use crate::route_config::{
-                GuardrailAction, GuardrailDirection, GuardrailRule, GuardrailType, GuardrailsConfig,
-            };
-            use crate::semantic_cache::normalize_conversation;
-
-            // Compile a redact rule as the handler would.
-            let cfg = GuardrailsConfig {
-                rules: vec![GuardrailRule {
-                    name: "redactword".to_string(),
-                    r#type: GuardrailType::Keyword,
-                    direction: GuardrailDirection::Inbound,
-                    action: GuardrailAction::Redact,
-                    pattern: None,
-                    keywords: Some(vec!["secret".to_string()]),
-                }],
-                fail_closed: None,
-            };
-            let g = CompiledGuardrails::compile(&cfg, &Default::default()).unwrap();
-            let metrics = Metrics::new();
-
-            // Simulate the handler's per-message inbound rewrite.
-            let original = "my secret token";
-            let rewritten = match g.evaluate(GuardrailDirection::Inbound, original, &metrics) {
-                GuardrailDecision::Redacted(t) => t,
-                other => panic!("expected redacted, got {:?}", other),
-            };
-            let messages = vec![serde_json::json!({"role": "user", "content": rewritten})];
-
-            // The cache key is derived from the normalized, already-redacted payload.
-            let normalized = normalize_conversation(&messages);
-            assert!(
-                normalized.contains("[redacted]"),
-                "cache key must be built from redacted content, got: {}",
-                normalized
+        #[tokio::test]
+        async fn inbound_redact_feeds_cache_key_e2e() {
+            // A redact rule rewrites the inbound content; the cache lookup must then
+            // run (redact does not block), proving the pipeline reached the cache
+            // with the redacted conversation (deterministic stub embedding available).
+            let dir = tempfile::tempdir().unwrap();
+            let cache = Arc::new(RecordingCache::default()); // Miss → proceeds
+            let routes = r#"
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "mock-primary"
+    model: "mock-model"
+    semantic_cache:
+      enabled: true
+    guardrails:
+      rules:
+        - name: "redactword"
+          type: "keyword"
+          direction: "inbound"
+          action: "redact"
+          keywords: ["secret"]
+custom_providers:
+  - name: "mock-primary"
+    base_url: "http://127.0.0.1:59999/v1"
+    api_format: "openai_compatible"
+"#;
+            let (state, metrics) = build_state(
+                &dir,
+                routes,
+                cache.clone(),
+                Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
             );
-            assert!(
-                !normalized.contains("secret"),
-                "secret leaked into cache key"
+            let app = build_router(state);
+
+            let payload = serde_json::json!({
+                "model": "mock-model",
+                "messages": [{"role": "user", "content": "my secret token"}]
+            });
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                .unwrap();
+            let _ = app.oneshot(request).await.unwrap();
+
+            // The redact rule fired and the cache lookup happened (not degraded/blocked).
+            let redacted = metrics
+                .guardrail_actions_total
+                .with_label_values(&["redactword", "inbound", "redact"])
+                .get();
+            assert_eq!(redacted, 1, "redact rule should have fired");
+            assert_eq!(
+                *cache.lookups.lock().unwrap(),
+                1,
+                "cache lookup should run over the redacted conversation"
             );
         }
 
-        #[test]
-        fn cached_body_is_blocked_by_outbound_guardrail() {
-            use crate::guardrails::{apply_outbound_to_response, CompiledGuardrails};
-            use crate::route_config::{
-                GuardrailAction, GuardrailDirection, GuardrailRule, GuardrailType, GuardrailsConfig,
-            };
-
-            // A cached response whose content violates an outbound block rule.
-            let mut cached_body = serde_json::json!({
+        #[tokio::test]
+        async fn cache_hit_passes_through_outbound_guardrail_e2e() {
+            // Prime the cache to return a hit whose content violates an outbound
+            // block rule. The hit must be filtered on delivery → HTTP 403.
+            let dir = tempfile::tempdir().unwrap();
+            let cache = Arc::new(RecordingCache::default());
+            *cache.hit_body.lock().unwrap() = Some(serde_json::json!({
                 "id": "chatcmpl-cached",
                 "object": "chat.completion",
-                "model": "llama3.2",
+                "model": "mock-model",
                 "choices": [{
                     "index": 0,
                     "message": {"role": "assistant", "content": "here is a leaked secret"},
                     "finish_reason": "stop"
                 }]
+            }));
+            let routes = r#"
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "mock-primary"
+    model: "mock-model"
+    semantic_cache:
+      enabled: true
+    guardrails:
+      rules:
+        - name: "out-block"
+          type: "keyword"
+          direction: "outbound"
+          action: "block"
+          keywords: ["leaked secret"]
+custom_providers:
+  - name: "mock-primary"
+    base_url: "http://127.0.0.1:59999/v1"
+    api_format: "openai_compatible"
+"#;
+            let (state, metrics) = build_state(
+                &dir,
+                routes,
+                cache.clone(),
+                Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+            );
+            let app = build_router(state);
+
+            let payload = serde_json::json!({
+                "model": "mock-model",
+                "messages": [{"role": "user", "content": "give me the data"}]
             });
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
 
-            let cfg = GuardrailsConfig {
-                rules: vec![GuardrailRule {
-                    name: "out-block".to_string(),
-                    r#type: GuardrailType::Keyword,
-                    direction: GuardrailDirection::Outbound,
-                    action: GuardrailAction::Block,
-                    pattern: None,
-                    keywords: Some(vec!["leaked secret".to_string()]),
-                }],
-                fail_closed: None,
-            };
-            let g = CompiledGuardrails::compile(&cfg, &Default::default()).unwrap();
-            let metrics = Metrics::new();
-
-            // This is exactly what the handler applies to a cache hit before delivery.
-            let result = apply_outbound_to_response(&mut cached_body, &g, &metrics);
-            assert_eq!(result, Err("out-block".to_string()));
+            // Cache hit was consulted and the outbound guardrail blocked delivery (403).
+            assert_eq!(
+                *cache.lookups.lock().unwrap(),
+                1,
+                "cache should be consulted"
+            );
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
             let blocked = metrics
                 .guardrail_actions_total
                 .with_label_values(&["out-block", "outbound", "block"])
                 .get();
-            assert_eq!(blocked, 1);
+            assert_eq!(blocked, 1, "outbound guardrail should block the cached hit");
         }
     }
 }

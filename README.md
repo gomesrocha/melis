@@ -41,7 +41,7 @@ Melis is a **stateless, ultra-high-performance AI Gateway** written in Rust that
 - **Semantic response cache** — opt-in per-route cache keyed by conversation embedding (Redis + Ollama), fail-open
 - **Bidirectional guardrails** — opt-in per-route inbound/outbound content rules (regex/keyword/prompt-injection), block/redact/warn, streaming-aware
 - **Load balancing** — weighted round-robin with automatic failover
-- **Circuit breaker** — per-provider, with exponential backoff recovery
+- **Circuit breaker** — per-provider, with exponential backoff recovery; optional Redis backend shared across replicas
 - **Failover/retry** — automatic fallback to healthy providers
 - **Rate limiting** — Token Bucket algorithm, per-client
 - **Prometheus metrics** — full observability via `/metrics` endpoint
@@ -339,6 +339,32 @@ CLOSED (healthy) → OPEN (unhealthy) → HALF-OPEN (testing)
 - **Half-Open**: One probe request is allowed through to test recovery
 
 The `open_ttl_secs` starts at 30s and increases exponentially (×`backoff_factor`) up to `max_ttl_secs` on repeated failures.
+
+### Shared Circuit Breaker (Redis backend)
+
+By default the breaker is in-process (`circuit_breaker.backend: local`). Set
+`backend: redis` to share state across replicas so a failure detected by one
+instance protects all of them. Same semantics as the local breaker (429 opens
+immediately; failure-rate threshold with a minimum request count; single-probe
+half-open with exponential backoff).
+
+Key design points:
+
+- **State encoded in Redis keys:** `:state` present = Open, `:probe` present =
+  half-open probe in flight, both absent = Closed.
+- **Single probe across replicas:** the half-open probe is claimed atomically
+  (`SET ... NX EX` in a Lua script), so only one replica probes the provider —
+  avoiding the exact stampede the breaker prevents. The probe TTL is aligned to the
+  provider timeout, so a client disconnect mid-probe never leaves the probe stuck.
+- **Server clock:** sliding windows use the Redis server `TIME`, not replica
+  process clocks (which drift).
+- **No per-request round-trip:** `is_available` reads through a short-TTL local
+  cache (`redis_state_cache_ms`, default 150ms); writes go to Redis. On a locally
+  observed 429, the replica invalidates its own cached copy immediately
+  (write-through) so it converges without waiting for the TTL.
+- **Fail-open:** if Redis is unreachable, the breaker treats providers as available
+  (never takes all traffic down), logs a warning, and increments
+  `melis_circuit_breaker_degraded`.
 
 ### Retry/Failover Loop
 
@@ -689,6 +715,15 @@ Melis exposes all metrics at `GET /metrics` in Prometheus text exposition format
 | `melis_cache_degraded` | Counter | `reason` | Cache fail-open events (`redis` or `embeddings`) |
 | `melis_cache_entries` | Gauge | `namespace` | Cache entry count per (route, model) namespace |
 | `melis_guardrail_actions_total` | Counter | `rule`, `direction`, `action` | Guardrail actions taken (block/redact/warn) |
+| `melis_circuit_breaker_backend` | Gauge | `backend` | Active circuit breaker backend (`local` or `redis`); value 1 for the active one |
+| `melis_circuit_breaker_degraded` | Counter | — | Redis circuit breaker fail-open degradations |
+| `melis_cache_embed_seconds` | Histogram | — | Embedding computation time in the cache lookup path |
+
+> **Note on `melis_circuit_breaker_state` with the Redis backend:** replicas read
+> state through a short-TTL local cache (`circuit_breaker.redis_state_cache_ms`,
+> default 150ms), so this gauge may **disagree between replicas for up to that TTL**
+> after a transition. This is expected convergence lag, not an alarm — Redis is the
+> source of truth.
 
 ### Grafana Setup
 

@@ -372,8 +372,17 @@ async fn chat_completions_handler(
         };
 
         let lookup_start = Instant::now();
-        // Compute the embedding via the embeddings backend (fail-open on error).
-        match crate::embeddings::embed_single(&state, &sc.embedding_model, &normalized).await {
+        // Compute the embedding via the injectable embeddings backend (fail-open).
+        let embed_start = Instant::now();
+        let embedding_opt = state
+            .embeddings
+            .embed(&sc.embedding_model, &normalized)
+            .await;
+        state
+            .metrics
+            .cache_embed_seconds
+            .observe(embed_start.elapsed().as_secs_f64());
+        match embedding_opt {
             Some(embedding) => {
                 let outcome = state.semantic_cache.lookup(&ctx, &embedding).await;
                 state
@@ -1738,6 +1747,7 @@ routes_config_path: "./routes.yaml"
                 },
                 Default::default(),
             )),
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
         };
 
         build_router(app_state)
@@ -1949,6 +1959,7 @@ routes_config_path: "./routes.yaml"
                 },
                 Default::default(),
             )),
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
         };
 
         let app = build_router(app_state);

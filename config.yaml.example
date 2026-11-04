@@ -108,6 +108,15 @@ circuit_breaker:
   open_ttl_secs: 30
   max_ttl_secs: 300
   backoff_factor: 2.0
+  # State backend: "local" (default, in-process) or "redis" (shared across replicas).
+  # With "redis", state lives in the shared Redis; if Redis is unreachable the
+  # breaker fails open (never takes all traffic down) and increments
+  # melis_circuit_breaker_degraded.
+  backend: "local"
+  # TTL (ms) of the local read-through cache of breaker state, to avoid a Redis
+  # round-trip per request. Larger = less Redis load but longer cross-replica
+  # convergence after a state change. Default 150.
+  redis_state_cache_ms: 150
 
 observability:
   otlp_endpoint: "http://localhost:4317"
