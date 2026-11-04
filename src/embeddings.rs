@@ -310,6 +310,38 @@ pub trait EmbeddingProvider: Send + Sync {
     /// Compute the embedding for `text` using `model`. Returns `None` on failure
     /// (callers fail open).
     async fn embed(&self, model: &str, text: &str) -> Option<Vec<f64>>;
+
+    /// Embed several texts, preserving input order. `None` if ANY text fails.
+    ///
+    /// Default: one `embed` call per text, at most `max_concurrency` in flight
+    /// (`batch_size` is ignored). Backends with native batching override this.
+    /// Callers bound the total time (e.g. `tokio::time::timeout`).
+    async fn embed_batch(
+        &self,
+        model: &str,
+        texts: &[String],
+        _batch_size: usize,
+        max_concurrency: usize,
+    ) -> Option<Vec<Vec<f64>>> {
+        use futures_util::stream::{self, StreamExt};
+        // Owned indices (not `&String`) keep the stream future `Send` without
+        // higher-ranked lifetime issues.
+        let results: Vec<Option<Vec<f64>>> = stream::iter(0..texts.len())
+            .map(|i| self.embed(model, &texts[i]))
+            .buffered(max_concurrency.max(1))
+            .collect()
+            .await;
+        results.into_iter().collect()
+    }
+}
+
+/// `[start, end)` ranges splitting `len` items into chunks of `batch_size` (≥ 1).
+pub(crate) fn chunk_ranges(len: usize, batch_size: usize) -> Vec<(usize, usize)> {
+    let size = batch_size.max(1);
+    (0..len)
+        .step_by(size)
+        .map(|s| (s, (s + size).min(len)))
+        .collect()
 }
 
 /// Production embedding provider backed by Ollama via the gateway HTTP client.
@@ -337,6 +369,51 @@ impl OllamaEmbeddingProvider {
 impl EmbeddingProvider for OllamaEmbeddingProvider {
     async fn embed(&self, model: &str, text: &str) -> Option<Vec<f64>> {
         embed_single_with(&self.providers, self.http_client.as_ref(), model, text).await
+    }
+
+    /// Native batching: chunks of `batch_size` texts per `/api/embed` call (falls
+    /// back to `/api/embeddings`, one text at a time, on 404), at most
+    /// `max_concurrency` chunks in flight. Order is preserved.
+    async fn embed_batch(
+        &self,
+        model: &str,
+        texts: &[String],
+        batch_size: usize,
+        max_concurrency: usize,
+    ) -> Option<Vec<Vec<f64>>> {
+        use futures_util::stream::{self, StreamExt};
+        let provider = self
+            .providers
+            .iter()
+            .find(|p| p.provider_type == "ollama")?;
+        let base_url = provider.base_url.as_str();
+        let timeout = provider.timeout();
+        let client = self.http_client.as_ref();
+
+        let ranges = chunk_ranges(texts.len(), batch_size);
+        let results: Vec<Option<Vec<Vec<f64>>>> = stream::iter(ranges)
+            .map(|(start, end)| async move {
+                let chunk = &texts[start..end];
+                let r = match call_ollama_embed(client, base_url, model, chunk, timeout).await {
+                    Err(EmbeddingProviderError::NotFound) => {
+                        call_ollama_embeddings_legacy(client, base_url, model, chunk, timeout).await
+                    }
+                    other => other,
+                };
+                match r {
+                    Ok(v) if v.len() == chunk.len() => Some(v),
+                    _ => None,
+                }
+            })
+            .buffered(max_concurrency.max(1))
+            .collect()
+            .await;
+
+        let mut out = Vec::with_capacity(texts.len());
+        for r in results {
+            out.extend(r?);
+        }
+        Some(out)
     }
 }
 
@@ -385,6 +462,120 @@ impl EmbeddingProvider for StubEmbeddingProvider {
             *slot = byte as f64 / 255.0;
         }
         Some(v)
+    }
+}
+
+/// Scripted, observable embedding provider for scoring tests.
+///
+/// - `rules`: the first `(substring, vector)` whose substring occurs in the text
+///   wins; otherwise `default` is returned.
+/// - `fail`: every call returns `None` (provider error).
+/// - `delay`: sleeps before answering each batch chunk (timeouts).
+/// - `override_output`: replaces the whole batch result (invalid vectors, wrong
+///   counts).
+/// - Counters record every call so tests can prove "no embedding happened".
+#[cfg(test)]
+pub struct ScriptedEmbeddingProvider {
+    pub rules: Vec<(String, Vec<f64>)>,
+    pub default: Vec<f64>,
+    pub fail: bool,
+    pub delay: Option<Duration>,
+    pub override_output: Option<Vec<Vec<f64>>>,
+    pub embed_calls: std::sync::atomic::AtomicUsize,
+    pub batch_calls: std::sync::atomic::AtomicUsize,
+    pub chunks: std::sync::atomic::AtomicUsize,
+    pub texts_seen: std::sync::Mutex<Vec<String>>,
+    pub in_flight: std::sync::atomic::AtomicUsize,
+    pub max_in_flight: std::sync::atomic::AtomicUsize,
+    pub last_batch_size: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl ScriptedEmbeddingProvider {
+    pub fn new(rules: Vec<(&str, Vec<f64>)>, default: Vec<f64>) -> Self {
+        Self {
+            rules: rules.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            default,
+            fail: false,
+            delay: None,
+            override_output: None,
+            embed_calls: Default::default(),
+            batch_calls: Default::default(),
+            chunks: Default::default(),
+            texts_seen: Default::default(),
+            in_flight: Default::default(),
+            max_in_flight: Default::default(),
+            last_batch_size: Default::default(),
+        }
+    }
+
+    /// Total number of calls of any kind (single or batch).
+    pub fn total_calls(&self) -> usize {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.embed_calls.load(SeqCst) + self.batch_calls.load(SeqCst)
+    }
+
+    fn vector_for(&self, text: &str) -> Vec<f64> {
+        self.rules
+            .iter()
+            .find(|(k, _)| text.contains(k.as_str()))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| self.default.clone())
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl EmbeddingProvider for ScriptedEmbeddingProvider {
+    async fn embed(&self, _model: &str, text: &str) -> Option<Vec<f64>> {
+        self.embed_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.texts_seen.lock().unwrap().push(text.to_string());
+        if self.fail {
+            return None;
+        }
+        Some(self.vector_for(text))
+    }
+
+    async fn embed_batch(
+        &self,
+        _model: &str,
+        texts: &[String],
+        batch_size: usize,
+        max_concurrency: usize,
+    ) -> Option<Vec<Vec<f64>>> {
+        use futures_util::stream::{self, StreamExt};
+        use std::sync::atomic::Ordering::SeqCst;
+        self.batch_calls.fetch_add(1, SeqCst);
+        self.last_batch_size.store(batch_size, SeqCst);
+        self.texts_seen
+            .lock()
+            .unwrap()
+            .extend(texts.iter().cloned());
+
+        let results: Vec<Vec<Vec<f64>>> = stream::iter(chunk_ranges(texts.len(), batch_size))
+            .map(|(start, end)| async move {
+                let chunk = &texts[start..end];
+                self.chunks.fetch_add(1, SeqCst);
+                let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+                self.max_in_flight.fetch_max(now, SeqCst);
+                if let Some(d) = self.delay {
+                    tokio::time::sleep(d).await;
+                }
+                self.in_flight.fetch_sub(1, SeqCst);
+                chunk.iter().map(|t| self.vector_for(t)).collect()
+            })
+            .buffered(max_concurrency.max(1))
+            .collect()
+            .await;
+
+        if self.fail {
+            return None;
+        }
+        if let Some(o) = &self.override_output {
+            return Some(o.clone());
+        }
+        Some(results.into_iter().flatten().collect())
     }
 }
 
@@ -779,6 +970,96 @@ mod tests {
         assert_eq!(resp.embeddings.len(), 2);
         assert_eq!(resp.embeddings[0], vec![0.01, 0.02, 0.03]);
         assert_eq!(resp.embeddings[1], vec![0.04, 0.05, 0.06]);
+    }
+
+    /// Simulated Ollama `/api/embed`: each input "t<N>" embeds to `[N, 1.0]`.
+    struct EchoEmbed;
+    impl wiremock::Respond for EchoEmbed {
+        fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let embs: Vec<Vec<f64>> = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| {
+                    let n: f64 = t.as_str().unwrap()[1..].parse().unwrap();
+                    vec![n, 1.0]
+                })
+                .collect();
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"model": "m", "embeddings": embs}))
+        }
+    }
+
+    fn ollama_provider(uri: &str) -> OllamaEmbeddingProvider {
+        let cfg = crate::config::GatewayConfig::from_yaml(&format!(
+            "server:\n  host: \"0.0.0.0\"\n  port: 8080\nredis:\n  cluster_urls: [\"redis://localhost:6379\"]\nproviders:\n  - id: ollama\n    provider_type: ollama\n    api_key: ollama\n    base_url: \"{uri}\"\n"
+        ))
+        .unwrap();
+        OllamaEmbeddingProvider::new(
+            cfg.providers,
+            std::sync::Arc::new(crate::client::ReqwestLlmClient::new()),
+        )
+    }
+
+    #[test]
+    fn chunk_ranges_cover_all_items_in_order() {
+        assert_eq!(chunk_ranges(5, 2), vec![(0, 2), (2, 4), (4, 5)]);
+        assert_eq!(chunk_ranges(0, 3), vec![]);
+        assert_eq!(chunk_ranges(3, 0), vec![(0, 1), (1, 2), (2, 3)]);
+    }
+
+    #[tokio::test]
+    async fn ollama_embed_batch_chunks_and_preserves_order() {
+        use wiremock::matchers::{method, path};
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(EchoEmbed)
+            .mount(&server)
+            .await;
+        let p = ollama_provider(&server.uri());
+        let texts: Vec<String> = (0..7).map(|i| format!("t{i}")).collect();
+        let out = p.embed_batch("m", &texts, 3, 2).await.expect("batch ok");
+        let firsts: Vec<f64> = out.iter().map(|v| v[0]).collect();
+        assert_eq!(firsts, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        // 7 texts / batch 3 → 3 HTTP calls (not 7).
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn ollama_embed_batch_falls_back_to_legacy_endpoint_on_404() {
+        use wiremock::matchers::{method, path};
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(method("POST"))
+            .and(path("/api/embeddings"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"embedding": [0.5, 0.5]})),
+            )
+            .mount(&server)
+            .await;
+        let p = ollama_provider(&server.uri());
+        let texts = vec!["a".to_string(), "b".to_string()];
+        let out = p.embed_batch("m", &texts, 8, 1).await.expect("legacy ok");
+        assert_eq!(out.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn ollama_embed_batch_error_returns_none() {
+        use wiremock::matchers::method;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let p = ollama_provider(&server.uri());
+        assert!(p.embed_batch("m", &["x".to_string()], 4, 1).await.is_none());
     }
 
     #[test]

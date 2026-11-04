@@ -1339,3 +1339,365 @@ providers:
         );
     }
 }
+
+/// Phase 5 end-to-end: opt-in semantic scoring through the HTTP handler, with a
+/// simulated OpenAI-compatible provider (wiremock, payload captured) and a
+/// scripted embedding stub (calls counted). No live services.
+#[cfg(test)]
+mod phase5_scoring_e2e {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::balancer::WeightedRoundRobin;
+    use crate::circuit_breaker::LocalCircuitBreaker;
+    use crate::client::ReqwestLlmClient;
+    use crate::config::GatewayConfig;
+    use crate::embeddings::ScriptedEmbeddingProvider;
+    use crate::guardrails::GuardrailEngine;
+    use crate::middleware::rate_limiter::LocalTokenBucket;
+    use crate::observability::Metrics;
+    use crate::route_config::RouteConfigManager;
+    use crate::router::build_router;
+    use crate::state::AppState;
+
+    fn long(tag: &str, n: usize) -> String {
+        format!("{tag} ").repeat(n)
+    }
+
+    fn topic_embeddings() -> ScriptedEmbeddingProvider {
+        ScriptedEmbeddingProvider::new(
+            vec![
+                ("pods", vec![1.0, 0.0, 0.0]),
+                ("kubernetes", vec![1.0, 0.0, 0.0]),
+                ("recipe", vec![0.0, 1.0, 0.0]),
+                ("garden", vec![0.0, 0.0, 1.0]),
+            ],
+            vec![0.3, 0.3, 0.3],
+        )
+    }
+
+    struct Run {
+        status: StatusCode,
+        body: Value,
+        /// Messages the provider actually received (None = provider not called).
+        sent: Option<Vec<Value>>,
+        metrics: Arc<Metrics>,
+    }
+
+    /// `token_opt`: YAML lines under `token_optimization:` (6-space indent).
+    async fn run(
+        token_opt: &str,
+        messages: &[Value],
+        embeddings: Arc<ScriptedEmbeddingProvider>,
+    ) -> Run {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "x", "object": "chat.completion", "created": 0, "model": "mock-model",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 111, "completion_tokens": 7, "total_tokens": 118}
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let routes_path = dir.path().join("routes.yaml");
+        std::fs::write(
+            &routes_path,
+            format!(
+                "routes:\n  - path: \"/v1/chat/completions\"\n    method: \"POST\"\n    provider: \"openai\"\n    model: \"mock-model\"\n    token_optimization:\n{token_opt}"
+            ),
+        )
+        .unwrap();
+        let gateway_config = GatewayConfig::from_yaml(&format!(
+            "server:\n  host: \"0.0.0.0\"\n  port: 8080\nredis:\n  cluster_urls:\n    - \"redis://localhost:6379\"\nauth:\n  enabled: false\nproviders:\n  - id: \"mock-openai\"\n    provider_type: \"openai\"\n    api_key: \"test-key\"\n    base_url: \"{}/v1\"\n",
+            server.uri()
+        ))
+        .unwrap();
+
+        let route_config = RouteConfigManager::new(routes_path);
+        let guardrails = Arc::new(GuardrailEngine::new(
+            route_config.current().config(),
+            gateway_config.guardrails.clone(),
+        ));
+        let metrics = Arc::new(Metrics::new());
+        let state = AppState {
+            route_config: Arc::new(route_config),
+            gateway_config: Arc::new(gateway_config),
+            rate_limiter: Arc::new(LocalTokenBucket::new()),
+            load_balancer: Arc::new(WeightedRoundRobin::new()),
+            circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+            http_client: Arc::new(ReqwestLlmClient::new()),
+            metrics: metrics.clone(),
+            redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails,
+            embeddings,
+        };
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({"model": "mock-model", "messages": messages})).unwrap(),
+            ))
+            .unwrap();
+        let response = build_router(state).oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+
+        let received = server.received_requests().await.unwrap();
+        let sent = received.first().map(|r| {
+            let b: Value = serde_json::from_slice(&r.body).unwrap();
+            b["messages"].as_array().unwrap().clone()
+        });
+        Run {
+            status,
+            body,
+            sent,
+            metrics,
+        }
+    }
+
+    const SGT: &str = "      strategy: \"semantic_guarded_trimming\"\n      compress_above_tokens: 50\n      target_token_ratio: 0.5\n      min_final_tokens: 10\n";
+
+    /// Passes HTTP validation (string content only: GAP-OAI-1 is unchanged).
+    fn conversation() -> Vec<Value> {
+        vec![
+            json!({"role": "system", "content": "You are helpful.", "x_meta": {"v": 1}}),
+            json!({"role": "user", "content": long("container pods rollout", 30), "name": "alice"}),
+            json!({"role": "assistant", "content": "Looking it up.",
+                   "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+                                  {"id": "c2", "type": "function", "function": {"name": "g", "arguments": "{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "c1", "content": long("recipe salt", 20)}),
+            json!({"role": "tool", "tool_call_id": "c2", "content": long("recipe sugar", 20)}),
+            json!({"role": "assistant", "content": long("recipe with tomatoes", 30)}),
+            json!({"role": "user", "content": long("garden flowers", 30)}),
+            json!({"role": "user", "content": "kubernetes question again", "x_client": "web"}),
+        ]
+    }
+
+    fn assert_original_subsequence(input: &[Value], sent: &[Value]) -> Vec<usize> {
+        let mut idx = Vec::new();
+        for m in sent {
+            let i = input
+                .iter()
+                .position(|o| o == m)
+                .unwrap_or_else(|| panic!("forwarded message was rewritten: {m}"));
+            assert!(idx.last().is_none_or(|&l| i > l), "order changed");
+            idx.push(i);
+        }
+        idx
+    }
+
+    #[tokio::test]
+    async fn legacy_route_makes_no_embedding_calls_and_keeps_d1_payload() {
+        let input = conversation();
+        let emb = Arc::new(topic_embeddings());
+        let r = run(SGT, &input, emb.clone()).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(
+            r.metrics.compaction_applied_total.get(),
+            1,
+            "compaction fired"
+        );
+        assert_eq!(
+            emb.total_calls(),
+            0,
+            "no semantic_scoring → no embedding calls"
+        );
+        let sent = r.sent.unwrap();
+        let kept = assert_original_subsequence(&input, &sent);
+        // D1 pins: tool call + results kept verbatim on the legacy path.
+        for i in [0, 2, 3, 4, 7] {
+            assert!(kept.contains(&i), "legacy D1 keeps {i}: {kept:?}");
+        }
+        assert_eq!(
+            r.metrics
+                .compaction_scoring_total
+                .with_label_values(&["hybrid", "hybrid"])
+                .get(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn enabled_but_below_threshold_forwards_input_unchanged_without_embedding() {
+        let input = conversation();
+        let emb = Arc::new(topic_embeddings());
+        let opt = "      strategy: \"semantic_guarded_trimming\"\n      compress_above_tokens: 100000\n      semantic_scoring: hybrid\n";
+        let r = run(opt, &input, emb.clone()).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(emb.total_calls(), 0);
+        assert_eq!(r.sent.unwrap(), input);
+    }
+
+    #[tokio::test]
+    async fn embedding_scoring_selects_by_relevance_over_recency() {
+        let input = conversation();
+        let emb = Arc::new(topic_embeddings());
+        let r = run(
+            &format!("{SGT}      semantic_scoring: embedding\n"),
+            &input,
+            emb.clone(),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK);
+        let kept = assert_original_subsequence(&input, &r.sent.unwrap());
+        assert!(
+            kept.contains(&1),
+            "relevant old message kept (no lexical overlap): {kept:?}"
+        );
+        assert!(
+            !kept.contains(&5),
+            "irrelevant recent message removed: {kept:?}"
+        );
+        let group = [2, 3, 4].iter().filter(|i| kept.contains(i)).count();
+        assert!(group == 0 || group == 3, "tool group split: {kept:?}");
+    }
+
+    #[tokio::test]
+    async fn hybrid_scoring_forwards_original_objects_and_keeps_structure() {
+        // Note: in hybrid the structural component can outrank similarity (here
+        // the tool-call ids contain digits, a structural "technical" signal), so
+        // relevance is asserted in pure `embedding` mode above.
+        let input = conversation();
+        let emb = Arc::new(topic_embeddings());
+        let r = run(
+            &format!("{SGT}      semantic_scoring: hybrid\n"),
+            &input,
+            emb.clone(),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(emb.batch_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let sent = r.sent.unwrap();
+        let kept = assert_original_subsequence(&input, &sent);
+        assert!(
+            kept.contains(&0) && kept.contains(&7),
+            "protected kept: {kept:?}"
+        );
+        assert!(sent.len() < input.len(), "something pruned");
+        let group = [2, 3, 4].iter().filter(|i| kept.contains(i)).count();
+        assert!(group == 0 || group == 3, "tool group split: {kept:?}");
+        assert_eq!(
+            r.metrics
+                .compaction_scoring_total
+                .with_label_values(&["hybrid", "hybrid"])
+                .get(),
+            1
+        );
+        // Provider usage is forwarded as is (never overwritten by local counts).
+        assert_eq!(r.body["usage"]["prompt_tokens"], 111);
+        assert_eq!(r.body["usage"]["total_tokens"], 118);
+    }
+
+    #[tokio::test]
+    async fn embedding_failure_falls_back_to_the_legacy_payload() {
+        let input = conversation();
+        let legacy = run(SGT, &input, Arc::new(topic_embeddings()))
+            .await
+            .sent
+            .unwrap();
+
+        let mut failing = topic_embeddings();
+        failing.fail = true;
+        let r = run(
+            &format!("{SGT}      semantic_scoring: embedding\n"),
+            &input,
+            Arc::new(failing),
+        )
+        .await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "scoring failure never fails the request"
+        );
+        assert_eq!(
+            r.sent.unwrap(),
+            legacy,
+            "full fallback = legacy D1 selection"
+        );
+        assert_eq!(
+            r.metrics
+                .compaction_scoring_fallback_total
+                .with_label_values(&["provider_error"])
+                .get(),
+            1
+        );
+        assert_eq!(
+            r.metrics
+                .compaction_scoring_total
+                .with_label_values(&["embedding", "heuristic"])
+                .get(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn too_many_candidates_falls_back_without_embedding() {
+        let input = conversation();
+        let emb = Arc::new(topic_embeddings());
+        let opt = format!(
+            "{SGT}      semantic_scoring:\n        mode: hybrid\n        max_messages: 1\n"
+        );
+        let r = run(&opt, &input, emb.clone()).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(emb.total_calls(), 0);
+        assert_eq!(
+            r.metrics
+                .compaction_scoring_fallback_total
+                .with_label_values(&["limit_exceeded"])
+                .get(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_budget_insufficient_returns_400_and_never_calls_provider() {
+        let input = conversation();
+        let emb = Arc::new(topic_embeddings());
+        let opt = format!(
+            "{SGT}      semantic_scoring:\n        mode: hybrid\n        budget:\n          mode: strict\n          max_context_tokens: 30\n          output_reserve_tokens: 10\n          formatting_overhead: openai_chat_estimate\n"
+        );
+        let r = run(&opt, &input, emb.clone()).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(r.body["error"]["type"], "invalid_request_error");
+        assert!(r.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Insufficient context budget"));
+        assert!(r.sent.is_none(), "provider must not be called");
+        assert_eq!(emb.total_calls(), 0);
+        assert_eq!(r.metrics.compaction_budget_insufficient_total.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_semantic_scoring_config_is_rejected_at_load() {
+        // Same rejection path as any other invalid routes.yaml (panics on initial
+        // load, keeps the previous config on hot reload).
+        let result = tokio::spawn(async {
+            run(
+                &format!("{SGT}      semantic_scoring:\n        mode: hybrid\n        semantic_weight: -1\n"),
+                &conversation(),
+                Arc::new(topic_embeddings()),
+            )
+            .await
+        })
+        .await;
+        assert!(result.is_err(), "invalid weights must not be accepted");
+    }
+}

@@ -54,6 +54,9 @@ pub enum RoutesConfigError {
         strategy: String,
     },
 
+    #[error("semantic_scoring inválido na rota {route_index}: {reason}")]
+    InvalidSemanticScoring { route_index: usize, reason: String },
+
     #[error("Rota duplicada: {path} {method} (rotas {first} e {second})")]
     DuplicateRoute {
         path: String,
@@ -106,6 +109,10 @@ pub struct TokenOptimizationConfig {
     /// Critical markers for semantic_guarded_trimming (overrides global).
     #[serde(default)]
     pub critical_markers: Option<Vec<String>>,
+    /// Phase 5 (opt-in): embedding-based scoring for `semantic_guarded_trimming`.
+    /// `heuristic` | `embedding` | `hybrid`, or a full block. Absent = legacy.
+    #[serde(default)]
+    pub semantic_scoring: Option<crate::semantic_scoring::ScoringSetting>,
 }
 
 fn default_max_history_messages() -> usize {
@@ -364,6 +371,27 @@ pub fn validate(config: &RouteConfigFile) -> Result<(), Vec<RoutesConfigError>> 
             }
         }
 
+        // Phase 5: validate opt-in semantic scoring (values only; never request data).
+        if let Some(opt) = &route.token_optimization {
+            if let Some(setting) = &opt.semantic_scoring {
+                let sc = setting.resolve();
+                if let Err(reason) = sc.validate() {
+                    errors.push(RoutesConfigError::InvalidSemanticScoring {
+                        route_index: idx,
+                        reason,
+                    });
+                } else if sc.mode != crate::semantic_scoring::ScoringMode::Heuristic
+                    && opt.strategy != TokenOptimizationStrategy::SemanticGuardedTrimming
+                {
+                    tracing::warn!(
+                        route_index = idx,
+                        path = %route.path,
+                        "semantic_scoring only applies to strategy semantic_guarded_trimming; ignored"
+                    );
+                }
+            }
+        }
+
         // Detect duplicate routes (same path + method)
         if !route.path.trim().is_empty() && !route.method.trim().is_empty() {
             let key = (route.path.clone(), route.method.to_uppercase());
@@ -458,6 +486,22 @@ impl RouteResolver {
             }
             None => global.clone(),
         }
+    }
+
+    /// Effective Phase 5 scoring for a route: `Some` only when the route opts in
+    /// with `embedding`/`hybrid` AND uses `semantic_guarded_trimming`. Otherwise
+    /// `None` → the legacy compaction path, with no embedding calls.
+    pub fn effective_scoring_config(
+        &self,
+        route: &RouteDefinition,
+    ) -> Option<crate::semantic_scoring::ScoringConfig> {
+        let opt = route.token_optimization.as_ref()?;
+        if opt.strategy != TokenOptimizationStrategy::SemanticGuardedTrimming {
+            return None;
+        }
+        let sc = opt.semantic_scoring.as_ref()?.resolve();
+        (sc.mode != crate::semantic_scoring::ScoringMode::Heuristic && sc.validate().is_ok())
+            .then_some(sc)
     }
 
     /// Get a reference to the underlying route config.
@@ -742,6 +786,80 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    // ── Phase 5: semantic_scoring config ─────────────────────────────────────
+
+    fn scoring_route(strategy: &str, scoring: &str) -> RouteConfigFile {
+        serde_yaml::from_str(&format!(
+            "routes:\n  - path: \"/v1/chat/completions\"\n    method: \"POST\"\n    provider: \"openai\"\n    token_optimization:\n      strategy: \"{strategy}\"\n{scoring}"
+        ))
+        .unwrap()
+    }
+
+    fn effective(cfg: RouteConfigFile) -> Option<crate::semantic_scoring::ScoringConfig> {
+        let resolver = RouteResolver::new(cfg);
+        let route = resolver
+            .resolve_route("/v1/chat/completions", "POST")
+            .unwrap();
+        resolver.effective_scoring_config(route)
+    }
+
+    #[test]
+    fn routes_without_semantic_scoring_stay_legacy() {
+        let cfg = scoring_route("semantic_guarded_trimming", "");
+        assert!(validate(&cfg).is_ok());
+        assert!(effective(cfg).is_none());
+        // Existing sample config (no new fields) still parses and validates.
+        let sample: RouteConfigFile = serde_yaml::from_str(sample_yaml()).unwrap();
+        assert!(validate(&sample).is_ok());
+    }
+
+    #[test]
+    fn semantic_scoring_short_and_block_forms() {
+        let short = scoring_route(
+            "semantic_guarded_trimming",
+            "      semantic_scoring: hybrid\n",
+        );
+        assert!(validate(&short).is_ok());
+        let sc = effective(short).expect("enabled");
+        assert_eq!(sc.mode, crate::semantic_scoring::ScoringMode::Hybrid);
+
+        let block = scoring_route(
+            "semantic_guarded_trimming",
+            "      semantic_scoring:\n        mode: embedding\n        max_messages: 10\n",
+        );
+        assert!(validate(&block).is_ok());
+        assert_eq!(effective(block).unwrap().max_messages, 10);
+    }
+
+    #[test]
+    fn heuristic_or_other_strategy_disables_scoring() {
+        let h = scoring_route(
+            "semantic_guarded_trimming",
+            "      semantic_scoring: heuristic\n",
+        );
+        assert!(effective(h).is_none());
+        // Other strategy: warning at validation, ignored at resolution.
+        let other = scoring_route("adaptive_trimming", "      semantic_scoring: hybrid\n");
+        assert!(validate(&other).is_ok());
+        assert!(effective(other).is_none());
+    }
+
+    #[test]
+    fn invalid_semantic_scoring_values_are_rejected() {
+        for bad in [
+            "      semantic_scoring:\n        mode: hybrid\n        semantic_weight: -1.0\n",
+            "      semantic_scoring:\n        mode: hybrid\n        semantic_weight: 0.0\n        structural_weight: 0.0\n",
+            "      semantic_scoring:\n        mode: hybrid\n        timeout_ms: 0\n",
+            "      semantic_scoring:\n        mode: hybrid\n        budget:\n          mode: strict\n",
+        ] {
+            let cfg = scoring_route("semantic_guarded_trimming", bad);
+            let errs = validate(&cfg).expect_err(bad);
+            assert!(errs
+                .iter()
+                .any(|e| matches!(e, RoutesConfigError::InvalidSemanticScoring { .. })));
+        }
+    }
 
     fn sample_yaml() -> &'static str {
         r#"
@@ -1662,6 +1780,7 @@ mod property_tests {
                     target_token_ratio: None,
                     min_final_tokens: None,
                     critical_markers: None,
+                    semantic_scoring: None,
                 },
             )
     }
@@ -1930,6 +2049,7 @@ mod property_tests {
                     target_token_ratio: None,
                     min_final_tokens: None,
                     critical_markers: None,
+                    semantic_scoring: None,
                 }),
                 semantic_cache: None,
                 guardrails: None,

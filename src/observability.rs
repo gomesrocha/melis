@@ -152,6 +152,16 @@ pub struct Metrics {
     pub circuit_breaker_degraded_decisions: IntCounterVec,
     /// Histogram of embedding computation time in the cache lookup path.
     pub cache_embed_seconds: Histogram,
+    /// Phase 5: compactions on scoring-enabled routes, by `requested`/`effective` mode.
+    pub compaction_scoring_total: IntCounterVec,
+    /// Phase 5: scoring duration (embedding included).
+    pub compaction_scoring_seconds: Histogram,
+    /// Phase 5: fallbacks to the heuristic, by `reason`.
+    pub compaction_scoring_fallback_total: IntCounterVec,
+    /// Phase 5: scoring skipped (selection independent of scores), by `reason`.
+    pub compaction_scoring_skipped_total: IntCounterVec,
+    /// Phase 5: strict-budget rejections.
+    pub compaction_budget_insufficient_total: IntCounter,
     /// 1 when the shared Redis answers PING, 0 otherwise (refreshed periodically).
     pub redis_up: prometheus::IntGauge,
     /// The Prometheus registry holding all metrics.
@@ -438,6 +448,73 @@ impl Metrics {
         )
         .expect("failed to create melis_cache_embed_seconds metric");
 
+        // ── Phase 5: opt-in semantic scoring (bounded labels, no content) ──
+        let compaction_scoring_total = IntCounterVec::new(
+            Opts::new(
+                "melis_compaction_scoring_total",
+                "Compactions on scoring-enabled routes by requested and effective mode",
+            ),
+            &["requested", "effective"],
+        )
+        .expect("failed to create melis_compaction_scoring_total metric");
+        let compaction_scoring_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "melis_compaction_scoring_seconds",
+                "Time spent in semantic scoring, embedding included (seconds)",
+            )
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ]),
+        )
+        .expect("failed to create melis_compaction_scoring_seconds metric");
+        let compaction_scoring_fallback_total = IntCounterVec::new(
+            Opts::new(
+                "melis_compaction_scoring_fallback_total",
+                "Semantic scoring fallbacks to the heuristic, by reason",
+            ),
+            &["reason"],
+        )
+        .expect("failed to create melis_compaction_scoring_fallback_total metric");
+        let compaction_scoring_skipped_total = IntCounterVec::new(
+            Opts::new(
+                "melis_compaction_scoring_skipped_total",
+                "Scoring skipped because selection could not depend on scores, by reason",
+            ),
+            &["reason"],
+        )
+        .expect("failed to create melis_compaction_scoring_skipped_total metric");
+        let compaction_budget_insufficient_total = IntCounter::with_opts(Opts::new(
+            "melis_compaction_budget_insufficient_total",
+            "Requests rejected by strict budget mode (mandatory content does not fit)",
+        ))
+        .expect("failed to create melis_compaction_budget_insufficient_total metric");
+        for r in crate::semantic_scoring::FallbackReason::ALL {
+            compaction_scoring_fallback_total
+                .with_label_values(&[r.label()])
+                .inc_by(0);
+        }
+        for r in crate::semantic_scoring::SkipReason::ALL {
+            compaction_scoring_skipped_total
+                .with_label_values(&[r.label()])
+                .inc_by(0);
+        }
+
+        registry
+            .register(Box::new(compaction_scoring_total.clone()))
+            .expect("failed to register melis_compaction_scoring_total");
+        registry
+            .register(Box::new(compaction_scoring_seconds.clone()))
+            .expect("failed to register melis_compaction_scoring_seconds");
+        registry
+            .register(Box::new(compaction_scoring_fallback_total.clone()))
+            .expect("failed to register melis_compaction_scoring_fallback_total");
+        registry
+            .register(Box::new(compaction_scoring_skipped_total.clone()))
+            .expect("failed to register melis_compaction_scoring_skipped_total");
+        registry
+            .register(Box::new(compaction_budget_insufficient_total.clone()))
+            .expect("failed to register melis_compaction_budget_insufficient_total");
+
         registry
             .register(Box::new(requests_total.clone()))
             .expect("failed to register melis_gateway_requests_total");
@@ -597,6 +674,11 @@ impl Metrics {
             circuit_breaker_degraded,
             circuit_breaker_degraded_decisions,
             cache_embed_seconds,
+            compaction_scoring_total,
+            compaction_scoring_seconds,
+            compaction_scoring_fallback_total,
+            compaction_scoring_skipped_total,
+            compaction_budget_insufficient_total,
             redis_up,
             registry,
         }

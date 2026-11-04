@@ -56,6 +56,8 @@ pub struct ResolvedRoute {
     /// Effective semantic cache configuration for the route (Phase 2).
     /// `None` when the route does not opt in (cache disabled).
     pub semantic_cache: Option<crate::route_config::SemanticCacheConfig>,
+    /// Phase 5 opt-in scoring. `None` = legacy compaction (no embedding calls).
+    pub semantic_scoring: Option<crate::semantic_scoring::ScoringConfig>,
 }
 
 /// Builds the main application router with all endpoints.
@@ -499,13 +501,44 @@ async fn chat_completions_handler(
             } else {
                 Box::new(SimpleCompactor::new())
             };
-        // Preserves the original message objects (all fields, unknown ones
-        // included); tool/non-text messages are pinned (bugfix D1).
-        let compaction = crate::compactor::compact_json_messages(
-            compactor.as_ref(),
-            messages_arr,
-            &resolved.effective_token_config,
-        );
+        let compaction = match &resolved.semantic_scoring {
+            // Legacy path (no opt-in): unchanged. Preserves the original message
+            // objects (all fields, unknown ones included); tool/non-text messages
+            // are pinned (bugfix D1). No embedding calls.
+            None => crate::compactor::compact_json_messages(
+                compactor.as_ref(),
+                messages_arr,
+                &resolved.effective_token_config,
+            ),
+            // Phase 5 opt-in: scores are computed here (async) and handed to the
+            // sync selector; any failure falls back to the legacy path above.
+            Some(sc) => {
+                match crate::semantic_scoring::compact_with_scoring(
+                    messages_arr,
+                    &resolved.effective_token_config,
+                    sc,
+                    state.embeddings.as_ref(),
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        record_scoring_outcome(&state.metrics, &outcome);
+                        outcome.compaction
+                    }
+                    Err(insufficient) => {
+                        state.metrics.compaction_budget_insufficient_total.inc();
+                        tracing::warn!(
+                            required_tokens = insufficient.required_tokens,
+                            overhead_tokens = insufficient.overhead_tokens,
+                            output_reserve_tokens = insufficient.output_reserve_tokens,
+                            max_context_tokens = insufficient.max_context_tokens,
+                            "strict context budget insufficient; request rejected"
+                        );
+                        return Err(GatewayError::BadRequest(insufficient.message()));
+                    }
+                }
+            }
+        };
         let result = compaction.result;
 
         if result.was_compressed {
@@ -1208,6 +1241,46 @@ fn fill_usage_if_missing(response: &mut Value, request_payload: &Value, counter:
     });
 }
 
+/// Phase 5 metrics + one content-free log line per scored compaction.
+fn record_scoring_outcome(
+    metrics: &crate::observability::Metrics,
+    o: &crate::semantic_scoring::ScoringOutcome,
+) {
+    if !o.needed {
+        return; // below threshold: nothing was scored
+    }
+    metrics
+        .compaction_scoring_total
+        .with_label_values(&[o.requested.label(), o.effective.label()])
+        .inc();
+    metrics
+        .compaction_scoring_seconds
+        .observe(o.elapsed.as_secs_f64());
+    if let Some(r) = o.fallback {
+        metrics
+            .compaction_scoring_fallback_total
+            .with_label_values(&[r.label()])
+            .inc();
+    }
+    if let Some(r) = o.skipped {
+        metrics
+            .compaction_scoring_skipped_total
+            .with_label_values(&[r.label()])
+            .inc();
+    }
+    tracing::info!(
+        requested_mode = o.requested.label(),
+        effective_mode = o.effective.label(),
+        fallback_reason = o.fallback.map(|r| r.label()).unwrap_or("none"),
+        skipped_reason = o.skipped.map(|r| r.label()).unwrap_or("none"),
+        candidates = o.candidates,
+        embedded = o.embedded,
+        pruned = o.compaction.result.messages_pruned,
+        elapsed_ms = o.elapsed.as_millis() as u64,
+        "compaction scoring"
+    );
+}
+
 /// Resolves route configuration and builds a `ResolvedRoute` with the effective
 /// model, token config, and provider list.
 ///
@@ -1238,6 +1311,7 @@ fn resolve_route_config(
                 effective_token_config,
                 providers,
                 semantic_cache,
+                semantic_scoring: resolver.effective_scoring_config(route),
             }
         }
         None => {
@@ -1252,6 +1326,7 @@ fn resolve_route_config(
                 effective_token_config: global_compactor.clone(),
                 providers: Vec::new(),
                 semantic_cache: None,
+                semantic_scoring: None,
             }
         }
     }

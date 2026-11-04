@@ -588,6 +588,80 @@ cargo test --release tokenizer::tests::bench_real_count_typical_chat -- --ignore
 
 The system prompt and recent context are preserved. Older messages are trimmed.
 
+### Semantic scoring for compaction (experimental, opt-in)
+
+Routes using `strategy: semantic_guarded_trimming` can rank removable messages by
+embedding similarity to the last user message, in addition to the structural
+heuristic. This is a **hypothesis under evaluation**: no claim of better selection
+is made, and the default weights (0.5 / 0.5) are provisional and **not calibrated**.
+Full spec: [`docs/specs/phase-5-semantic-scoring.md`](docs/specs/phase-5-semantic-scoring.md).
+
+```yaml
+token_optimization:
+  strategy: semantic_guarded_trimming
+  semantic_scoring: hybrid          # heuristic (default) | embedding | hybrid, or a block:
+  # semantic_scoring:
+  #   mode: hybrid
+  #   semantic_weight: 0.5          # provisional
+  #   structural_weight: 0.5        # provisional
+  #   embedding_model: nomic-embed-text
+  #   timeout_ms: 1500              # total per request
+  #   max_concurrency: 4
+  #   batch_size: 32
+  #   max_messages: 64              # more candidates → full fallback to the heuristic
+  #   max_chars: 2000               # truncation of the text sent for scoring only
+  #   budget:
+  #     mode: legacy                # legacy (default) | strict
+  #     max_context_tokens: 8192    # strict only (required)
+  #     output_reserve_tokens: 1024 # strict only
+  #     formatting_overhead: none   # none | openai_chat_estimate (an estimate, not billing)
+```
+
+Behavior:
+
+- **Off by default.** Without `semantic_scoring` (or with `heuristic`) the legacy
+  compaction path runs unchanged, with **no embedding calls**. On other strategies
+  the field is ignored with a warning.
+- Embeddings are computed only when the mode is enabled **and** compaction is
+  needed. One batched call per request (`/api/embed`), bounded by `timeout_ms`.
+- Score: `w_sem · (cos+1)/2 + w_struct · structural_normalized`. `(cos+1)/2` is a
+  scale transform to [0, 1], not a probability. Ties: the oldest message is removed
+  first. Kept messages are forwarded as the **original objects**, in original order,
+  with no content rewrite.
+- Protected: system, last user message, critical markers, and every message the
+  bugfix D1 pins. An `assistant.tool_calls` message plus all of its results form an
+  indivisible group (OpenAI-compatible payloads only). Incomplete or ambiguous tool
+  dependencies are pinned.
+- Any error, timeout, invalid vector (dimension, NaN/∞, zero norm), or too many
+  candidates → **full fallback** to the heuristic for that request. The request never
+  fails because of scoring.
+- `budget.mode: strict`: when mandatory content + overhead + output reserve exceeds
+  `max_context_tokens`, the gateway answers **400** with a clear "Insufficient
+  context budget" message instead of dropping protected content. `legacy` keeps the
+  existing ratio-based budget. Provider `usage` is never overwritten.
+
+**Where the data goes.** The candidates' text and the last user message (truncated
+to `max_chars`) are sent to the configured Ollama embedding provider. Inbound
+guardrails run before, so redacted text is what gets sent.
+
+**Cost with the semantic cache.** If the semantic cache is also enabled on the route,
+a compacted request makes **additional** embedding calls: one for the cache key and
+one for scoring. They embed different texts, so nothing is reused between them.
+
+Offline evaluation (three modes, same budget, reproducible report with commit,
+dataset hash, provider, model, weights and configuration):
+
+```bash
+cargo test --bin melis-gateway semantic_scoring::eval::harness_report -- --ignored --nocapture
+MELIS_EVAL_PROVIDER=ollama MELIS_EMBED_MODEL=nomic-embed-text \
+  cargo test --bin melis-gateway semantic_scoring::eval::harness_report -- --ignored --nocapture
+```
+
+Tune only on `eval/compaction/dev.jsonl`. The `eval` split is reserved for the final
+run (`MELIS_EVAL_SPLIT=eval MELIS_EVAL_CONFIRM_FINAL=1`). The bundled fixtures are
+small and synthetic, and the default `stub` provider is lexical: they exercise the
+harness and don't support conclusions.
+
 ---
 
 ## Semantic Cache
@@ -785,6 +859,11 @@ Melis exposes all metrics at `GET /metrics` in Prometheus text exposition format
 | `melis_circuit_breaker_degraded_decisions_total` | Counter | `decision` | Breaker decisions while Redis was unavailable: `allow`, `deny` (bounded local protection), `write_skipped` |
 | `melis_redis_up` | Gauge | — | Shared Redis reachability (1 = PING ok), refreshed every 5s; drives `/readyz` only when `redis.required_for_readiness: true` |
 | `melis_cache_embed_seconds` | Histogram | — | Embedding computation time in the cache lookup path |
+| `melis_compaction_scoring_total` | Counter | `requested`, `effective` | Compactions on scoring-enabled routes: requested vs effectively used mode |
+| `melis_compaction_scoring_seconds` | Histogram | — | Semantic scoring duration (embedding included) |
+| `melis_compaction_scoring_fallback_total` | Counter | `reason` | Fallbacks to the heuristic: `limit_exceeded`, `timeout`, `provider_error`, `count_mismatch`, `invalid_dimension`, `non_finite`, `zero_norm`, `no_query` |
+| `melis_compaction_scoring_skipped_total` | Counter | `reason` | Scoring not needed: `no_candidates`, `mandatory_exceeds_target` |
+| `melis_compaction_budget_insufficient_total` | Counter | — | Requests rejected by `budget.mode: strict` |
 
 > **Note on `melis_circuit_breaker_state` with the Redis backend:** replicas read
 > state through a short-TTL local cache (`circuit_breaker.redis_state_cache_ms`,

@@ -14,6 +14,7 @@ mod route_config;
 mod router;
 mod routing;
 mod semantic_cache;
+mod semantic_scoring;
 mod state;
 mod tokenizer;
 

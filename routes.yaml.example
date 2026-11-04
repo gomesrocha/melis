@@ -40,6 +40,32 @@ routes:
       compress_above_tokens: 4096
       local_tokenizer: "cl100k_base"
 
+  # ─── Exemplo: scoring semântico na compactação (experimental, opt-in) ───
+  # Só vale para strategy semantic_guarded_trimming. Sem o campo = legado, sem
+  # chamadas de embedding. Pesos provisórios, não calibrados. O texto das mensagens
+  # candidatas (truncado em max_chars) é enviado ao Ollama de embeddings; com cache
+  # semântico ativo na mesma rota há chamadas de embedding adicionais (sem reuso).
+  # Ver docs/specs/phase-5-semantic-scoring.md.
+  # - path: "/v1/chat/scored"
+  #   method: "POST"
+  #   provider: "ollama"
+  #   model: "llama3.2"
+  #   token_optimization:
+  #     strategy: "semantic_guarded_trimming"
+  #     compress_above_tokens: 4096
+  #     semantic_scoring:
+  #       mode: hybrid                # heuristic | embedding | hybrid
+  #       semantic_weight: 0.5
+  #       structural_weight: 0.5
+  #       embedding_model: "nomic-embed-text"
+  #       timeout_ms: 1500
+  #       max_messages: 64
+  #       budget:
+  #         mode: legacy              # strict → 400 se o obrigatório não couber
+  #         # max_context_tokens: 8192
+  #         # output_reserve_tokens: 1024
+  #         # formatting_overhead: openai_chat_estimate
+
   # ─── Exemplo: rota com cache semântico (opt-in) ─────────────────
   # Respostas são cacheadas por (rota + modelo + embedding da conversa).
   # Requer Redis (config.yaml) e um provedor Ollama para embeddings.

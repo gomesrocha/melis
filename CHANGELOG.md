@@ -5,6 +5,59 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Phase 5 — Semantic scoring for compaction (experimental, opt-in)
+#### Added
+- `token_optimization.semantic_scoring` for `semantic_guarded_trimming`.
+  - Accepts `heuristic` (default), `embedding`, `hybrid`, or a block with weights,
+    embedding model, limits (`timeout_ms`, `max_concurrency`, `batch_size`,
+    `max_messages`, `max_chars`) and `budget`.
+  - Invalid values reject `routes.yaml`, like any other validation error.
+  - On other strategies the field is ignored with a warning.
+- Scoring is computed in the async handler; selection stays sync and deterministic.
+  - Score: `(cos+1)/2` (a scale transform, not a probability) combined with the
+    normalized structural score.
+  - Weights default to 0.5/0.5 (provisional, not calibrated) and are normalized.
+  - Ties: oldest message removed first. Original order is restored.
+  - Kept messages are the original objects, never rewritten.
+- Tool calls (OpenAI-compatible only): `assistant.tool_calls` plus all of its
+  results form one indivisible group. Incomplete or ambiguous dependencies are
+  pinned.
+- Full fallback to the legacy D1 path on error, timeout, invalid vectors, too many
+  candidates (no prefix/suffix subsets), or no user message.
+- `budget.mode: strict` (opt-in):
+  - `max_context_tokens`, `output_reserve_tokens`, and
+    `formatting_overhead: openai_chat_estimate` (an estimate).
+  - When mandatory content can't fit, returns 400 "Insufficient context budget",
+    with no embedding call and no provider call.
+  - `legacy` budget semantics are unchanged.
+- `EmbeddingProvider::embed_batch`: the default is bounded concurrency. The Ollama
+  override chunks `/api/embed` and falls back to `/api/embeddings` on 404.
+- Metrics:
+  - `melis_compaction_scoring_total{requested,effective}`;
+  - `melis_compaction_scoring_seconds`;
+  - `melis_compaction_scoring_fallback_total{reason}`;
+  - `melis_compaction_scoring_skipped_total{reason}`;
+  - `melis_compaction_budget_insufficient_total`.
+
+  Logs contain modes, counts and reasons only.
+- Offline harness (`semantic_scoring::eval`): compares three modes on the same
+  budget.
+  - The report records commit/dirty state, dataset hash, provider, model, weights
+    and configuration.
+  - `dev`/`eval` splits are kept separate; the eval split requires
+    `MELIS_EVAL_CONFIRM_FINAL=1`.
+  - The bundled fixtures are synthetic.
+- Versioned spec: `docs/specs/phase-5-semantic-scoring.md`.
+#### Notes
+- No behavior change without opt-in: no new embedding calls, same selection and D1
+  preservation.
+- With the semantic cache on the same route, scored requests make additional
+  embedding calls (different texts, no reuse).
+- GAP-OAI-1 unchanged: HTTP still rejects `content: null`/arrays. Those shapes are
+  covered internally only.
+- Observation: in `hybrid`, structural signals from the tool-call JSON (e.g. digits
+  in call ids) can outrank similarity at 0.5/0.5. This is an input for the
+  experiment, not a calibrated result.
 ### Fixed — Context compaction corrupted messages (bugfix D1)
 - **Before:** when compaction fired (`adaptive_trimming`, `sliding_window`,
   `semantic_guarded_trimming`), the handler rebuilt every kept message as

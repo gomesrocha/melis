@@ -85,7 +85,7 @@ pub struct JsonCompaction {
 ///
 /// Conservative rule for the bugfix: anything the text-only compactors cannot
 /// reason about safely is pinned. Tool call/result grouping is Phase 5 work.
-fn must_pin(m: &serde_json::Value) -> bool {
+pub(crate) fn must_pin(m: &serde_json::Value) -> bool {
     let role = m.get("role").and_then(|r| r.as_str());
     let has = |k: &str| m.get(k).is_some_and(|v| !v.is_null());
     role.is_none()
@@ -97,7 +97,7 @@ fn must_pin(m: &serde_json::Value) -> bool {
 }
 
 /// Text used ONLY for scoring and token counting; never forwarded.
-fn text_repr(m: &serde_json::Value) -> String {
+pub(crate) fn text_repr(m: &serde_json::Value) -> String {
     let mut out = match m.get("content") {
         Some(serde_json::Value::String(s)) => s.clone(),
         None | Some(serde_json::Value::Null) => String::new(),
@@ -541,7 +541,7 @@ impl SemanticGuardedCompactor {
     }
 
     /// Calculate importance score for a message.
-    fn calculate_score(
+    pub(crate) fn calculate_score(
         msg: &CompactMessage,
         is_last_user: bool,
         last_user_terms: &[String],
@@ -617,7 +617,7 @@ impl SemanticGuardedCompactor {
     }
 
     /// Extract meaningful terms from the last user message for relevance scoring.
-    fn extract_query_terms(content: &str) -> Vec<String> {
+    pub(crate) fn extract_query_terms(content: &str) -> Vec<String> {
         let stop_words = [
             "o", "a", "de", "do", "da", "em", "no", "na", "que", "é", "the", "is", "of", "in",
             "to", "and", "for", "it", "on", "um", "uma", "com", "por", "para", "se", "como",
