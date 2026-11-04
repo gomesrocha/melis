@@ -528,8 +528,31 @@ impl GatewayConfig {
         Ok(config)
     }
 
+    /// Like [`from_yaml`](Self::from_yaml) but assumes the caller already holds the
+    /// test env lock (used by env-mutating tests to avoid re-locking). Test-only.
+    #[cfg(test)]
+    fn from_yaml_locked(yaml: &str) -> Result<Self, ConfigError> {
+        let mut config: GatewayConfig = serde_yaml::from_str(yaml)?;
+        config.apply_env_overrides_inner();
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Apply environment variable overrides to the loaded config.
+    ///
+    /// Tests run in parallel threads inside one process, so `MELIS_*` env vars are
+    /// shared. A test that sets `MELIS_SERVER_PORT` could otherwise be observed by a
+    /// concurrent `from_yaml`/`load` in an unrelated test. In test builds, env reads
+    /// are serialized against the env-mutating tests via a shared lock
+    /// (`env_lock`); production code does not lock.
     fn apply_env_overrides(&mut self) {
+        #[cfg(test)]
+        let _env_guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        self.apply_env_overrides_inner();
+    }
+
+    /// The actual env reads, without taking the test lock.
+    fn apply_env_overrides_inner(&mut self) {
         if let Ok(val) = std::env::var("MELIS_ROUTES_CONFIG") {
             self.routes_config_path = PathBuf::from(val);
         }
@@ -679,6 +702,15 @@ impl GatewayConfig {
             Err(ConfigError::ValidationError(errors))
         }
     }
+}
+
+/// Process-wide lock serializing tests that read or mutate `MELIS_*` env vars.
+/// Acquired inside `apply_env_overrides` (readers) and held across set/remove by
+/// the env-mutating tests, so the two never overlap. Test-only.
+#[cfg(test)]
+fn env_lock() -> &'static std::sync::Mutex<()> {
+    static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    ENV_LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
 #[cfg(test)]
@@ -942,21 +974,25 @@ circuit_breaker:
 
     #[test]
     fn test_env_override_routes_config_path() {
+        // Hold the env lock across set → build → remove so no concurrent
+        // `apply_env_overrides` observes the var (it is acquired there too).
+        let _g = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         std::env::set_var("MELIS_ROUTES_CONFIG", "/tmp/custom-routes.yaml");
-        let config = GatewayConfig::from_yaml(&minimal_valid_yaml()).unwrap();
+        let config = GatewayConfig::from_yaml_locked(&minimal_valid_yaml()).unwrap();
+        std::env::remove_var("MELIS_ROUTES_CONFIG");
         assert_eq!(
             config.routes_config_path,
             PathBuf::from("/tmp/custom-routes.yaml")
         );
-        std::env::remove_var("MELIS_ROUTES_CONFIG");
     }
 
     #[test]
     fn test_env_override_server_port() {
+        let _g = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         std::env::set_var("MELIS_SERVER_PORT", "9090");
-        let config = GatewayConfig::from_yaml(&minimal_valid_yaml()).unwrap();
-        assert_eq!(config.server.port, 9090);
+        let config = GatewayConfig::from_yaml_locked(&minimal_valid_yaml()).unwrap();
         std::env::remove_var("MELIS_SERVER_PORT");
+        assert_eq!(config.server.port, 9090);
     }
 
     #[test]
