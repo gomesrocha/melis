@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::circuit_breaker::CallResult;
-use crate::compactor::{ContextCompactor, SemanticGuardedCompactor, SimpleCompactor};
+
 use crate::config::CompactorConfig;
 use crate::embeddings::embeddings_handler;
 use crate::error::GatewayError;
@@ -695,48 +695,36 @@ async fn chat_completions_handler(
 
     let compaction_start = Instant::now();
     if let Some(messages_arr) = payload.get("messages").and_then(|m| m.as_array()) {
-        let compactor: Box<dyn ContextCompactor> =
-            if resolved.effective_token_config.strategy == "semantic_guarded_trimming" {
-                Box::new(SemanticGuardedCompactor::new())
-            } else {
-                Box::new(SimpleCompactor::new())
-            };
-        let compaction = match &resolved.semantic_scoring {
-            // Legacy path (no opt-in): unchanged. Preserves the original message
-            // objects (all fields, unknown ones included); tool/non-text messages
-            // are pinned (bugfix D1). No embedding calls.
-            None => crate::compactor::compact_json_messages(
-                compactor.as_ref(),
+        // Select the context policy for this request (legacy vs scored), exactly as
+        // before. The policy only decides selection/ranking and returns a
+        // JsonCompaction referencing the original messages by index; the host below
+        // keeps applying/validating the result (preservation, budget metrics, 400).
+        let policy = crate::context_policy::select_policy(&resolved.semantic_scoring);
+        tracing::debug!(context_policy = policy.name(), "applying context policy");
+        let compaction = match policy
+            .compact(
                 messages_arr,
                 &resolved.effective_token_config,
-            ),
-            // Phase 5 opt-in: scores are computed here (async) and handed to the
-            // sync selector; any failure falls back to the legacy path above.
-            Some(sc) => {
-                match crate::semantic_scoring::compact_with_scoring(
-                    messages_arr,
-                    &resolved.effective_token_config,
-                    sc,
-                    state.embeddings.as_ref(),
-                )
-                .await
-                {
-                    Ok(outcome) => {
-                        record_scoring_outcome(&state.metrics, &outcome);
-                        outcome.compaction
-                    }
-                    Err(insufficient) => {
-                        state.metrics.compaction_budget_insufficient_total.inc();
-                        tracing::warn!(
-                            required_tokens = insufficient.required_tokens,
-                            overhead_tokens = insufficient.overhead_tokens,
-                            output_reserve_tokens = insufficient.output_reserve_tokens,
-                            max_context_tokens = insufficient.max_context_tokens,
-                            "strict context budget insufficient; request rejected"
-                        );
-                        return Err(GatewayError::BadRequest(insufficient.message()));
-                    }
+                state.embeddings.as_ref(),
+            )
+            .await
+        {
+            Ok(outcome) => {
+                if let Some(scoring) = &outcome.scoring {
+                    record_scoring_outcome(&state.metrics, scoring);
                 }
+                outcome.compaction
+            }
+            Err(crate::context_policy::ContextError::BudgetInsufficient(insufficient)) => {
+                state.metrics.compaction_budget_insufficient_total.inc();
+                tracing::warn!(
+                    required_tokens = insufficient.required_tokens,
+                    overhead_tokens = insufficient.overhead_tokens,
+                    output_reserve_tokens = insufficient.output_reserve_tokens,
+                    max_context_tokens = insufficient.max_context_tokens,
+                    "strict context budget insufficient; request rejected"
+                );
+                return Err(GatewayError::BadRequest(insufficient.message()));
             }
         };
         let result = compaction.result;

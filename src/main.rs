@@ -4,6 +4,7 @@ pub mod circuit_breaker;
 pub mod client;
 mod compactor;
 mod config;
+mod context_policy;
 pub mod embeddings;
 mod error;
 mod guardrails;
