@@ -5,6 +5,19 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Phase 5 closure — tool-group policy and opaque-id handling
+#### Added
+- `token_optimization.semantic_scoring.tool_group_policy: preserve | eligible_for_removal`
+  (default `preserve`). In `preserve` a complete tool-call group is never removed;
+  in `eligible_for_removal` it may be removed, but only as a whole. Incomplete or
+  ambiguous groups and protected instructions stay pinned under both. Preserving the
+  call/result protocol dependency is not a semantic-preservation guarantee.
+#### Fixed
+- Opaque tool-call identifiers (e.g. `call_1`) no longer perturb scoring: the text
+  used for ranking/counting excludes the ids (function name and arguments kept).
+  The forwarded payload and the legacy text-only algorithm are unchanged. Diagnostic
+  test: changing only the ids does not change the selection.
+
 ### Phase 5 — Semantic scoring for compaction (experimental, opt-in)
 #### Added
 - `token_optimization.semantic_scoring` for `semantic_guarded_trimming`.
@@ -55,9 +68,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   embedding calls (different texts, no reuse).
 - GAP-OAI-1 unchanged: HTTP still rejects `content: null`/arrays. Those shapes are
   covered internally only.
-- Observation: in `hybrid`, structural signals from the tool-call JSON (e.g. digits
-  in call ids) can outrank similarity at 0.5/0.5. This is an input for the
-  experiment, not a calibrated result.
+- Observation: in `hybrid`, structural signals can still outrank similarity at
+  0.5/0.5 depending on content. Tool-call ids no longer contribute (see the closure
+  entry above). This is an input for the experiment, not a calibrated result.
 ### Fixed — Context compaction corrupted messages (bugfix D1)
 - **Before:** when compaction fired (`adaptive_trimming`, `sliding_window`,
   `semantic_guarded_trimming`), the handler rebuilt every kept message as

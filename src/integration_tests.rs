@@ -1549,8 +1549,10 @@ mod phase5_scoring_e2e {
     async fn embedding_scoring_selects_by_relevance_over_recency() {
         let input = conversation();
         let emb = Arc::new(topic_embeddings());
+        // eligible_for_removal so the (preserved-by-default) tool group does not
+        // absorb the budget; this isolates the relevance-vs-recency behavior.
         let r = run(
-            &format!("{SGT}      semantic_scoring: embedding\n"),
+            &format!("{SGT}      semantic_scoring:\n        mode: embedding\n        tool_group_policy: eligible_for_removal\n"),
             &input,
             emb.clone(),
         )
@@ -1570,10 +1572,27 @@ mod phase5_scoring_e2e {
     }
 
     #[tokio::test]
+    async fn complete_tool_group_preserved_by_default_over_http() {
+        // Default policy: the complete tool group (indices 2,3,4) reaches the
+        // provider intact even under a tight budget.
+        let input = conversation();
+        let emb = Arc::new(topic_embeddings());
+        let opt = format!("{SGT}      semantic_scoring:\n        mode: embedding\n        tool_group_policy: preserve\n");
+        let r = run(&opt, &input, emb.clone()).await;
+        assert_eq!(r.status, StatusCode::OK);
+        let sent = r.sent.unwrap();
+        for i in [2, 3, 4] {
+            assert!(
+                sent.contains(&input[i]),
+                "preserve: group member {i} must reach provider"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn hybrid_scoring_forwards_original_objects_and_keeps_structure() {
-        // Note: in hybrid the structural component can outrank similarity (here
-        // the tool-call ids contain digits, a structural "technical" signal), so
-        // relevance is asserted in pure `embedding` mode above.
+        // Relevance is asserted in pure `embedding` mode above; here we only check
+        // payload preservation, metrics and that the tool group stays intact.
         let input = conversation();
         let emb = Arc::new(topic_embeddings());
         let r = run(

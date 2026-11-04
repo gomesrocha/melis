@@ -60,6 +60,7 @@ routes:
   #       embedding_model: "nomic-embed-text"
   #       timeout_ms: 1500
   #       max_messages: 64
+  #       tool_group_policy: preserve   # preserve (default) | eligible_for_removal
   #       budget:
   #         mode: legacy              # strict → 400 se o obrigatório não couber
   #         # max_context_tokens: 8192

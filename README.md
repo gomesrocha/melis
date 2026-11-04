@@ -610,6 +610,7 @@ token_optimization:
   #   batch_size: 32
   #   max_messages: 64              # more candidates → full fallback to the heuristic
   #   max_chars: 2000               # truncation of the text sent for scoring only
+  #   tool_group_policy: preserve   # preserve (default) | eligible_for_removal
   #   budget:
   #     mode: legacy                # legacy (default) | strict
   #     max_context_tokens: 8192    # strict only (required)
@@ -632,6 +633,11 @@ Behavior:
   bugfix D1 pins. An `assistant.tool_calls` message plus all of its results form an
   indivisible group (OpenAI-compatible payloads only). Incomplete or ambiguous tool
   dependencies are pinned.
+- **Tool groups**: by default (`tool_group_policy: preserve`) a complete group is
+  never removed. Set `eligible_for_removal` to let a complete group be dropped, but
+  only as a whole. Preserving the call/result protocol dependency is not a semantic
+  preservation guarantee. Opaque tool-call ids are excluded from the scoring text
+  (payload unchanged), so they do not perturb the ranking.
 - Any error, timeout, invalid vector (dimension, NaN/∞, zero norm), or too many
   candidates → **full fallback** to the heuristic for that request. The request never
   fails because of scoring.

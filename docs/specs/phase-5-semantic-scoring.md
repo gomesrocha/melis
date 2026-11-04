@@ -33,6 +33,18 @@ objetos originais das mensagens e fixa as mensagens não textuais e de ferrament
   - Uma dependência incompleta (resultado sem chamada, chamada sem todos os
     resultados, ids duplicados, resultados fora de sequência) fixa todas as
     mensagens envolvidas. Nunca há remoção parcial.
+  - `tool_group_policy: preserve | eligible_for_removal` (default `preserve`). Em
+    `preserve`, um grupo completo é protegido (nunca removido). Em
+    `eligible_for_removal`, pode ser removido, mas só inteiro. Em ambos, grupos
+    incompletos/ambíguos e instruções protegidas ficam fixados. Preservar a
+    dependência de protocolo (chamada↔resultado) **não** é garantia de preservação
+    semântica da conversa.
+  - **Identificadores opacos (limitação conhecida e correção delimitada):** os ids
+    das chamadas (`call_1`, `tooluse_xyz`) não têm valor semântico mas perturbavam a
+    heurística (dígitos lidos como sinal técnico) e o embedding. A representação
+    usada só para scoring exclui os ids (mantém nome e argumentos da função). O
+    payload enviado ao provedor e o algoritmo legado não mudam. Teste diagnóstico:
+    trocar apenas os ids não altera a seleção.
 - **D3: similaridade.**
   - Fórmula: `sim = clamp((cos + 1) / 2, 0, 1)`. É uma transformação de escala para
     `[0, 1]`, **não** uma probabilidade de relevância.

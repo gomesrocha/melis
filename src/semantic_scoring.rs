@@ -51,6 +51,21 @@ impl ScoringMode {
     }
 }
 
+/// What may happen to a *complete* tool-call group during scoring (D2 closure).
+///
+/// `preserve` (default) treats a complete group as protected: it is never removed.
+/// `eligible_for_removal` lets a complete group be removed, but only as a whole
+/// unit. Incomplete/ambiguous groups and protected instructions are pinned under
+/// both policies. Preserving the call↔result protocol dependency is NOT a claim of
+/// semantic preservation of the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolGroupPolicy {
+    #[default]
+    Preserve,
+    EligibleForRemoval,
+}
+
 /// Budget semantics. `legacy` keeps the existing ratio-based target unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -160,6 +175,9 @@ pub struct ScoringConfig {
     /// Characters sent per text (scoring only; the message is not changed).
     #[serde(default = "default_max_chars")]
     pub max_chars: usize,
+    /// Whether complete tool-call groups may be removed. Default `preserve`.
+    #[serde(default)]
+    pub tool_group_policy: ToolGroupPolicy,
     #[serde(default)]
     pub budget: BudgetConfig,
 }
@@ -176,6 +194,7 @@ impl Default for ScoringConfig {
             batch_size: default_batch_size(),
             max_messages: default_max_messages(),
             max_chars: default_max_chars(),
+            tool_group_policy: ToolGroupPolicy::default(),
             budget: BudgetConfig::default(),
         }
     }
@@ -303,6 +322,52 @@ fn message_tokens(counter: &TokenCounter, m: &Value) -> usize {
     counter.count(role_of(m)) + counter.count(&text_repr(m))
 }
 
+/// Text of ONE message for scoring, excluding opaque tool-call/result identifiers.
+///
+/// `text_repr` includes the whole `tool_calls` JSON (ids + arguments) and a tool
+/// result keeps its `tool_call_id` only via its content. Opaque ids like `call_1`
+/// carry no semantics but perturb the structural heuristic (digits read as a
+/// "technical" signal) and add noise to embeddings. This representation is used
+/// ONLY for scoring/counting; the forwarded payload is never modified, and the
+/// legacy text-only path (`text_repr`) is unchanged.
+fn scoring_text(m: &Value) -> String {
+    let mut out = match m.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(
+                |p| match (p.get("type").and_then(|t| t.as_str()), p.get("text")) {
+                    (Some("text"), Some(Value::String(t))) => Some(t.clone()),
+                    _ => None,
+                },
+            )
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    // Function name + arguments are semantic; the call id is not.
+    for call in m
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let Some(f) = call.get("function") {
+            for key in ["name", "arguments"] {
+                if let Some(Value::String(s)) = f.get(key) {
+                    out.push(' ');
+                    out.push_str(s);
+                }
+            }
+        }
+    }
+    if let Some(Value::String(s)) = m.get("function_call").and_then(|f| f.get("arguments")) {
+        out.push(' ');
+        out.push_str(s);
+    }
+    out
+}
+
 /// Ids of a well-formed assistant tool-call message, or `None`.
 fn tool_call_ids(m: &Value) -> Option<Vec<String>> {
     if role_of(m) != "assistant" || m.get("function_call").is_some_and(|v| !v.is_null()) {
@@ -354,7 +419,7 @@ pub fn build_units(messages: &[Value], counter: &TokenCounter) -> Vec<Unit> {
                 units.push(Unit {
                     text: members
                         .iter()
-                        .map(|&k| text_repr(&messages[k]))
+                        .map(|&k| scoring_text(&messages[k]))
                         .collect::<Vec<_>>()
                         .join("\n"),
                     tokens: members
@@ -389,7 +454,9 @@ fn single(messages: &[Value], k: usize, kind: UnitKind, counter: &TokenCounter) 
         indices: vec![k],
         kind,
         role: role_of(&messages[k]).to_string(),
-        text: text_repr(&messages[k]),
+        // For plain text messages this equals `text_repr`; it only differs when
+        // tool fields are present, which never happens for a `Text` unit.
+        text: scoring_text(&messages[k]),
         tokens: message_tokens(counter, &messages[k]),
     }
 }
@@ -581,7 +648,7 @@ pub struct Prepared {
     pub query_terms: Vec<String>,
 }
 
-pub fn prepare(messages: &[Value], cfg: &CompactorConfig) -> Prepared {
+pub fn prepare(messages: &[Value], cfg: &CompactorConfig, policy: ToolGroupPolicy) -> Prepared {
     let counter = TokenCounter::resolve(cfg.token_counting, &cfg.tokenizer_name);
     let units = build_units(messages, &counter);
     let last_user = messages.iter().rposition(|m| role_of(m) == "user");
@@ -597,6 +664,8 @@ pub fn prepare(messages: &[Value], cfg: &CompactorConfig) -> Prepared {
             u.kind == UnitKind::Pinned
                 || u.role == "system"
                 || last_user.is_some_and(|l| u.indices.contains(&l))
+                // Complete tool groups are protected unless removal is opted in.
+                || (u.kind == UnitKind::ToolGroup && policy == ToolGroupPolicy::Preserve)
                 || (cfg.preserve_critical_markers && {
                     let lower = u.text.to_lowercase();
                     markers.iter().any(|m| lower.contains(m.as_str()))
@@ -775,7 +844,7 @@ pub async fn compact_with_scoring(
     provider: &dyn EmbeddingProvider,
 ) -> Result<ScoringOutcome, BudgetInsufficient> {
     let started = Instant::now();
-    let prep = prepare(messages, cfg);
+    let prep = prepare(messages, cfg, sc.tool_group_policy);
     let mut outcome = ScoringOutcome {
         compaction: JsonCompaction {
             result: CompactionResult {
@@ -1169,7 +1238,10 @@ mod tests {
                 !o.compaction.messages.contains(&input[2]),
                 "{mode:?}: irrelevant dropped"
             );
-            assert!(o.compaction.result.final_tokens <= prepare(&input, &cfg()).target_tokens);
+            assert!(
+                o.compaction.result.final_tokens
+                    <= prepare(&input, &cfg(), ToolGroupPolicy::Preserve).target_tokens
+            );
             assert_eq!(p.batch_calls.load(SeqCst), 1, "one batched call");
             assert_eq!(p.embed_calls.load(SeqCst), 0);
         }
@@ -1202,10 +1274,9 @@ mod tests {
         assert!(o.compaction.messages.iter().all(|m| input.contains(m)));
     }
 
-    #[tokio::test]
-    async fn complete_tool_group_is_kept_or_removed_as_a_whole() {
+    /// Relevance fixture with an irrelevant complete tool group at indices 2,3,4.
+    fn conversation_with_tool_group() -> Vec<Value> {
         let mut input = relevance_conversation();
-        // Irrelevant tool exchange in the middle.
         input.insert(2, call(&["a", "b"]));
         input.insert(
             3,
@@ -1215,11 +1286,45 @@ mod tests {
             4,
             json!({"role": "tool", "tool_call_id": "b", "content": long("recipe sugar", 20)}),
         );
+        input
+    }
+
+    #[tokio::test]
+    async fn complete_tool_group_is_preserved_by_default() {
+        // Default policy = preserve: even an irrelevant complete group, under a
+        // tight budget, is never removed.
+        let input = conversation_with_tool_group();
+        let mut c = cfg();
+        c.target_token_ratio = 0.2;
+        let p = topic_provider();
+        let o = compact_with_scoring(&input, &c, &sc(ScoringMode::Embedding), &p)
+            .await
+            .unwrap();
+        assert_eq!(
+            sc(ScoringMode::Embedding).tool_group_policy,
+            ToolGroupPolicy::Preserve
+        );
+        assert_original_objects(&input, &o.compaction);
+        let kept = &o.compaction.result.kept_indices;
+        for i in [2, 3, 4] {
+            assert!(
+                kept.contains(&i),
+                "preserve: group member {i} removed: {kept:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_tool_group_is_removed_as_a_whole_when_opted_in() {
+        let input = conversation_with_tool_group();
+        let mut scoring = sc(ScoringMode::Embedding);
+        scoring.tool_group_policy = ToolGroupPolicy::EligibleForRemoval;
+        let mut removed_somewhere = false;
         for (ratio, label) in [(0.2, "tight"), (0.9, "loose")] {
             let mut c = cfg();
             c.target_token_ratio = ratio;
             let p = topic_provider();
-            let o = compact_with_scoring(&input, &c, &sc(ScoringMode::Embedding), &p)
+            let o = compact_with_scoring(&input, &c, &scoring, &p)
                 .await
                 .unwrap();
             assert_original_objects(&input, &o.compaction);
@@ -1229,7 +1334,79 @@ mod tests {
                 present == 0 || present == 3,
                 "{label}: group split: {kept:?}"
             );
+            removed_somewhere |= present == 0;
         }
+        assert!(
+            removed_somewhere,
+            "eligible_for_removal must allow the group to be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_group_stays_pinned_even_when_removal_is_opted_in() {
+        // eligible_for_removal applies to COMPLETE groups only; an incomplete one
+        // (missing result) is still pinned.
+        let mut input = relevance_conversation();
+        input.insert(2, call(&["a", "b"]));
+        input.insert(
+            3,
+            json!({"role": "tool", "tool_call_id": "a", "content": long("recipe salt", 20)}),
+        );
+        let mut scoring = sc(ScoringMode::Embedding);
+        scoring.tool_group_policy = ToolGroupPolicy::EligibleForRemoval;
+        let mut c = cfg();
+        c.target_token_ratio = 0.1;
+        let p = topic_provider();
+        let o = compact_with_scoring(&input, &c, &scoring, &p)
+            .await
+            .unwrap();
+        let kept = &o.compaction.result.kept_indices;
+        assert!(
+            kept.contains(&2) && kept.contains(&3),
+            "incomplete group must stay: {kept:?}"
+        );
+    }
+
+    /// Diagnostic (and regression for the bounded fix): changing ONLY opaque
+    /// tool-call ids, keeping the semantic content, must not change the selection.
+    #[tokio::test]
+    async fn opaque_tool_call_ids_do_not_affect_selection() {
+        let base = |ids: (&str, &str)| {
+            let mut input = relevance_conversation();
+            input.insert(2, call(&[ids.0, ids.1]));
+            input.insert(
+                3,
+                json!({"role": "tool", "tool_call_id": ids.0, "content": long("recipe salt", 20)}),
+            );
+            input.insert(
+                4,
+                json!({"role": "tool", "tool_call_id": ids.1, "content": long("recipe sugar", 20)}),
+            );
+            input
+        };
+        let mut scoring = sc(ScoringMode::Hybrid);
+        scoring.tool_group_policy = ToolGroupPolicy::EligibleForRemoval;
+        let mut c = cfg();
+        c.target_token_ratio = 0.5;
+
+        let run = |input: Vec<Value>| {
+            let scoring = scoring.clone();
+            let c = c.clone();
+            async move {
+                let p = topic_provider();
+                let o = compact_with_scoring(&input, &c, &scoring, &p)
+                    .await
+                    .unwrap();
+                o.compaction.result.kept_indices
+            }
+        };
+        // Numeric-looking ids vs opaque alphabetic ids: same semantic content.
+        let a = run(base(("call_1", "call_2"))).await;
+        let b = run(base(("tooluse_xyz", "tooluse_abc"))).await;
+        assert_eq!(
+            a, b,
+            "selection must not depend on opaque tool-call identifiers (scoring text excludes ids)"
+        );
     }
 
     #[tokio::test]
@@ -1470,7 +1647,7 @@ mod tests {
         let o = compact_with_scoring(&input, &cfg(), &sc(ScoringMode::Hybrid), &p)
             .await
             .unwrap();
-        let prep = prepare(&input, &cfg());
+        let prep = prepare(&input, &cfg(), ToolGroupPolicy::Preserve);
         assert_eq!(
             o.compaction.result.original_tokens,
             legacy(&input, &cfg()).result.original_tokens

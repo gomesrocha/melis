@@ -273,6 +273,8 @@ pub async fn run_eval(o: &EvalOptions) -> Value {
                 "max_messages": default_max_messages(), "max_chars": default_max_chars(),
                 "batch_size": default_batch_size(), "max_concurrency": default_max_concurrency(),
             },
+            "tool_group_policy": "preserve",
+            "scoring_text_excludes_tool_call_ids": true,
             "same_budget_all_modes": true,
         },
         "modes": per_mode,
