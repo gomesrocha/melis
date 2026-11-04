@@ -73,16 +73,82 @@ auth:
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
+    // ─── Real-provider (G1) parametrization ──────────────────────────────────
+    //
+    // The live-provider tests target a real OpenAI-compatible endpoint (Ollama by
+    // default). Endpoint and model come from the environment so G1 does not depend
+    // on a model literally named like a hosted one, and never aliases `gpt-4o` to a
+    // local model:
+    //   MELIS_IT_OLLAMA_URL   (default http://localhost:11434)
+    //   MELIS_IT_CHAT_MODEL   (default llama3.2)
+    // The effective model is logged so the run records what was actually used.
+
+    fn real_chat_model() -> String {
+        std::env::var("MELIS_IT_CHAT_MODEL").unwrap_or_else(|_| "llama3.2".to_string())
+    }
+
+    fn real_ollama_url() -> String {
+        std::env::var("MELIS_IT_OLLAMA_URL")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string())
+    }
+
+    /// AppState wired to the configured real Ollama provider (G1 tests).
+    ///
+    /// Installs a route mapping `/v1/chat/completions` to the ollama provider so
+    /// the failover loop has a provider to select (an empty route config yields no
+    /// providers and a 503, independent of the model). The temp dir is leaked for
+    /// the lifetime of the test process, which is fine for `#[ignore]` G1 tests.
+    fn build_real_provider_app_state() -> AppState {
+        let url = real_ollama_url();
+        let model = real_chat_model();
+        tracing::info!(endpoint = %url, model = %model, "G1 live-provider test using model");
+        eprintln!("G1 live-provider test: endpoint={url} model={model}");
+
+        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let routes_path = dir.path().join("routes.yaml");
+        std::fs::write(
+            &routes_path,
+            format!(
+                "routes:\n  - path: \"/v1/chat/completions\"\n    method: \"POST\"\n    provider: \"ollama\"\n    model: \"{model}\"\n"
+            ),
+        )
+        .unwrap();
+        let gateway_config = GatewayConfig::from_yaml(&format!(
+            "server:\n  host: \"0.0.0.0\"\n  port: 8080\nredis:\n  cluster_urls:\n    - \"redis://localhost:6379\"\nauth:\n  enabled: false\nproviders:\n  - id: \"ollama\"\n    provider_type: \"ollama\"\n    api_key: \"ollama\"\n    base_url: \"{url}\"\n"
+        ))
+        .unwrap();
+        AppState {
+            route_config: Arc::new(RouteConfigManager::new(routes_path)),
+            gateway_config: Arc::new(gateway_config),
+            rate_limiter: Arc::new(LocalTokenBucket::new()),
+            load_balancer: Arc::new(WeightedRoundRobin::new()),
+            circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+            http_client: Arc::new(ReqwestLlmClient::new()),
+            metrics: Arc::new(Metrics::new()),
+            redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
+                &crate::route_config::RouteConfigFile {
+                    routes: vec![],
+                    custom_providers: vec![],
+                },
+                Default::default(),
+            )),
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+        }
+    }
+
     // ─── Test 1: JSON Response ────────────────────────────────────────────────
 
     #[tokio::test]
-    #[ignore = "requires a live provider (Ollama) at localhost:11434; run in pre-merge env"]
+    #[ignore = "G1: live provider; set MELIS_IT_OLLAMA_URL / MELIS_IT_CHAT_MODEL (defaults http://localhost:11434, llama3.2)"]
     async fn test_json_response_with_valid_payload() {
-        let state = build_test_app_state();
+        let state = build_real_provider_app_state();
         let app = build_router(state);
 
         let payload = serde_json::json!({
-            "model": "gpt-4o",
+            "model": real_chat_model(),
             "messages": [{"role": "user", "content": "Hello, world!"}]
         });
 
@@ -113,13 +179,13 @@ auth:
     // ─── Test 2: SSE Streaming Response ──────────────────────────────────────
 
     #[tokio::test]
-    #[ignore = "requires a live provider (Ollama) at localhost:11434; run in pre-merge env"]
+    #[ignore = "G1: live provider; set MELIS_IT_OLLAMA_URL / MELIS_IT_CHAT_MODEL (defaults http://localhost:11434, llama3.2)"]
     async fn test_sse_response_with_accept_header() {
-        let state = build_test_app_state();
+        let state = build_real_provider_app_state();
         let app = build_router(state);
 
         let payload = serde_json::json!({
-            "model": "gpt-4o",
+            "model": real_chat_model(),
             "messages": [{"role": "user", "content": "Hello!"}]
         });
 
@@ -158,13 +224,13 @@ auth:
     }
 
     #[tokio::test]
-    #[ignore = "requires a live provider (Ollama) at localhost:11434; run in pre-merge env"]
+    #[ignore = "G1: live provider; set MELIS_IT_OLLAMA_URL / MELIS_IT_CHAT_MODEL (defaults http://localhost:11434, llama3.2)"]
     async fn test_sse_response_with_stream_true_in_payload() {
-        let state = build_test_app_state();
+        let state = build_real_provider_app_state();
         let app = build_router(state);
 
         let payload = serde_json::json!({
-            "model": "gpt-4o",
+            "model": real_chat_model(),
             "messages": [{"role": "user", "content": "Hi!"}],
             "stream": true
         });
@@ -481,14 +547,14 @@ auth:
     // ─── Test: Metrics increment after request ───────────────────────────────
 
     #[tokio::test]
-    #[ignore = "requires a live provider (Ollama) at localhost:11434; run in pre-merge env"]
+    #[ignore = "G1: live provider; set MELIS_IT_OLLAMA_URL / MELIS_IT_CHAT_MODEL (defaults http://localhost:11434, llama3.2)"]
     async fn test_metrics_increment_after_chat_completion_request() {
-        let state = build_test_app_state();
+        let state = build_real_provider_app_state();
         let metrics = state.metrics.clone();
         let app = build_router(state);
 
         let payload = serde_json::json!({
-            "model": "gpt-4o",
+            "model": real_chat_model(),
             "messages": [{"role": "user", "content": "Hi"}]
         });
 
@@ -502,7 +568,9 @@ auth:
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        // Verify that the requests_total counter was incremented
+        // requests_total uses a fixed "unknown" provider label on this path
+        // (request_duration carries the real provider_type); see the audit note on
+        // the provider label inconsistency.
         let counter_value = metrics
             .requests_total
             .with_label_values(&["/v1/chat/completions", "unknown", "200"])

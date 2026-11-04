@@ -716,15 +716,23 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "latency acceptance: run in release profile (cargo test --release -- --ignored)"]
+    #[ignore = "benchmark: MELIS_RUN_BENCH=1 cargo test --release -- --ignored latency_full_namespace_under_budget"]
     async fn latency_full_namespace_under_budget() {
-        // Acceptance: a full namespace (max_entries=1000) of 768-dim embeddings is
-        // scanned well under the 5ms budget when candidates are already in memory
-        // (the Redis path fetches them in a single MGET). This validates the
-        // cosine-scan cost, isolating it from Redis round-trips.
+        // Acceptance BENCHMARK (not a functional test): a full namespace
+        // (max_entries=1000) of 768-dim embeddings is scanned well under the 5ms
+        // budget when candidates are already in memory (the Redis path fetches them
+        // in a single MGET). This validates the cosine-scan cost, isolating it from
+        // Redis round-trips.
         //
-        // Measured in release: ~10µs. Debug builds are slower; this is a
-        // release-profile acceptance test, hence #[ignore] by default.
+        // The 5ms budget only holds in release; debug builds are much slower. To
+        // keep the general `cargo test -- --ignored` (G1 functional) run from
+        // failing in debug, this benchmark self-skips unless MELIS_RUN_BENCH=1.
+        // Run it with: MELIS_RUN_BENCH=1 cargo test --release -- --ignored \
+        //   latency_full_namespace_under_budget
+        if std::env::var("MELIS_RUN_BENCH").as_deref() != Ok("1") {
+            eprintln!("skipping latency benchmark (set MELIS_RUN_BENCH=1 in release to run)");
+            return;
+        }
         let cache = InMemoryCache::new();
         let ctx = ctx_for("/v1/chat", "m", 0.99);
         let dim = 768;

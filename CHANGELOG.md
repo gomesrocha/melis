@@ -5,6 +5,22 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Test infrastructure — G1 reproducibility
+#### Changed
+- Live-provider integration tests (`test_json_response_with_valid_payload`,
+  `test_sse_response_with_accept_header`, `test_sse_response_with_stream_true_in_payload`,
+  `test_metrics_increment_after_chat_completion_request`) now target a real
+  OpenAI-compatible endpoint via env, instead of sending a hosted-only model name to
+  a bare Ollama:
+  - `MELIS_IT_OLLAMA_URL` (default `http://localhost:11434`);
+  - `MELIS_IT_CHAT_MODEL` (default `llama3.2`).
+  Each test installs a route that resolves to the provider and logs the effective
+  endpoint and model. No permanent `gpt-4o` alias is created.
+- The cache cosine-scan latency check is now an explicit benchmark that self-skips
+  unless `MELIS_RUN_BENCH=1`, so the general `cargo test -- --ignored` (G1
+  functional) run no longer fails in debug. Run it with
+  `MELIS_RUN_BENCH=1 cargo test --release -- --ignored latency_full_namespace_under_budget`.
+
 ### Phase 5 closure — tool-group policy and opaque-id handling
 #### Added
 - `token_optimization.semantic_scoring.tool_group_policy: preserve | eligible_for_removal`
