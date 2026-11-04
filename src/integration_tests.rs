@@ -2151,3 +2151,141 @@ providers:
         assert_eq!(body["choices"][0]["message"]["content"], "cached");
     }
 }
+
+/// allowed_models enforcement (security): a client's allowed_models restricts which
+/// models it may use; empty list = unrestricted. Checked for the requested name and
+/// the resolved model. HTTP, auth enabled.
+#[cfg(test)]
+mod allowed_models_e2e {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    use crate::balancer::WeightedRoundRobin;
+    use crate::circuit_breaker::LocalCircuitBreaker;
+    use crate::client::ReqwestLlmClient;
+    use crate::config::GatewayConfig;
+    use crate::guardrails::GuardrailEngine;
+    use crate::middleware::rate_limiter::LocalTokenBucket;
+    use crate::observability::Metrics;
+    use crate::route_config::RouteConfigManager;
+    use crate::router::build_router;
+    use crate::state::AppState;
+
+    /// `route_model` = optional route-level override (`model:` in the route).
+    fn state_with(route_model: Option<&str>) -> AppState {
+        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let routes_path = dir.path().join("routes.yaml");
+        let model_line = match route_model {
+            Some(m) => format!("    model: \"{m}\"\n"),
+            None => String::new(),
+        };
+        std::fs::write(
+            &routes_path,
+            format!("routes:\n  - path: \"/v1/chat/completions\"\n    method: \"POST\"\n    provider: \"openai\"\n{model_line}"),
+        )
+        .unwrap();
+        // alice is restricted to gpt-4o; bob is unrestricted (empty allowed_models).
+        let gateway_config = GatewayConfig::from_yaml(
+            r#"
+server:
+  host: "0.0.0.0"
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+auth:
+  enabled: true
+  api_keys:
+    - key: "sk-alice"
+      client_id: "alice"
+      allowed_models: ["gpt-4o"]
+    - key: "sk-bob"
+      client_id: "bob"
+providers:
+  - id: "mock-openai"
+    provider_type: "openai"
+    api_key: "test-key"
+    base_url: "http://127.0.0.1:59996/v1"
+"#,
+        )
+        .unwrap();
+        let route_config = RouteConfigManager::new_without_watcher(routes_path);
+        let guardrails = Arc::new(GuardrailEngine::new(
+            route_config.current().config(),
+            gateway_config.guardrails.clone(),
+        ));
+        AppState {
+            route_config: Arc::new(route_config),
+            gateway_config: Arc::new(gateway_config),
+            rate_limiter: Arc::new(LocalTokenBucket::new()),
+            load_balancer: Arc::new(WeightedRoundRobin::new()),
+            circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+            http_client: Arc::new(ReqwestLlmClient::new()),
+            metrics: Arc::new(Metrics::new()),
+            redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails,
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+        }
+    }
+
+    async fn status_for(route_model: Option<&str>, bearer: &str, model: &str) -> StatusCode {
+        let app = build_router(state_with(route_model));
+        let payload = json!({"model": model, "messages": [{"role": "user", "content": "hi"}]});
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {bearer}"))
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(request).await.unwrap();
+        resp.status()
+    }
+
+    #[tokio::test]
+    async fn restricted_client_denied_for_disallowed_requested_model() {
+        // alice may only use gpt-4o; requesting llama3.2 is 403 (not forwarded).
+        let status = status_for(None, "sk-alice", "llama3.2").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn restricted_client_allowed_for_permitted_model() {
+        // alice requests gpt-4o (allowed). Provider is unreachable, so not 200/403;
+        // the point is it is NOT 403 (authorization passed) → a 5xx/503 from the
+        // provider attempt.
+        let status = status_for(None, "sk-alice", "gpt-4o").await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "permitted model must not be blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn unrestricted_client_may_use_any_model() {
+        let status = status_for(None, "sk-bob", "llama3.2").await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "empty allowed_models = unrestricted"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_override_to_disallowed_model_is_denied() {
+        // The route forces model "secret-model"; alice requests the allowed gpt-4o,
+        // but the resolved model is not permitted → 403 (no silent routing to a
+        // model the client can't use).
+        let status = status_for(Some("secret-model"), "sk-alice", "gpt-4o").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+}

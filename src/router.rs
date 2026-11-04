@@ -299,6 +299,30 @@ async fn chat_completions_handler(
         obj.insert("model".to_string(), Value::String(effective_model.clone()));
     }
 
+    // ─── Model authorization (allowed_models) ─────────────────────────────────
+    // A client's `allowed_models` restricts which models it may use. An empty list
+    // means unrestricted (preserves the previous behavior, where this field was
+    // carried but not enforced). Both the model the client REQUESTED and the model
+    // effectively resolved (route override / default) must be permitted, so a route
+    // override cannot silently route a client to a model it isn't allowed to use.
+    if let Some(axum::Extension(id)) = &identity {
+        if let Err(denied) =
+            authorize_models(&id.allowed_models, [&model_from_payload, &effective_model])
+        {
+            tracing::warn!(
+                client = %id.client_id,
+                route = %request_path,
+                "model not permitted for client"
+            );
+            state
+                .metrics
+                .requests_total
+                .with_label_values(&[request_path, "unknown", "403"])
+                .inc();
+            return Err(GatewayError::Forbidden(denied));
+        }
+    }
+
     tracing::debug!(
         effective_model = %effective_model,
         providers_count = resolved.providers.len(),
@@ -1320,6 +1344,27 @@ fn record_scoring_outcome(
     );
 }
 
+/// Checks that every model in `models` is permitted by `allowed`.
+///
+/// An empty `allowed` list means unrestricted (the field was previously carried
+/// but never enforced; empty preserves that behavior). Returns `Err(message)` with
+/// the first model that is not allowed. The message names only the model, never the
+/// allowed list, to avoid leaking a client's full entitlement set.
+fn authorize_models<'a>(
+    allowed: &[String],
+    models: impl IntoIterator<Item = &'a String>,
+) -> Result<(), String> {
+    if allowed.is_empty() {
+        return Ok(());
+    }
+    for m in models {
+        if !allowed.iter().any(|a| a == m) {
+            return Err(format!("Model '{m}' is not permitted for this client."));
+        }
+    }
+    Ok(())
+}
+
 /// Resolves route configuration and builds a `ResolvedRoute` with the effective
 /// model, token config, and provider list.
 ///
@@ -1514,6 +1559,30 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
+
+    #[test]
+    fn authorize_models_empty_list_is_unrestricted() {
+        let allowed: Vec<String> = vec![];
+        assert!(authorize_models(&allowed, [&"anything".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn authorize_models_enforces_requested_and_resolved() {
+        let allowed = vec!["gpt-4o".to_string()];
+        // Permitted.
+        assert!(authorize_models(&allowed, [&"gpt-4o".to_string()]).is_ok());
+        // Requested not allowed.
+        assert!(authorize_models(&allowed, [&"llama3.2".to_string()]).is_err());
+        // Requested allowed but resolved (e.g. route override) not allowed → deny.
+        let err = authorize_models(
+            &allowed,
+            [&"gpt-4o".to_string(), &"secret-model".to_string()],
+        )
+        .unwrap_err();
+        assert!(err.contains("secret-model"));
+        // The message must not leak the full allow-list.
+        assert!(!err.contains("gpt-4o"));
+    }
 
     fn sample_config() -> RouteConfigFile {
         let yaml = r#"

@@ -5,6 +5,22 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Security — enforce allowed_models (previously inert)
+#### Fixed
+- `auth.api_keys[].allowed_models` was carried into `ClientIdentity` but never
+  enforced: any authenticated client could use any model. It is now enforced on the
+  chat path. When a client's `allowed_models` is non-empty, both the model the
+  client requested and the model effectively resolved (route override / default)
+  must be permitted, otherwise the request is rejected with 403. This prevents a
+  route override from silently routing a client to a model it is not allowed to use.
+- An empty `allowed_models` means unrestricted, preserving the previous behavior
+  exactly. Deployments that already listed models will now have that list enforced
+  (the dormant field becomes active) — a security fix, documented here.
+- The denial message names only the offending model, never the client's allow-list.
+- Tests: unit (`authorize_models_*`) and HTTP E2E (`allowed_models_e2e`): disallowed
+  requested model denied, permitted model allowed, unrestricted client unaffected,
+  route override to a disallowed model denied. Failing-first verified.
+
 ### Security — semantic cache identity isolation (audit fix)
 #### Changed (security-relevant default)
 - New `semantic_cache.scope: per_identity | shared` per route. **Default is
