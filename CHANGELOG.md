@@ -5,6 +5,30 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Phase 6B Part 1 — internal policy interfaces (no behavior change)
+#### Added
+- `ContextPolicy` (`src/context_policy.rs`): internal trait wrapping the two
+  existing context-compaction paths — `LegacyCompactionPolicy` (sync, no embeddings)
+  and `ScoredCompactionPolicy` (Phase 5 async embeddings + sync selection). Returns a
+  `JsonCompaction` that references original messages by index; the host still
+  validates preservation/budget/structure, records metrics, and maps a strict-budget
+  shortfall to 400. `select_policy()` mirrors the previous inline choice.
+- `GuardrailPolicy` (`src/guardrails.rs`): internal trait implemented for
+  `CompiledGuardrails` (delegates to the existing `evaluate`; precedence, actions,
+  `fail_closed`, HTTP status/format unchanged). `apply_outbound_to_response` now takes
+  `&dyn GuardrailPolicy`. The trait does not model incremental SSE: the streaming
+  sliding window stays per-request-isolated in `transform_sse_stream_guarded`.
+- These are internal contracts only — not a plugin API or stable ABI. No new config
+  fields, no default changes, no new dependencies, no mutable global policy registry.
+- Tests: policy contract tests match direct calls; block-over-redact precedence via
+  the trait; concurrent streams have isolated guardrail buffers; existing
+  compaction/scoring/D1/budget/guardrail suites demonstrate before/after parity.
+- Spec: `docs/specs/phase-6b-part1-internal-policies.md`.
+#### Changed (test infra)
+- Router handler tests and non-hot-reload config tests use
+  `RouteConfigManager::new_without_watcher` to avoid exhausting the OS inotify
+  instance limit; only the two hot-reload tests keep a real watcher.
+
 ### Fixed — cache store on failover destination
 - A semantic-cache miss that then **failed over** to a different provider stored the
   response under the PRIMARY destination's namespace (the key was built before
