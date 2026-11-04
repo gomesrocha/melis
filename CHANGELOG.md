@@ -5,6 +5,34 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Security — semantic cache identity isolation (audit fix)
+#### Changed (security-relevant default)
+- New `semantic_cache.scope: per_identity | shared` per route. **Default is
+  `per_identity`**: a cached response is isolated by the authenticated client
+  identity, so one caller never receives another caller's cached answer.
+  - `shared` (previous behavior) must now be set explicitly and means responses may
+    be reused across all authenticated callers of the route — document this when
+    enabling it.
+  - Routes without the cache are unaffected. Routes with the cache enabled may see
+    fewer hits due to isolation; this is a security fix, not a regression.
+- Identity is taken from the authenticated `ClientIdentity.client_id` produced by
+  the auth middleware — never a client-controlled header. A forged `X-Client-Id`/
+  `X-Tenant` header does not change the scope.
+- Under `per_identity`, a request with no trusted identity (e.g. auth disabled, or
+  an anonymous caller) does **not** consult or populate the cache; unknown callers
+  are never grouped into a shared bucket.
+- The identity is folded into the cache key's `compatibility_salt` (hashed), so no
+  token, API key, or identifier appears in Redis keys, logs, or metrics. The
+  identity semantics are the configured `client_id` (a credential/client handle),
+  documented as such; user/credential/tenant are not treated as equivalent.
+- `CACHE_NAMESPACE_VERSION` bumped to 3 so pre-isolation (v2) entries are never
+  reused; no destructive Redis cleanup (old namespaces age out by TTL). Lookup,
+  store, streaming replay, and model-change invalidation all respect the scope.
+- Tests (HTTP E2E, auth enabled): same identity can hit; different identities do not
+  share in `per_identity`; a forged identity header does not change the scope; no
+  trusted identity bypasses the cache; `shared` allows cross-identity reuse only
+  when configured. Failing-first verified.
+
 ### Integrity — per-request guardrail configuration snapshot (audit fix)
 #### Fixed
 - The route/model/cache/scoring config is resolved once per request into a

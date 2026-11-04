@@ -78,6 +78,7 @@ routes:
   #   model: "llama3.2"
   #   semantic_cache:
   #     enabled: true                  # default false
+  #     scope: per_identity            # per_identity (padrão, isola por identidade) | shared
   #     similarity_threshold: 0.92     # cosseno mínimo p/ hit (aplicado no lookup)
   #     ttl_secs: 3600                 # TTL de toda entrada (obrigatório)
   #     max_entries: 1000              # máx. entradas por namespace (rota+modelo)

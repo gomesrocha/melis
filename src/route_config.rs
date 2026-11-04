@@ -144,6 +144,12 @@ pub struct SemanticCacheConfig {
     /// Whether the semantic cache is enabled for this route. Default: false.
     #[serde(default)]
     pub enabled: bool,
+    /// Reuse scope. `per_identity` (default) isolates cached responses by the
+    /// authenticated client identity: one client never gets another's cached
+    /// answer. `shared` allows reuse across all authenticated callers of the route
+    /// and must be set explicitly. See [`CacheScope`].
+    #[serde(default)]
+    pub scope: CacheScope,
     /// Cosine-similarity threshold for a hit (applied at lookup time). Default: 0.92.
     #[serde(default = "default_similarity_threshold")]
     pub similarity_threshold: f64,
@@ -162,12 +168,27 @@ impl Default for SemanticCacheConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            scope: CacheScope::default(),
             similarity_threshold: default_similarity_threshold(),
             ttl_secs: default_cache_ttl_secs(),
             max_entries: default_cache_max_entries(),
             embedding_model: default_embedding_model(),
         }
     }
+}
+
+/// Semantic cache reuse scope (security isolation).
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheScope {
+    /// Default. Cached responses are isolated by authenticated client identity: a
+    /// client only ever receives its own cached responses. A request without a
+    /// trusted identity does not consult or populate the cache.
+    #[default]
+    PerIdentity,
+    /// Responses may be reused across all authenticated callers of the route. Must
+    /// be set explicitly; reuse between different users is a deliberate choice.
+    Shared,
 }
 
 fn default_similarity_threshold() -> f64 {

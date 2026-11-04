@@ -678,6 +678,7 @@ routes:
     model: "llama3.2"
     semantic_cache:
       enabled: true
+      scope: "shared"
       similarity_threshold: 0.92
       ttl_secs: 3600
       max_entries: 1000
@@ -1037,6 +1038,7 @@ routes:
     model: "mock-model"
     semantic_cache:
       enabled: true
+      scope: "shared"
     guardrails:
       rules:
         - name: "blockword"
@@ -1100,6 +1102,7 @@ routes:
     model: "mock-model"
     semantic_cache:
       enabled: true
+      scope: "shared"
     guardrails:
       rules:
         - name: "redactword"
@@ -1169,6 +1172,7 @@ routes:
     model: "mock-model"
     semantic_cache:
       enabled: true
+      scope: "shared"
     guardrails:
       rules:
         - name: "out-block"
@@ -1266,6 +1270,7 @@ routes:
     model: "mock-model"
     semantic_cache:
       enabled: true
+      scope: "shared"
 custom_providers:
   - name: "mock-primary"
     base_url: "http://127.0.0.1:59998/v1"
@@ -1901,5 +1906,248 @@ mod phase5_scoring_e2e {
         })
         .await;
         assert!(result.is_err(), "invalid weights must not be accepted");
+    }
+}
+
+/// Cache identity isolation (audit fix) end-to-end, with auth enabled so a real
+/// `ClientIdentity` is produced by the middleware. Uses a cache that records the
+/// namespaces looked up and serves a hit only for a namespace it has "stored".
+#[cfg(test)]
+mod cache_identity_e2e {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    use crate::balancer::WeightedRoundRobin;
+    use crate::circuit_breaker::LocalCircuitBreaker;
+    use crate::client::ReqwestLlmClient;
+    use crate::config::GatewayConfig;
+    use crate::guardrails::GuardrailEngine;
+    use crate::middleware::rate_limiter::LocalTokenBucket;
+    use crate::observability::Metrics;
+    use crate::route_config::RouteConfigManager;
+    use crate::router::build_router;
+    use crate::semantic_cache::{CacheKeyCtx, CacheLookup, SemanticCache};
+    use crate::state::AppState;
+
+    /// Records lookups and serves a hit for namespaces previously stored.
+    #[derive(Default)]
+    struct NamespaceRecordingCache {
+        looked_up: Mutex<Vec<String>>,
+        hits_for: Mutex<std::collections::HashSet<String>>,
+    }
+
+    #[async_trait]
+    impl SemanticCache for NamespaceRecordingCache {
+        async fn lookup(&self, ctx: &CacheKeyCtx, _embedding: &[f64]) -> CacheLookup {
+            let ns = ctx.namespace();
+            self.looked_up.lock().unwrap().push(ns.clone());
+            if self.hits_for.lock().unwrap().contains(&ns) {
+                return CacheLookup::Hit(crate::semantic_cache::CachedResponse {
+                    body: json!({
+                        "object": "chat.completion",
+                        "choices": [{"index": 0, "finish_reason": "stop",
+                                     "message": {"role": "assistant", "content": "cached"}}]
+                    }),
+                    was_streaming: false,
+                    stored_at_unix: crate::semantic_cache::now_unix(),
+                });
+            }
+            CacheLookup::Miss
+        }
+        async fn store(
+            &self,
+            ctx: &CacheKeyCtx,
+            _entry_id: &str,
+            _embedding: &[f64],
+            _response: &serde_json::Value,
+            _was_streaming: bool,
+        ) {
+            self.hits_for.lock().unwrap().insert(ctx.namespace());
+        }
+        async fn invalidate_namespace(&self, _ctx: &CacheKeyCtx) {}
+    }
+
+    /// Builds an auth-enabled gateway (two API keys) with the given scope and cache.
+    fn build_auth_state(scope: &str, cache: Arc<NamespaceRecordingCache>) -> AppState {
+        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let routes_path = dir.path().join("routes.yaml");
+        std::fs::write(
+            &routes_path,
+            format!(
+                "routes:\n  - path: \"/v1/chat/completions\"\n    method: \"POST\"\n    provider: \"openai\"\n    model: \"mock-model\"\n    semantic_cache:\n      enabled: true\n      scope: \"{scope}\"\n"
+            ),
+        )
+        .unwrap();
+        let gateway_config = GatewayConfig::from_yaml(
+            r#"
+server:
+  host: "0.0.0.0"
+  port: 8080
+redis:
+  cluster_urls:
+    - "redis://localhost:6379"
+auth:
+  enabled: true
+  api_keys:
+    - key: "sk-alice"
+      client_id: "alice"
+    - key: "sk-bob"
+      client_id: "bob"
+providers:
+  - id: "mock-openai"
+    provider_type: "openai"
+    api_key: "test-key"
+    base_url: "http://127.0.0.1:59997/v1"
+"#,
+        )
+        .unwrap();
+        let route_config = RouteConfigManager::new_without_watcher(routes_path);
+        let guardrails = Arc::new(GuardrailEngine::new(
+            route_config.current().config(),
+            gateway_config.guardrails.clone(),
+        ));
+        AppState {
+            route_config: Arc::new(route_config),
+            gateway_config: Arc::new(gateway_config),
+            rate_limiter: Arc::new(LocalTokenBucket::new()),
+            load_balancer: Arc::new(WeightedRoundRobin::new()),
+            circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+            http_client: Arc::new(ReqwestLlmClient::new()),
+            metrics: Arc::new(Metrics::new()),
+            redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: cache,
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails,
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+        }
+    }
+
+    /// Sends one chat request with the given bearer token; returns (status, body).
+    async fn send(
+        cache: Arc<NamespaceRecordingCache>,
+        scope: &str,
+        bearer: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let state = build_auth_state(scope, cache);
+        let app = build_router(state);
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json");
+        if let Some(b) = bearer {
+            builder = builder.header("Authorization", format!("Bearer {b}"));
+        }
+        let payload = json!({"model": "mock-model", "messages": [{"role": "user", "content": "what is the policy?"}]});
+        let request = builder
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn same_identity_can_hit() {
+        let cache = Arc::new(NamespaceRecordingCache::default());
+        // Alice's first request stores her namespace (the provider is unreachable,
+        // but store happens only on a real response; so instead we seed by lookup
+        // then mark the looked-up namespace as a hit and repeat).
+        let (_s1, _b1) = send(cache.clone(), "per_identity", Some("sk-alice")).await;
+        let ns = cache.looked_up.lock().unwrap().last().unwrap().clone();
+        cache.hits_for.lock().unwrap().insert(ns);
+        let (s2, b2) = send(cache.clone(), "per_identity", Some("sk-alice")).await;
+        assert_eq!(s2, StatusCode::OK);
+        assert_eq!(b2["choices"][0]["message"]["content"], "cached");
+    }
+
+    #[tokio::test]
+    async fn different_identities_do_not_share_in_per_identity() {
+        let cache = Arc::new(NamespaceRecordingCache::default());
+        // Seed Alice's namespace as a hit.
+        send(cache.clone(), "per_identity", Some("sk-alice")).await;
+        let alice_ns = cache.looked_up.lock().unwrap().last().unwrap().clone();
+        cache.hits_for.lock().unwrap().insert(alice_ns.clone());
+
+        // Bob looks up a DIFFERENT namespace and must not hit Alice's entry.
+        let (status, _body) = send(cache.clone(), "per_identity", Some("sk-bob")).await;
+        let bob_ns = cache.looked_up.lock().unwrap().last().unwrap().clone();
+        assert_ne!(
+            alice_ns, bob_ns,
+            "alice and bob must use different namespaces"
+        );
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "bob must not get alice's cached hit (provider unreachable → non-200)"
+        );
+    }
+
+    #[tokio::test]
+    async fn forged_identity_header_does_not_change_scope() {
+        // A client-controlled header that is NOT the authenticated bearer must not
+        // influence the namespace. Here Alice adds an X-Client-Id: bob header; the
+        // namespace must still be Alice's (derived from the validated token).
+        let cache = Arc::new(NamespaceRecordingCache::default());
+        send(cache.clone(), "per_identity", Some("sk-alice")).await;
+        let alice_ns = cache.looked_up.lock().unwrap().last().unwrap().clone();
+
+        let state = build_auth_state("per_identity", cache.clone());
+        let app = build_router(state);
+        let payload = json!({"model": "mock-model", "messages": [{"role": "user", "content": "what is the policy?"}]});
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer sk-alice")
+            .header("X-Client-Id", "bob")
+            .header("X-Tenant", "bob")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let _ = app.oneshot(request).await.unwrap();
+        let ns_with_forged = cache.looked_up.lock().unwrap().last().unwrap().clone();
+        assert_eq!(
+            alice_ns, ns_with_forged,
+            "forged identity headers must not change the authenticated cache scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_identity_without_identity_bypasses_cache() {
+        // Auth is enabled, so a request with no bearer is rejected (401) before the
+        // handler; the cache is never consulted.
+        let cache = Arc::new(NamespaceRecordingCache::default());
+        let (status, _b) = send(cache.clone(), "per_identity", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(
+            cache.looked_up.lock().unwrap().is_empty(),
+            "no identity → cache must not be consulted"
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_scope_allows_cross_identity_reuse_only_when_configured() {
+        let cache = Arc::new(NamespaceRecordingCache::default());
+        // Alice seeds the shared namespace.
+        send(cache.clone(), "shared", Some("sk-alice")).await;
+        let ns = cache.looked_up.lock().unwrap().last().unwrap().clone();
+        cache.hits_for.lock().unwrap().insert(ns.clone());
+        // Bob, in shared scope, uses the SAME namespace and gets the hit.
+        let (status, body) = send(cache.clone(), "shared", Some("sk-bob")).await;
+        let bob_ns = cache.looked_up.lock().unwrap().last().unwrap().clone();
+        assert_eq!(
+            ns, bob_ns,
+            "shared scope must use one namespace across identities"
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["choices"][0]["message"]["content"], "cached");
     }
 }

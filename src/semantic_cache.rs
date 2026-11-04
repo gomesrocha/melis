@@ -155,7 +155,10 @@ pub trait SemanticCache: Send + Sync {
 /// Bump when the reuse rules change so old (incompatible) entries are never
 /// reused. Part of every cache key via [`compatibility_salt`]; no destructive
 /// cleanup is performed — old namespaces simply age out by TTL.
-pub const CACHE_NAMESPACE_VERSION: u32 = 2;
+///
+/// v3: per-identity isolation folded into the salt (old v2 entries were not
+/// identity-isolated and must never be reused).
+pub const CACHE_NAMESPACE_VERSION: u32 = 3;
 
 /// Generation parameters that change the response and therefore must be part of
 /// the cache key. A cached answer produced under different parameters must not be
@@ -178,18 +181,32 @@ const GENERATION_PARAM_KEYS: &[&str] = &[
     "logit_bias",
 ];
 
+/// Identity component of the cache key.
+///
+/// `Shared` means the route opted into cross-caller reuse (no identity in the
+/// key). `Identity(id)` isolates by a STABLE INTERNAL identifier (the configured
+/// `client_id`, never a token or API key). The value is only ever hashed into the
+/// salt, so it does not appear raw in Redis keys, logs, or metrics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheIdentity {
+    Shared,
+    Identity(String),
+}
+
 /// Hash of everything that must match for a cached response to be reusable but is
-/// NOT captured by the conversation embedding: the namespace version, the system
-/// instructions, the generation parameters, and the tool definitions.
+/// NOT captured by the conversation embedding: the namespace version, the caller
+/// identity (unless the route is `shared`), the system instructions, the
+/// generation parameters, and the tool definitions.
 ///
 /// Rationale (cache-isolation audit): the embedding is built from non-system
 /// message content only, so without this salt two requests that differ only in
-/// their system prompt, temperature, or tools would share a namespace and could
-/// return each other's responses. Different salt ⇒ different namespace ⇒ no reuse.
-/// Values are serialized canonically (serde_json sorts object keys via BTreeMap)
-/// and hashed; the system text is included verbatim (not lowercased) because an
-/// instruction's case can be semantically significant.
-pub fn compatibility_salt(messages: &[Value], payload: &Value) -> String {
+/// their identity, system prompt, temperature, or tools would share a namespace
+/// and could return each other's responses. Different salt ⇒ different namespace ⇒
+/// no reuse. Values are serialized canonically (serde_json sorts object keys via
+/// BTreeMap) and hashed; the system text is included verbatim (not lowercased)
+/// because an instruction's case can be semantically significant. The identity is
+/// folded into the hash, so no identifier is stored in the clear.
+pub fn compatibility_salt(messages: &[Value], payload: &Value, identity: &CacheIdentity) -> String {
     use std::collections::BTreeMap;
 
     // System instructions, in order, joined with a separator unlikely to collide.
@@ -215,9 +232,17 @@ pub fn compatibility_salt(messages: &[Value], payload: &Value) -> String {
     let functions = payload.get("functions"); // legacy function-calling
     let function_call = payload.get("function_call");
 
+    // Identity marker: a distinct tag for shared vs per-identity so that a
+    // `shared` namespace can never collide with a per-identity one.
+    let identity_tag = match identity {
+        CacheIdentity::Shared => serde_json::json!({"scope": "shared"}),
+        CacheIdentity::Identity(id) => serde_json::json!({"scope": "identity", "id": id}),
+    };
+
     // Canonical JSON (BTreeMap => sorted keys) of everything that must match.
     let canonical = serde_json::json!({
         "v": CACHE_NAMESPACE_VERSION,
+        "identity": identity_tag,
         "system": system,
         "params": params,
         "tools": tools,
@@ -656,8 +681,9 @@ mod tests {
     fn salt_isolates_system_params_and_tools() {
         let user = json!([{"role": "user", "content": "hi"}]);
         let base = json!({"model": "m", "messages": user});
-        let salt =
-            |msgs: &Value, payload: &Value| compatibility_salt(msgs.as_array().unwrap(), payload);
+        let salt = |msgs: &Value, payload: &Value| {
+            compatibility_salt(msgs.as_array().unwrap(), payload, &CacheIdentity::Shared)
+        };
 
         let baseline = salt(&user, &base);
 
@@ -726,11 +752,34 @@ mod tests {
     }
 
     #[test]
+    fn salt_isolates_identity_and_distinguishes_shared() {
+        let user = json!([{"role": "user", "content": "hi"}]);
+        let payload = json!({"model": "m", "messages": user});
+        let msgs = user.as_array().unwrap();
+
+        let alice = compatibility_salt(msgs, &payload, &CacheIdentity::Identity("alice".into()));
+        let bob = compatibility_salt(msgs, &payload, &CacheIdentity::Identity("bob".into()));
+        let shared = compatibility_salt(msgs, &payload, &CacheIdentity::Shared);
+
+        assert_ne!(
+            alice, bob,
+            "different identities must not share a namespace"
+        );
+        assert_ne!(alice, shared, "per-identity must differ from shared");
+        assert_ne!(bob, shared);
+        // Same identity + same context is stable (enables a hit).
+        assert_eq!(
+            alice,
+            compatibility_salt(msgs, &payload, &CacheIdentity::Identity("alice".into()))
+        );
+    }
+
+    #[test]
     fn salt_changes_with_namespace_version() {
         // Guards against forgetting to bump behavior: the version is part of the salt.
         let user = json!([{"role": "user", "content": "hi"}]);
         let payload = json!({"model": "m", "messages": user});
-        let s = compatibility_salt(user.as_array().unwrap(), &payload);
+        let s = compatibility_salt(user.as_array().unwrap(), &payload, &CacheIdentity::Shared);
         assert_eq!(s.len(), 16, "salt is a 64-bit hex hash");
     }
 

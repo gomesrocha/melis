@@ -694,6 +694,24 @@ Cache hits are delivered through the same outbound path as normal responses
 (reserved for output guardrails in a later phase). Streaming requests replay a
 cached response as an OpenAI SSE stream.
 
+**Reuse scope (identity isolation).** `semantic_cache.scope` controls who may reuse
+a cached response:
+
+- `per_identity` (default): the cache is isolated by the authenticated client
+  identity (`client_id` from the auth middleware). A client only ever receives its
+  own cached responses. A request with no trusted identity (auth disabled, or an
+  anonymous caller) does not consult or populate the cache. The identity is hashed
+  into the key; it never appears in Redis keys, logs, or metrics, and a
+  client-controlled header (e.g. `X-Client-Id`) cannot change the scope.
+- `shared`: responses may be reused across all authenticated callers of the route.
+  This must be set explicitly, because it means one user can receive a response
+  generated for another.
+
+The key also folds the system prompt, generation parameters, and tool definitions
+(see the isolation note below), so reuse requires a compatible context as well as a
+matching scope. Changing `scope` or any of those lands requests in a different
+namespace; old entries are never reused (they age out by TTL).
+
 ### Configuration (per route in `routes.yaml`)
 
 ```yaml
@@ -704,6 +722,7 @@ routes:
     model: "llama3.2"
     semantic_cache:
       enabled: true                 # default false
+      scope: per_identity           # per_identity (default) | shared
       similarity_threshold: 0.92    # cosine threshold applied at lookup
       ttl_secs: 3600                # TTL on every entry (required)
       max_entries: 1000             # per (route, model) namespace

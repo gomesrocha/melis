@@ -28,7 +28,9 @@ use crate::compactor::{ContextCompactor, SemanticGuardedCompactor, SimpleCompact
 use crate::config::CompactorConfig;
 use crate::embeddings::embeddings_handler;
 use crate::error::GatewayError;
-use crate::middleware::auth::{auth_middleware, AuthValidator, ConfigAuthValidator};
+use crate::middleware::auth::{
+    auth_middleware, AuthValidator, ClientIdentity, ConfigAuthValidator,
+};
 use crate::middleware::rate_limiter::rate_limit_middleware;
 use crate::observability::metrics_handler;
 use crate::route_config::{RouteDefinition, WeightedProvider};
@@ -261,6 +263,9 @@ async fn chat_completions_handler(
     State(state): State<AppState>,
     uri: axum::extract::OriginalUri,
     headers: HeaderMap,
+    // Present only when auth is enabled and succeeded (set by auth_middleware).
+    // Used solely to scope the semantic cache by caller identity; never logged raw.
+    identity: Option<axum::Extension<ClientIdentity>>,
     Json(mut payload): Json<Value>,
 ) -> Result<Response, GatewayError> {
     let request_start = Instant::now();
@@ -372,19 +377,43 @@ async fn chat_completions_handler(
     let mut cache_entry_id: Option<String> = None;
     let mut cache_embedding: Option<Vec<f64>> = None;
 
-    if let Some(sc) = resolved.semantic_cache.clone() {
+    // Resolve the cache reuse scope (security isolation). `per_identity` (default)
+    // keys the cache by the authenticated client identity; a request with no
+    // trusted identity does NOT consult or populate the cache (no shared bucket for
+    // unknown callers). `shared` reuses across callers and ignores identity.
+    let cache_identity: Option<crate::semantic_cache::CacheIdentity> =
+        match &resolved.semantic_cache {
+            None => None,
+            Some(sc) => match sc.scope {
+                crate::route_config::CacheScope::Shared => {
+                    Some(crate::semantic_cache::CacheIdentity::Shared)
+                }
+                crate::route_config::CacheScope::PerIdentity => match &identity {
+                    Some(axum::Extension(id)) if !id.client_id.is_empty() => Some(
+                        crate::semantic_cache::CacheIdentity::Identity(id.client_id.clone()),
+                    ),
+                    // per_identity but no trusted identity → bypass the cache entirely.
+                    _ => None,
+                },
+            },
+        };
+
+    if let (Some(sc), Some(cache_identity)) =
+        (resolved.semantic_cache.clone(), cache_identity.clone())
+    {
         let messages = payload
             .get("messages")
             .and_then(|m| m.as_array())
             .cloned()
             .unwrap_or_default();
         let normalized = crate::semantic_cache::normalize_conversation(&messages);
-        // Fold system instructions, generation parameters, and tool definitions
-        // into the key: the embedding only covers non-system content, so without
-        // this a different system prompt / temperature / tool set would share a
-        // namespace and could return an incompatible cached response (cache
-        // isolation audit).
-        let key_salt = crate::semantic_cache::compatibility_salt(&messages, &payload);
+        // Fold caller identity, system instructions, generation parameters, and
+        // tool definitions into the key: the embedding only covers non-system
+        // content, so without this a different identity / system prompt /
+        // temperature / tool set would share a namespace and could return an
+        // incompatible cached response (cache isolation audit).
+        let key_salt =
+            crate::semantic_cache::compatibility_salt(&messages, &payload, &cache_identity);
         let ctx = crate::semantic_cache::CacheKeyCtx {
             route_path: request_path.to_string(),
             route_method: request_method.to_string(),
