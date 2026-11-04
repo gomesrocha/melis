@@ -421,6 +421,16 @@ async fn chat_completions_handler(
     // otherwise observe different versions mid-request across a hot reload (audit:
     // per-request configuration consistency).
     let request_guardrails = state.guardrails.for_route(request_path, request_method);
+    if let Some(g) = &request_guardrails {
+        // Referenced through the GuardrailPolicy contract (Phase 6B): logs the
+        // active policy and keeps the trait a live part of the request path.
+        let policy: &dyn crate::guardrails::GuardrailPolicy = g.as_ref();
+        tracing::debug!(
+            guardrail_policy = policy.name(),
+            fail_closed = policy.fail_closed(),
+            "route guardrail policy resolved"
+        );
+    }
 
     // ─── Inbound Guardrails (Phase 3) ─────────────────────────────────────────
     // Runs AFTER auth + rate limit (Tower layers) and BEFORE cache lookup/store
@@ -615,7 +625,7 @@ async fn chat_completions_handler(
                         if let Some(guardrails) = request_guardrails.clone() {
                             if let Err(rule) = crate::guardrails::apply_outbound_to_response(
                                 &mut body,
-                                &guardrails,
+                                guardrails.as_ref(),
                                 &state.metrics,
                             ) {
                                 tracing::warn!(
@@ -1084,7 +1094,7 @@ async fn chat_completions_handler(
                             if let Some(guardrails) = request_guardrails.clone() {
                                 if let Err(rule) = crate::guardrails::apply_outbound_to_response(
                                     &mut final_response,
-                                    &guardrails,
+                                    guardrails.as_ref(),
                                     &state.metrics,
                                 ) {
                                     tracing::warn!(
@@ -2200,7 +2210,8 @@ routes_config_path: "./routes.yaml"
         )
         .unwrap();
 
-        let route_config = RouteConfigManager::new(gateway_config.routes_config_path.clone());
+        let route_config =
+            RouteConfigManager::new_without_watcher(gateway_config.routes_config_path.clone());
 
         let app_state = AppState {
             route_config: Arc::new(route_config),
@@ -2414,7 +2425,8 @@ routes_config_path: "./routes.yaml"
         )
         .unwrap();
 
-        let route_config = RouteConfigManager::new(gateway_config.routes_config_path.clone());
+        let route_config =
+            RouteConfigManager::new_without_watcher(gateway_config.routes_config_path.clone());
 
         let app_state = AppState {
             route_config: Arc::new(route_config),

@@ -946,7 +946,7 @@ impl RouteConfigManager {
     pub fn new_without_watcher(config_path: PathBuf) -> Self {
         let config_file = load_routes(&config_path).unwrap_or_else(|e| {
             panic!(
-                "Failed to load route config from '{}': {}",
+                "Failed to load initial route config from '{}': {}",
                 config_path.display(),
                 e
             )
@@ -2118,7 +2118,7 @@ routes:
         write!(file, "{}", sample_yaml()).unwrap();
         file.flush().unwrap();
 
-        let manager = RouteConfigManager::new(file.path().to_path_buf());
+        let manager = RouteConfigManager::new_without_watcher(file.path().to_path_buf());
         let resolver = manager.current();
 
         // Verify the resolver has routes loaded
@@ -2140,7 +2140,8 @@ routes:
     #[test]
     #[should_panic(expected = "Failed to load initial route config")]
     fn test_route_config_manager_initial_load_file_not_found() {
-        let _manager = RouteConfigManager::new(PathBuf::from("/nonexistent/routes.yaml"));
+        let _manager =
+            RouteConfigManager::new_without_watcher(PathBuf::from("/nonexistent/routes.yaml"));
     }
 
     #[test]
@@ -2160,7 +2161,7 @@ routes:
         .unwrap();
         file.flush().unwrap();
 
-        let _manager = RouteConfigManager::new(file.path().to_path_buf());
+        let _manager = RouteConfigManager::new_without_watcher(file.path().to_path_buf());
     }
 
     #[test]
@@ -2170,7 +2171,7 @@ routes:
         write!(file, "{{{{ not valid yaml").unwrap();
         file.flush().unwrap();
 
-        let _manager = RouteConfigManager::new(file.path().to_path_buf());
+        let _manager = RouteConfigManager::new_without_watcher(file.path().to_path_buf());
     }
 
     #[tokio::test]
@@ -2179,7 +2180,7 @@ routes:
         write!(file, "{}", sample_yaml()).unwrap();
         file.flush().unwrap();
 
-        let manager = RouteConfigManager::new(file.path().to_path_buf());
+        let manager = RouteConfigManager::new_without_watcher(file.path().to_path_buf());
 
         // current() should be callable multiple times and return valid data
         let resolver1 = manager.current();

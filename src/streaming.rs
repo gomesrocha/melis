@@ -726,6 +726,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_streams_have_isolated_guardrail_buffers() {
+        // Two streams run concurrently with the same block rule. Stream A contains
+        // the keyword split across chunks; stream B never does. The per-request
+        // sliding window must be isolated: A is blocked, B is delivered intact and
+        // is NOT affected by A's accumulated content.
+        let g = outbound_keyword_guardrail(GuardrailAction::Block, "blockme");
+
+        let a = transform_sse_stream_guarded(
+            mock_provider_stream(vec![
+                Ok(content_chunk("start bloc")),
+                Ok(content_chunk("kme end")),
+            ]),
+            Box::new(OpenAiTranspiler),
+            Some(g.clone()),
+            None,
+        );
+        let b = transform_sse_stream_guarded(
+            mock_provider_stream(vec![
+                Ok(content_chunk("hello ")),
+                Ok(content_chunk("world")),
+            ]),
+            Box::new(OpenAiTranspiler),
+            Some(g.clone()),
+            None,
+        );
+        // Drive both concurrently.
+        let (a_lines, b_lines) = tokio::join!(collect_data_lines(a), collect_data_lines(b));
+
+        let a_joined = a_lines.join("\n");
+        assert!(
+            a_joined.contains("content_blocked"),
+            "stream A must be blocked: {a_joined}"
+        );
+        let b_joined = b_lines.join("\n");
+        assert!(
+            b_joined.contains("hello") && b_joined.contains("world"),
+            "stream B must be delivered intact: {b_joined}"
+        );
+        assert!(
+            !b_joined.contains("content_blocked") && !b_joined.contains("blockme"),
+            "stream B must not be affected by stream A's buffer: {b_joined}"
+        );
+    }
+
+    #[tokio::test]
     async fn streaming_without_guardrails_is_unchanged() {
         let provider_stream = mock_provider_stream(vec![Ok(content_chunk("hello world"))]);
         let transpiler: Box<dyn PayloadTranspiler> = Box::new(OpenAiTranspiler);

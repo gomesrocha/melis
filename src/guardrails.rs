@@ -263,7 +263,7 @@ impl CompiledGuardrails {
 /// - `Allow` → no change, `Ok(())`.
 pub fn apply_outbound_to_response(
     body: &mut serde_json::Value,
-    compiled: &CompiledGuardrails,
+    compiled: &dyn GuardrailPolicy,
     metrics: &Metrics,
 ) -> Result<(), String> {
     let content = body
@@ -295,6 +295,57 @@ pub fn apply_outbound_to_response(
             Ok(())
         }
         GuardrailDecision::Allow => Ok(()),
+    }
+}
+
+/// Internal `GuardrailPolicy` contract (Phase 6B, Part 1).
+///
+/// A thin, internal trait naming the per-route guardrail primitive the host uses.
+/// It is **not** a plugin API or a stable third-party contract. It exposes exactly
+/// the whole-text / per-delta `evaluate` primitive plus `fail_closed`; the host
+/// composes it for the inbound check, the outbound checks (provider response and
+/// cache hit), and the streaming path.
+///
+/// Deliberately, this trait does NOT model incremental SSE processing: streaming is
+/// not equivalent to evaluating a complete response. The streaming path
+/// ([`crate::streaming::transform_sse_stream_guarded`]) keeps its own sliding
+/// window, created fresh per request (never shared between clients), and calls
+/// `evaluate` on the accumulated window. That per-request buffer isolation stays in
+/// the streaming function, not in this trait.
+pub trait GuardrailPolicy: Send + Sync {
+    /// Evaluate `direction`'s rules against `text` (a whole message, a whole
+    /// response, or the accumulated streaming window — the caller decides).
+    fn evaluate(
+        &self,
+        direction: GuardrailDirection,
+        text: &str,
+        metrics: &Metrics,
+    ) -> GuardrailDecision;
+
+    /// Whether evaluation failures block (fail-closed) or allow (fail-open).
+    fn fail_closed(&self) -> bool;
+
+    /// Stable internal name for logs (not a public identifier).
+    fn name(&self) -> &'static str;
+}
+
+impl GuardrailPolicy for CompiledGuardrails {
+    fn evaluate(
+        &self,
+        direction: GuardrailDirection,
+        text: &str,
+        metrics: &Metrics,
+    ) -> GuardrailDecision {
+        // Delegates to the inherent method (unchanged precedence/actions).
+        CompiledGuardrails::evaluate(self, direction, text, metrics)
+    }
+
+    fn fail_closed(&self) -> bool {
+        self.fail_closed
+    }
+
+    fn name(&self) -> &'static str {
+        "builtin"
     }
 }
 
@@ -424,6 +475,82 @@ mod tests {
         let cfg = GuardrailsConfig { rules, fail_closed };
         let global = GuardrailsGlobalConfig::default();
         CompiledGuardrails::compile(&cfg, &global).expect("should compile")
+    }
+
+    // ── GuardrailPolicy contract (Phase 6B Part 1): the trait delegates to the
+    //    existing engine with no behavior change ─────────────────────────────
+
+    #[test]
+    fn policy_trait_matches_inherent_evaluate() {
+        let m = Metrics::new();
+        let g = compile(
+            vec![
+                rule(
+                    "blockword",
+                    GuardrailType::Keyword,
+                    GuardrailDirection::Inbound,
+                    GuardrailAction::Block,
+                    None,
+                    Some(vec!["forbidden"]),
+                ),
+                rule(
+                    "mask",
+                    GuardrailType::Keyword,
+                    GuardrailDirection::Outbound,
+                    GuardrailAction::Redact,
+                    None,
+                    Some(vec!["secret"]),
+                ),
+            ],
+            Some(true),
+        );
+        // Same inputs through the inherent method and the trait method must match.
+        for (dir, text) in [
+            (GuardrailDirection::Inbound, "this is forbidden"),
+            (GuardrailDirection::Inbound, "clean text"),
+            (GuardrailDirection::Outbound, "a secret value"),
+        ] {
+            let inherent = CompiledGuardrails::evaluate(&g, dir, text, &m);
+            let via_trait = GuardrailPolicy::evaluate(&g, dir, text, &m);
+            assert_eq!(
+                inherent, via_trait,
+                "trait must match inherent for {dir:?}/{text:?}"
+            );
+        }
+        assert!(GuardrailPolicy::fail_closed(&g));
+        assert_eq!(GuardrailPolicy::name(&g), "builtin");
+    }
+
+    #[test]
+    fn policy_trait_object_preserves_precedence_block_over_redact() {
+        let m = Metrics::new();
+        let g = compile(
+            vec![
+                rule(
+                    "redactable",
+                    GuardrailType::Keyword,
+                    GuardrailDirection::Outbound,
+                    GuardrailAction::Redact,
+                    None,
+                    Some(vec!["alpha"]),
+                ),
+                rule(
+                    "blocking",
+                    GuardrailType::Keyword,
+                    GuardrailDirection::Outbound,
+                    GuardrailAction::Block,
+                    None,
+                    Some(vec!["beta"]),
+                ),
+            ],
+            None,
+        );
+        let policy: &dyn GuardrailPolicy = &g;
+        // A text matching both: block wins (precedence preserved through the trait).
+        match policy.evaluate(GuardrailDirection::Outbound, "alpha and beta", &m) {
+            GuardrailDecision::Blocked { .. } => {}
+            other => panic!("block must win over redact: {other:?}"),
+        }
     }
 
     #[test]
