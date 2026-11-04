@@ -162,6 +162,11 @@ pub struct Metrics {
     pub compaction_scoring_skipped_total: IntCounterVec,
     /// Phase 5: strict-budget rejections.
     pub compaction_budget_insufficient_total: IntCounter,
+    /// Phase 6A: alias resolution, by `alias` (declared only; else `other`) and
+    /// `outcome` (resolved_single|resolved_multi|unknown_alias|no_alias).
+    pub model_alias_resolution_total: IntCounterVec,
+    /// Phase 6A: cache skipped, by `reason` (bounded cardinality).
+    pub cache_skipped_total: IntCounterVec,
     /// 1 when the shared Redis answers PING, 0 otherwise (refreshed periodically).
     pub redis_up: prometheus::IntGauge,
     /// The Prometheus registry holding all metrics.
@@ -488,6 +493,27 @@ impl Metrics {
             "Requests rejected by strict budget mode (mandatory content does not fit)",
         ))
         .expect("failed to create melis_compaction_budget_insufficient_total metric");
+
+        let model_alias_resolution_total = IntCounterVec::new(
+            Opts::new(
+                "melis_model_alias_resolution_total",
+                "Model alias resolutions by alias (declared only; else 'other') and outcome",
+            ),
+            &["alias", "outcome"],
+        )
+        .expect("failed to create melis_model_alias_resolution_total metric");
+
+        let cache_skipped_total = IntCounterVec::new(
+            Opts::new(
+                "melis_cache_skipped_total",
+                "Semantic cache lookups/stores skipped, by reason",
+            ),
+            &["reason"],
+        )
+        .expect("failed to create melis_cache_skipped_total metric");
+        cache_skipped_total
+            .with_label_values(&["multi_target_alias"])
+            .inc_by(0);
         for r in crate::semantic_scoring::FallbackReason::ALL {
             compaction_scoring_fallback_total
                 .with_label_values(&[r.label()])
@@ -514,6 +540,12 @@ impl Metrics {
         registry
             .register(Box::new(compaction_budget_insufficient_total.clone()))
             .expect("failed to register melis_compaction_budget_insufficient_total");
+        registry
+            .register(Box::new(model_alias_resolution_total.clone()))
+            .expect("failed to register melis_model_alias_resolution_total");
+        registry
+            .register(Box::new(cache_skipped_total.clone()))
+            .expect("failed to register melis_cache_skipped_total");
 
         registry
             .register(Box::new(requests_total.clone()))
@@ -679,6 +711,8 @@ impl Metrics {
             compaction_scoring_fallback_total,
             compaction_scoring_skipped_total,
             compaction_budget_insufficient_total,
+            model_alias_resolution_total,
+            cache_skipped_total,
             redis_up,
             registry,
         }

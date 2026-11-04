@@ -158,7 +158,9 @@ pub trait SemanticCache: Send + Sync {
 ///
 /// v3: per-identity isolation folded into the salt (old v2 entries were not
 /// identity-isolated and must never be reused).
-pub const CACHE_NAMESPACE_VERSION: u32 = 3;
+/// v4: effective destination (provider/deployment + concrete model) folded in, so a
+/// remapped alias or a different deployment never reuses an incompatible entry.
+pub const CACHE_NAMESPACE_VERSION: u32 = 4;
 
 /// Generation parameters that change the response and therefore must be part of
 /// the cache key. A cached answer produced under different parameters must not be
@@ -193,6 +195,35 @@ pub enum CacheIdentity {
     Identity(String),
 }
 
+/// Effective destination that produced (or will produce) the response: the
+/// provider id, an opaque deployment tag (a hash of the base_url, so no endpoint is
+/// stored in the clear), and the concrete model. Folded into the cache key so a
+/// remapped alias or a different deployment lands in a different namespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheDestination {
+    pub provider: String,
+    /// Opaque deployment tag (e.g. a hash of base_url). Never the raw URL.
+    pub deployment: String,
+    pub model: String,
+}
+
+impl CacheDestination {
+    /// Build from a provider id, its base_url (hashed, never stored raw), and the
+    /// concrete model.
+    pub fn new(provider: &str, base_url: &str, model: &str) -> Self {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in base_url.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        CacheDestination {
+            provider: provider.to_string(),
+            deployment: format!("{h:016x}"),
+            model: model.to_string(),
+        }
+    }
+}
+
 /// Hash of everything that must match for a cached response to be reusable but is
 /// NOT captured by the conversation embedding: the namespace version, the caller
 /// identity (unless the route is `shared`), the system instructions, the
@@ -206,7 +237,12 @@ pub enum CacheIdentity {
 /// BTreeMap) and hashed; the system text is included verbatim (not lowercased)
 /// because an instruction's case can be semantically significant. The identity is
 /// folded into the hash, so no identifier is stored in the clear.
-pub fn compatibility_salt(messages: &[Value], payload: &Value, identity: &CacheIdentity) -> String {
+pub fn compatibility_salt(
+    messages: &[Value],
+    payload: &Value,
+    identity: &CacheIdentity,
+    destination: &CacheDestination,
+) -> String {
     use std::collections::BTreeMap;
 
     // System instructions, in order, joined with a separator unlikely to collide.
@@ -243,6 +279,11 @@ pub fn compatibility_salt(messages: &[Value], payload: &Value, identity: &CacheI
     let canonical = serde_json::json!({
         "v": CACHE_NAMESPACE_VERSION,
         "identity": identity_tag,
+        "destination": {
+            "provider": destination.provider,
+            "deployment": destination.deployment,
+            "model": destination.model,
+        },
         "system": system,
         "params": params,
         "tools": tools,
@@ -677,12 +718,22 @@ mod tests {
 
     // ── cache isolation: compatibility_salt (audit fix) ──────────────────────
 
+    fn test_dest() -> CacheDestination {
+        CacheDestination::new("openai", "http://x/v1", "m")
+    }
+
     #[test]
     fn salt_isolates_system_params_and_tools() {
         let user = json!([{"role": "user", "content": "hi"}]);
         let base = json!({"model": "m", "messages": user});
+        let dest = test_dest();
         let salt = |msgs: &Value, payload: &Value| {
-            compatibility_salt(msgs.as_array().unwrap(), payload, &CacheIdentity::Shared)
+            compatibility_salt(
+                msgs.as_array().unwrap(),
+                payload,
+                &CacheIdentity::Shared,
+                &dest,
+            )
         };
 
         let baseline = salt(&user, &base);
@@ -757,9 +808,11 @@ mod tests {
         let payload = json!({"model": "m", "messages": user});
         let msgs = user.as_array().unwrap();
 
-        let alice = compatibility_salt(msgs, &payload, &CacheIdentity::Identity("alice".into()));
-        let bob = compatibility_salt(msgs, &payload, &CacheIdentity::Identity("bob".into()));
-        let shared = compatibility_salt(msgs, &payload, &CacheIdentity::Shared);
+        let d = test_dest();
+        let alice =
+            compatibility_salt(msgs, &payload, &CacheIdentity::Identity("alice".into()), &d);
+        let bob = compatibility_salt(msgs, &payload, &CacheIdentity::Identity("bob".into()), &d);
+        let shared = compatibility_salt(msgs, &payload, &CacheIdentity::Shared, &d);
 
         assert_ne!(
             alice, bob,
@@ -770,8 +823,37 @@ mod tests {
         // Same identity + same context is stable (enables a hit).
         assert_eq!(
             alice,
-            compatibility_salt(msgs, &payload, &CacheIdentity::Identity("alice".into()))
+            compatibility_salt(msgs, &payload, &CacheIdentity::Identity("alice".into()), &d)
         );
+    }
+
+    #[test]
+    fn salt_isolates_effective_destination() {
+        let user = json!([{"role": "user", "content": "hi"}]);
+        let payload = json!({"model": "m", "messages": user});
+        let msgs = user.as_array().unwrap();
+        let id = CacheIdentity::Shared;
+        let s = |dest: CacheDestination| compatibility_salt(msgs, &payload, &id, &dest);
+
+        let a = s(CacheDestination::new("openai", "u1", "gpt-4o-mini"));
+        assert_ne!(
+            a,
+            s(CacheDestination::new("openai", "u1", "llama3.2")),
+            "model remap"
+        );
+        assert_ne!(
+            a,
+            s(CacheDestination::new("ollama", "u1", "gpt-4o-mini")),
+            "provider"
+        );
+        assert_ne!(
+            a,
+            s(CacheDestination::new("openai", "u2", "gpt-4o-mini")),
+            "deployment"
+        );
+        // base_url never stored raw.
+        let dest = CacheDestination::new("openai", "https://secret.internal/v1", "m");
+        assert!(!dest.deployment.contains("secret"));
     }
 
     #[test]
@@ -779,7 +861,12 @@ mod tests {
         // Guards against forgetting to bump behavior: the version is part of the salt.
         let user = json!([{"role": "user", "content": "hi"}]);
         let payload = json!({"model": "m", "messages": user});
-        let s = compatibility_salt(user.as_array().unwrap(), &payload, &CacheIdentity::Shared);
+        let s = compatibility_salt(
+            user.as_array().unwrap(),
+            &payload,
+            &CacheIdentity::Shared,
+            &test_dest(),
+        );
         assert_eq!(s.len(), 16, "salt is a 64-bit hex hash");
     }
 

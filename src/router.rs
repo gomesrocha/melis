@@ -48,12 +48,22 @@ const MAX_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
 pub struct ResolvedRoute {
     /// The effective model to use (from route override or original payload).
     pub model: String,
+    /// The model the client originally requested (before alias/override), for
+    /// authorization and observability. Never used as a label directly.
+    pub requested_model: String,
+    /// Canonical alias name when the request resolved through an alias (Phase 6A).
+    pub via_alias: Option<String>,
+    /// True when the resolved alias has more than one target (cache is bypassed).
+    pub alias_multi_target: bool,
+    /// Set when resolution failed in a client-visible way (e.g. `@unknown-alias`).
+    /// The handler turns this into a 400 before contacting any provider.
+    pub resolution_error: Option<String>,
     /// Effective compactor configuration (per-route or global fallback).
     pub effective_token_config: CompactorConfig,
     /// Provider list with weights for the load balancer.
-    /// If the route defines multi-provider (`providers` field), this contains them.
-    /// If single `provider` is defined, this contains a single entry with weight 1.
-    /// Empty if no provider info is available.
+    /// If an alias resolved, this holds the alias targets. Otherwise, if the route
+    /// defines multi-provider (`providers`), this holds them; a single `provider`
+    /// becomes a one-entry list. Empty if no provider info is available.
     pub providers: Vec<WeightedProvider>,
     /// Effective semantic cache configuration for the route (Phase 2).
     /// `None` when the route does not opt in (cache disabled).
@@ -293,6 +303,17 @@ async fn chat_completions_handler(
         &state.gateway_config.compactor,
     );
 
+    // Alias resolution error (e.g. `@unknown`): 400 before any provider call.
+    if let Some(reason) = resolved.resolution_error.clone() {
+        state
+            .metrics
+            .requests_total
+            .with_label_values(&[request_path, "unknown", "400"])
+            .inc();
+        record_alias_resolution(&state.metrics, &resolved, "unknown_alias");
+        return Err(GatewayError::BadRequest(reason));
+    }
+
     // Apply model override by replacing in the JSON value
     let effective_model = resolved.model.clone();
     if let Some(obj) = payload.as_object_mut() {
@@ -302,13 +323,16 @@ async fn chat_completions_handler(
     // ─── Model authorization (allowed_models) ─────────────────────────────────
     // A client's `allowed_models` restricts which models it may use. An empty list
     // means unrestricted (preserves the previous behavior, where this field was
-    // carried but not enforced). Both the model the client REQUESTED and the model
-    // effectively resolved (route override / default) must be permitted, so a route
-    // override cannot silently route a client to a model it isn't allowed to use.
+    // carried but not enforced). The model the client REQUESTED, the effective
+    // model, AND every resolved alias destination must be permitted — so neither a
+    // route override nor an alias can route a client to a model it isn't allowed to
+    // use (an alias must not become a way to bypass a model restriction).
     if let Some(axum::Extension(id)) = &identity {
-        if let Err(denied) =
-            authorize_models(&id.allowed_models, [&model_from_payload, &effective_model])
-        {
+        let mut to_check: Vec<&String> = vec![&model_from_payload, &effective_model];
+        for p in &resolved.providers {
+            to_check.push(&p.model);
+        }
+        if let Err(denied) = authorize_models(&id.allowed_models, to_check) {
             tracing::warn!(
                 client = %id.client_id,
                 route = %request_path,
@@ -323,8 +347,21 @@ async fn chat_completions_handler(
         }
     }
 
+    // Alias-resolution observability (requested vs resolved vs effective). Labels
+    // are bounded (declared alias name or `other`); the requested string is logged,
+    // not used as a label.
+    let alias_outcome = match (&resolved.via_alias, resolved.alias_multi_target) {
+        (Some(_), true) => "resolved_multi",
+        (Some(_), false) => "resolved_single",
+        (None, _) => "no_alias",
+    };
+    record_alias_resolution(&state.metrics, &resolved, alias_outcome);
+
     tracing::debug!(
+        requested_model = %resolved.requested_model,
         effective_model = %effective_model,
+        via_alias = resolved.via_alias.as_deref().unwrap_or("none"),
+        alias_multi_target = resolved.alias_multi_target,
         providers_count = resolved.providers.len(),
         token_threshold = resolved.effective_token_config.token_threshold,
         streaming = streaming,
@@ -422,22 +459,64 @@ async fn chat_completions_handler(
             },
         };
 
-    if let (Some(sc), Some(cache_identity)) =
-        (resolved.semantic_cache.clone(), cache_identity.clone())
-    {
+    // Multi-target aliases are non-deterministic for the cache (the destination is
+    // chosen after lookup and can fall back): bypass lookup AND store this version.
+    let cache_bypass_multi_target =
+        resolved.semantic_cache.is_some() && resolved.alias_multi_target;
+    if cache_bypass_multi_target {
+        state
+            .metrics
+            .cache_skipped_total
+            .with_label_values(&["multi_target_alias"])
+            .inc();
+    }
+
+    if let (Some(sc), Some(cache_identity), false) = (
+        resolved.semantic_cache.clone(),
+        cache_identity.clone(),
+        cache_bypass_multi_target,
+    ) {
         let messages = payload
             .get("messages")
             .and_then(|m| m.as_array())
             .cloned()
             .unwrap_or_default();
         let normalized = crate::semantic_cache::normalize_conversation(&messages);
-        // Fold caller identity, system instructions, generation parameters, and
-        // tool definitions into the key: the embedding only covers non-system
-        // content, so without this a different identity / system prompt /
-        // temperature / tool set would share a namespace and could return an
-        // incompatible cached response (cache isolation audit).
-        let key_salt =
-            crate::semantic_cache::compatibility_salt(&messages, &payload, &cache_identity);
+        // Effective destination for the key: the single resolved provider+model
+        // (single-target alias or normal route). This distinguishes provider/
+        // deployment and concrete model, so a remapped alias or different deployment
+        // never reuses an incompatible entry.
+        let destination = {
+            let (prov, model) = resolved
+                .providers
+                .first()
+                .map(|p| (p.name.clone(), p.model.clone()))
+                .unwrap_or_else(|| (String::new(), effective_model.clone()));
+            let base_url = state
+                .gateway_config
+                .providers
+                .iter()
+                .find(|p| p.id == prov || p.provider_type == prov)
+                .map(|p| p.base_url.clone())
+                .unwrap_or_default();
+            let model = if model.is_empty() {
+                effective_model.clone()
+            } else {
+                model
+            };
+            crate::semantic_cache::CacheDestination::new(&prov, &base_url, &model)
+        };
+        // Fold caller identity, effective destination, system instructions,
+        // generation parameters, and tool definitions into the key: the embedding
+        // only covers non-system content, so without this a different identity /
+        // destination / system prompt / temperature / tool set would share a
+        // namespace and could return an incompatible cached response.
+        let key_salt = crate::semantic_cache::compatibility_salt(
+            &messages,
+            &payload,
+            &cache_identity,
+            &destination,
+        );
         let ctx = crate::semantic_cache::CacheKeyCtx {
             route_path: request_path.to_string(),
             route_method: request_method.to_string(),
@@ -651,14 +730,19 @@ async fn chat_completions_handler(
 
     // A model declared by the Bedrock provider is served only by that provider.
     // This is exact routing, not a failover path.
-    if let Some(owner) =
-        crate::bedrock::provider_for_exact_model(&state.gateway_config.providers, &effective_model)
-    {
-        resolved.providers = vec![WeightedProvider {
-            name: owner.id.clone(),
-            weight: 1,
-            model: effective_model.clone(),
-        }];
+    // When an alias resolved, its targets are authoritative; don't let the
+    // exact-model owner override collapse them.
+    if resolved.via_alias.is_none() {
+        if let Some(owner) = crate::bedrock::provider_for_exact_model(
+            &state.gateway_config.providers,
+            &effective_model,
+        ) {
+            resolved.providers = vec![WeightedProvider {
+                name: owner.id.clone(),
+                weight: 1,
+                model: effective_model.clone(),
+            }];
+        }
     }
 
     // ─── Provider Selection & Failover Loop ──────────────────────────────────
@@ -688,6 +772,10 @@ async fn chat_completions_handler(
                 Err(e) => break 'failover Err(e),
             };
             let selected_name = selected.name.clone();
+            // The concrete model to forward for THIS attempt: the selected target's
+            // model (for an alias, each target has its own model; for a normal route
+            // this equals the effective model). Empty = keep the payload's model.
+            let selected_model = selected.model.clone();
 
             // Check circuit breaker. A half-open probe lease must outlive the provider
             // call (timeout + margin) so it neither expires mid-call nor stays stuck
@@ -800,11 +888,22 @@ async fn chat_completions_handler(
                 }
             }
 
+            // Per-attempt payload: forward the selected target's concrete model.
+            let attempt_model = if selected_model.is_empty() {
+                effective_model.clone()
+            } else {
+                selected_model.clone()
+            };
+            let mut attempt_payload = payload.clone();
+            if let Some(obj) = attempt_payload.as_object_mut() {
+                obj.insert("model".to_string(), Value::String(attempt_model.clone()));
+            }
+
             // Translate payload
             let translation_start = Instant::now();
             let body = if ptype == "anthropic" {
                 let transpiler = crate::transpiler::get_transpiler("anthropic");
-                match transpiler.to_native(&payload) {
+                match transpiler.to_native(&attempt_payload) {
                     Ok(native) => bytes::Bytes::from(serde_json::to_vec(&native).unwrap()),
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to translate payload to Anthropic format");
@@ -814,10 +913,10 @@ async fn chat_completions_handler(
                     }
                 }
             } else if ptype == crate::bedrock::PROVIDER_TYPE {
-                let prepared = crate::bedrock::prepare_chat_body(&payload, &effective_model);
+                let prepared = crate::bedrock::prepare_chat_body(&attempt_payload, &attempt_model);
                 bytes::Bytes::from(serde_json::to_vec(&prepared).unwrap())
             } else {
-                bytes::Bytes::from(serde_json::to_vec(&payload).unwrap())
+                bytes::Bytes::from(serde_json::to_vec(&attempt_payload).unwrap())
             };
             let translation_elapsed = translation_start.elapsed().as_secs_f64();
             state
@@ -1344,6 +1443,20 @@ fn record_scoring_outcome(
     );
 }
 
+/// Phase 6A alias-resolution metric + content-free log. `alias` label is a declared
+/// alias name (bounded) or `other`; never an arbitrary client string.
+fn record_alias_resolution(
+    metrics: &crate::observability::Metrics,
+    resolved: &ResolvedRoute,
+    outcome: &str,
+) {
+    let alias_label = resolved.via_alias.as_deref().unwrap_or("other");
+    metrics
+        .model_alias_resolution_total
+        .with_label_values(&[alias_label, outcome])
+        .inc();
+}
+
 /// Checks that every model in `models` is permitted by `allowed`.
 ///
 /// An empty `allowed` list means unrestricted (the field was previously carried
@@ -1376,39 +1489,133 @@ fn resolve_route_config(
     payload_model: &str,
     global_compactor: &CompactorConfig,
 ) -> ResolvedRoute {
+    use crate::route_config::ModelResolution;
+
     match resolver.resolve_route(path, method) {
         Some(route) => {
-            // Model override: use route.model if defined, otherwise keep payload model
-            let effective_model = route.model.as_deref().unwrap_or(payload_model).to_string();
-
-            // Effective token config: per-route if defined, otherwise global
             let effective_token_config = resolver.effective_token_config(route, global_compactor);
-
-            // Provider list for load balancer
-            let providers = extract_providers(route);
-
-            // Semantic cache: only carried when the route opts in (enabled).
             let semantic_cache = route.semantic_cache.clone().filter(|c| c.enabled);
+            let semantic_scoring = resolver.effective_scoring_config(route);
+
+            // ── Precedence (Phase 6A): route override > payload alias > concrete >
+            //    default. `model` is a mandatory override; `default_model` only
+            //    fills in when the client sent no usable model (and never shadows a
+            //    client alias).
+            let mut via_alias = None;
+            let mut alias_multi_target = false;
+            let mut resolution_error = None;
+
+            // Default builder for a concrete model: route providers or single provider.
+            let concrete_providers = |model: &str| -> Vec<WeightedProvider> {
+                extract_providers_with_model(route, model)
+            };
+
+            let (effective_model, providers) = if let Some(forced) = &route.model {
+                // (1) Mandatory route override: alias from the client is ignored.
+                (forced.clone(), concrete_providers(forced))
+            } else {
+                match resolver.resolve_model(payload_model) {
+                    // (2) payload is a known alias.
+                    ModelResolution::Alias { name, targets } => {
+                        via_alias = Some(name);
+                        alias_multi_target = targets.len() > 1;
+                        let providers: Vec<WeightedProvider> = targets
+                            .iter()
+                            .map(|t| WeightedProvider {
+                                name: t.provider.clone(),
+                                weight: t.weight,
+                                model: t.model.clone(),
+                            })
+                            .collect();
+                        // The effective `model` field forwarded is set per-target at
+                        // send time; here we keep the first target's model as the
+                        // representative effective model for metrics/cache checks.
+                        let eff = providers
+                            .first()
+                            .map(|p| p.model.clone())
+                            .unwrap_or_else(|| payload_model.to_string());
+                        (eff, providers)
+                    }
+                    // (3) concrete model from the payload.
+                    ModelResolution::Concrete(m) => {
+                        // Unknown bare name is a concrete passthrough; but if the
+                        // payload was empty/unusable, apply default_model (4).
+                        if m.is_empty() {
+                            match &route.default_model {
+                                Some(d) => (d.clone(), concrete_providers(d)),
+                                None => (m.clone(), concrete_providers(&m)),
+                            }
+                        } else {
+                            (m.clone(), concrete_providers(&m))
+                        }
+                    }
+                    // (5) `@unknown` → hard error, never forwarded.
+                    ModelResolution::UnknownRequiredAlias(a) => {
+                        resolution_error = Some(format!(
+                            "Unknown model alias '@{a}' (no such alias declared)."
+                        ));
+                        (payload_model.to_string(), Vec::new())
+                    }
+                }
+            };
 
             ResolvedRoute {
                 model: effective_model,
+                requested_model: payload_model.to_string(),
+                via_alias,
+                alias_multi_target,
+                resolution_error,
                 effective_token_config,
                 providers,
                 semantic_cache,
-                semantic_scoring: resolver.effective_scoring_config(route),
+                semantic_scoring,
             }
         }
         None => {
-            // No matching route — use defaults
+            // No matching route — resolve aliases against the global alias table so
+            // an alias still works on an unmatched path; otherwise defaults.
             tracing::warn!(
                 path = %path,
                 method = %method,
                 "No matching route found in route config, using defaults"
             );
+            let mut via_alias = None;
+            let mut alias_multi_target = false;
+            let mut resolution_error = None;
+            let (model, providers) = match resolver.resolve_model(payload_model) {
+                crate::route_config::ModelResolution::Alias { name, targets } => {
+                    via_alias = Some(name);
+                    alias_multi_target = targets.len() > 1;
+                    let providers = targets
+                        .iter()
+                        .map(|t| WeightedProvider {
+                            name: t.provider.clone(),
+                            weight: t.weight,
+                            model: t.model.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    let eff = targets
+                        .first()
+                        .map(|t| t.model.clone())
+                        .unwrap_or_else(|| payload_model.to_string());
+                    (eff, providers)
+                }
+                crate::route_config::ModelResolution::UnknownRequiredAlias(a) => {
+                    resolution_error = Some(format!(
+                        "Unknown model alias '@{a}' (no such alias declared)."
+                    ));
+                    (payload_model.to_string(), Vec::new())
+                }
+                crate::route_config::ModelResolution::Concrete(m) => (m, Vec::new()),
+            };
             ResolvedRoute {
-                model: payload_model.to_string(),
+                model,
+                requested_model: payload_model.to_string(),
+                via_alias,
+                alias_multi_target,
+                resolution_error,
                 effective_token_config: global_compactor.clone(),
-                providers: Vec::new(),
+                providers,
                 semantic_cache: None,
                 semantic_scoring: None,
             }
@@ -1416,19 +1623,18 @@ fn resolve_route_config(
     }
 }
 
-/// Extracts the provider list from a route definition.
-///
-/// - If `providers` (multi-provider) is defined, returns that list directly.
-/// - If a single `provider` is defined, wraps it as a single-entry list with weight 1.
-/// - Otherwise returns an empty list.
-fn extract_providers(route: &RouteDefinition) -> Vec<WeightedProvider> {
+/// Builds the provider list for a route, using `model` for the single-`provider`
+/// case (so a concrete/alias-resolved model is carried to the provider).
+/// `providers` (multi-provider) is returned as-is; a single `provider` becomes a
+/// one-entry list with `model`; otherwise an empty list.
+fn extract_providers_with_model(route: &RouteDefinition, model: &str) -> Vec<WeightedProvider> {
     if let Some(ref providers) = route.providers {
         providers.clone()
     } else if let Some(ref provider_name) = route.provider {
         vec![WeightedProvider {
             name: provider_name.clone(),
             weight: 1,
-            model: route.model.clone().unwrap_or_default(),
+            model: model.to_string(),
         }]
     } else {
         Vec::new()
