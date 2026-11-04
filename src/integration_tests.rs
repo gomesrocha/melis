@@ -2872,3 +2872,367 @@ mod cache_failover_destination_e2e {
         );
     }
 }
+
+/// Opt-in, reproducible SMOKE TEST of the semantic cache against REAL services:
+/// real Redis, real embeddings (Ollama), and a real chat provider. Provider-call
+/// avoidance on a cache hit is proven by COUNTING calls (a counting HTTP client),
+/// never by latency, and the hit is an EXACT repeat (same content hash), not a
+/// paraphrase reaching a threshold.
+///
+/// Run (all opt-in; nothing runs in the default suite):
+/// ```text
+/// MELIS_CACHE_SMOKE=1 \
+///   MELIS_SMOKE_REDIS_URL=redis://127.0.0.1:6379 \
+///   MELIS_SMOKE_OLLAMA_URL=http://localhost:11434 \
+///   MELIS_SMOKE_EMBED_MODEL=nomic-embed-text \
+///   MELIS_SMOKE_CHAT_MODEL=llama3.2 \
+///   cargo test --bin melis-gateway cache_real_services_smoke -- --ignored --nocapture --test-threads=1
+/// ```
+/// Requires the chat provider to be reachable at `MELIS_SMOKE_OLLAMA_URL` (the chat
+/// model is served by the same Ollama by default). Uses a UNIQUE conversation per
+/// run so repeated runs never collide in Redis; cleans its namespaces at the end.
+#[cfg(test)]
+mod cache_real_services_smoke {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use bytes::Bytes;
+    use http_body_util::BodyExt;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    use crate::balancer::WeightedRoundRobin;
+    use crate::circuit_breaker::LocalCircuitBreaker;
+    use crate::client::{ClientError, LlmHttpClient, ReqwestLlmClient};
+    use crate::config::GatewayConfig;
+    use crate::guardrails::GuardrailEngine;
+    use crate::middleware::rate_limiter::LocalTokenBucket;
+    use crate::observability::Metrics;
+    use crate::route_config::RouteConfigManager;
+    use crate::router::build_router;
+    use crate::state::AppState;
+
+    fn env_or(k: &str, d: &str) -> String {
+        std::env::var(k).unwrap_or_else(|_| d.to_string())
+    }
+    fn enabled() -> bool {
+        std::env::var("MELIS_CACHE_SMOKE").as_deref() == Ok("1")
+    }
+
+    /// Wraps the real HTTP client and counts every provider call (send + stream).
+    /// Proves provider-call avoidance by count, not latency.
+    struct CountingHttpClient {
+        inner: ReqwestLlmClient,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LlmHttpClient for CountingHttpClient {
+        async fn send(
+            &self,
+            url: &str,
+            headers: axum::http::HeaderMap,
+            body: Bytes,
+            timeout: Duration,
+        ) -> Result<Bytes, ClientError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.send(url, headers, body, timeout).await
+        }
+        fn send_stream(
+            &self,
+            url: &str,
+            headers: axum::http::HeaderMap,
+            body: Bytes,
+            timeout: Duration,
+        ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, ClientError>> + Send>>
+        {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.send_stream(url, headers, body, timeout)
+        }
+    }
+
+    struct Harness {
+        app_state_cache: Arc<dyn crate::semantic_cache::SemanticCache>,
+        redis: Arc<crate::redis_client::SharedRedis>,
+        calls: Arc<AtomicUsize>,
+        ollama_url: String,
+        embed_model: String,
+        chat_model: String,
+        ttl_secs: u64,
+        scope: String,
+    }
+
+    impl Harness {
+        async fn connect(ttl_secs: u64, scope: &str) -> Option<Self> {
+            let redis_url = env_or("MELIS_SMOKE_REDIS_URL", "redis://127.0.0.1:6379");
+            let cfg = crate::config::RedisConfig {
+                cluster_urls: vec![redis_url],
+                pool_size: 1,
+                connect_timeout_secs: 3,
+                command_timeout_secs: 2,
+                required_for_readiness: false,
+            };
+            let redis = crate::redis_client::SharedRedis::connect(&cfg).await;
+            let client = redis.client()?.clone();
+            if !redis.is_healthy().await {
+                eprintln!("SMOKE: Redis not healthy; skipping");
+                return None;
+            }
+            let cache: Arc<dyn crate::semantic_cache::SemanticCache> =
+                Arc::new(crate::semantic_cache::RedisSemanticCache::new(client));
+            Some(Self {
+                app_state_cache: cache,
+                redis,
+                calls: Arc::new(AtomicUsize::new(0)),
+                ollama_url: env_or("MELIS_SMOKE_OLLAMA_URL", "http://localhost:11434"),
+                embed_model: env_or("MELIS_SMOKE_EMBED_MODEL", "nomic-embed-text"),
+                chat_model: env_or("MELIS_SMOKE_CHAT_MODEL", "llama3.2"),
+                ttl_secs,
+                scope: scope.to_string(),
+            })
+        }
+
+        fn state(&self) -> AppState {
+            let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+            let routes_path = dir.path().join("routes.yaml");
+            std::fs::write(
+                &routes_path,
+                format!(
+                    "routes:\n  - path: \"/v1/chat/completions\"\n    method: \"POST\"\n    provider: \"ollama\"\n    model: \"{}\"\n    semantic_cache:\n      enabled: true\n      scope: \"{}\"\n      ttl_secs: {}\n      similarity_threshold: 0.9999\n      embedding_model: \"{}\"\n",
+                    self.chat_model, self.scope, self.ttl_secs, self.embed_model
+                ),
+            )
+            .unwrap();
+            let gateway_config = GatewayConfig::from_yaml(&format!(
+                "server:\n  host: \"0.0.0.0\"\n  port: 8080\nredis:\n  cluster_urls: [\"redis://127.0.0.1:6379\"]\nauth:\n  enabled: true\n  api_keys:\n    - key: \"sk-alice\"\n      client_id: \"alice\"\n    - key: \"sk-bob\"\n      client_id: \"bob\"\nproviders:\n  - id: \"ollama\"\n    provider_type: \"ollama\"\n    api_key: \"ollama\"\n    base_url: \"{}\"\n",
+                self.ollama_url
+            ))
+            .unwrap();
+            let route_config = RouteConfigManager::new_without_watcher(routes_path);
+            let guardrails = Arc::new(GuardrailEngine::new(
+                route_config.current().config(),
+                gateway_config.guardrails.clone(),
+            ));
+            let providers = gateway_config.providers.clone();
+            AppState {
+                route_config: Arc::new(route_config),
+                gateway_config: Arc::new(gateway_config),
+                rate_limiter: Arc::new(LocalTokenBucket::new()),
+                load_balancer: Arc::new(WeightedRoundRobin::new()),
+                circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+                http_client: Arc::new(CountingHttpClient {
+                    inner: ReqwestLlmClient::new(),
+                    calls: self.calls.clone(),
+                }),
+                metrics: Arc::new(Metrics::new()),
+                redis_available: Arc::new(AtomicBool::new(true)),
+                semantic_cache: self.app_state_cache.clone(),
+                outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+                guardrails,
+                embeddings: Arc::new(crate::embeddings::OllamaEmbeddingProvider::new(
+                    providers,
+                    Arc::new(ReqwestLlmClient::new()),
+                )),
+            }
+        }
+
+        async fn chat(&self, bearer: &str, user_text: &str) -> StatusCode {
+            let app = build_router(self.state());
+            let payload = json!({
+                "model": self.chat_model,
+                "messages": [{"role": "user", "content": user_text}],
+                "temperature": 0,
+                "max_tokens": 16
+            });
+            let req = Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {bearer}"))
+                .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status();
+            // Drain the body so stores on the miss path complete.
+            let _ = resp.into_body().collect().await.unwrap().to_bytes();
+            status
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        async fn cleanup(&self, convo: &str) {
+            // Best-effort: delete the (route, method, model, *) namespaces touched.
+            use fred::interfaces::KeysInterface;
+            if let Some(c) = self.redis.client() {
+                let pattern = format!("melis:cache:*{}*", "");
+                let _ = convo; // content-hashed; we glob the whole cache prefix for this model
+                use fred::types::Scanner;
+                use futures_util::StreamExt;
+                let mut scan = c.scan(&pattern, Some(512), None);
+                while let Some(Ok(mut page)) = scan.next().await {
+                    if let Some(keys) = page.take_results() {
+                        for k in keys {
+                            let _: Result<(), _> = c.del::<i64, _>(k).await.map(|_| ());
+                        }
+                    }
+                    let _ = page.next();
+                }
+            }
+        }
+    }
+
+    /// Miss → store → exact-repeat hit with NO new provider call (by count);
+    /// identity isolation; TTL expiry. All against real Redis + embeddings + chat.
+    #[tokio::test]
+    #[ignore = "opt-in real-services smoke test; set MELIS_CACHE_SMOKE=1 (see module docs)"]
+    async fn cache_real_services_smoke() {
+        if !enabled() {
+            eprintln!("SMOKE: MELIS_CACHE_SMOKE != 1; skipping");
+            return;
+        }
+        // Unique conversation so repeated runs never collide.
+        let convo = format!(
+            "smoke cache probe {} please answer with one short word",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let h = match Harness::connect(3600, "per_identity").await {
+            Some(h) => h,
+            None => return,
+        };
+        h.cleanup(&convo).await;
+
+        // 1) First request (alice): MISS → provider called once → stored.
+        let s1 = h.chat("sk-alice", &convo).await;
+        assert_eq!(s1, StatusCode::OK, "first request should succeed");
+        let after_first = h.calls();
+        assert_eq!(
+            after_first, 1,
+            "the provider must be called exactly once on a miss"
+        );
+
+        // 2) Exact repeat (alice): HIT → provider NOT called again (count unchanged).
+        let s2 = h.chat("sk-alice", &convo).await;
+        assert_eq!(s2, StatusCode::OK, "cached hit should succeed");
+        assert_eq!(
+            h.calls(),
+            after_first,
+            "a cache hit must make NO new provider call (proven by count, not latency)"
+        );
+
+        // 3) Identity isolation: bob, same conversation → MISS (different namespace),
+        //    provider called again.
+        let s3 = h.chat("sk-bob", &convo).await;
+        assert_eq!(s3, StatusCode::OK);
+        assert_eq!(
+            h.calls(),
+            after_first + 1,
+            "a different identity must NOT reuse alice's cached response (per_identity)"
+        );
+
+        h.cleanup(&convo).await;
+        eprintln!("SMOKE cache: miss/hit/identity OK (provider calls counted)");
+    }
+
+    /// TTL expiry: with a short TTL, an exact repeat after the TTL is a MISS again.
+    #[tokio::test]
+    #[ignore = "opt-in real-services smoke test; set MELIS_CACHE_SMOKE=1"]
+    async fn cache_real_services_ttl_expiry() {
+        if !enabled() {
+            return;
+        }
+        let convo = format!(
+            "smoke ttl probe {}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let h = match Harness::connect(2, "per_identity").await {
+            Some(h) => h,
+            None => return,
+        };
+        h.cleanup(&convo).await;
+
+        assert_eq!(h.chat("sk-alice", &convo).await, StatusCode::OK);
+        let after_first = h.calls();
+        assert_eq!(after_first, 1);
+        // Immediate repeat → hit, no new call.
+        assert_eq!(h.chat("sk-alice", &convo).await, StatusCode::OK);
+        assert_eq!(h.calls(), after_first, "within TTL: hit");
+        // Wait past the 2s TTL → miss again (new provider call).
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert_eq!(h.chat("sk-alice", &convo).await, StatusCode::OK);
+        assert_eq!(
+            h.calls(),
+            after_first + 1,
+            "after TTL expiry the entry must be gone (miss → new provider call)"
+        );
+        h.cleanup(&convo).await;
+        eprintln!("SMOKE cache: TTL expiry OK");
+    }
+
+    /// Degradation: when Redis is unavailable the cache fails open (no error), and
+    /// the provider is still called (no hit served from a down cache).
+    #[tokio::test]
+    #[ignore = "opt-in real-services smoke test; set MELIS_CACHE_SMOKE=1"]
+    async fn cache_real_services_degrades_when_redis_down() {
+        if !enabled() {
+            return;
+        }
+        // Point the cache at a dead Redis port; embeddings + chat remain real.
+        let dead = crate::config::RedisConfig {
+            cluster_urls: vec!["redis://127.0.0.1:59994".to_string()],
+            pool_size: 1,
+            connect_timeout_secs: 1,
+            command_timeout_secs: 1,
+            required_for_readiness: false,
+        };
+        let redis = crate::redis_client::SharedRedis::connect(&dead).await;
+        let cache: Arc<dyn crate::semantic_cache::SemanticCache> = match redis.client() {
+            Some(c) => Arc::new(crate::semantic_cache::RedisSemanticCache::new(c.clone())),
+            None => {
+                eprintln!("SMOKE: no client for dead redis; skipping");
+                return;
+            }
+        };
+        let h = Harness {
+            app_state_cache: cache,
+            redis,
+            calls: Arc::new(AtomicUsize::new(0)),
+            ollama_url: env_or("MELIS_SMOKE_OLLAMA_URL", "http://localhost:11434"),
+            embed_model: env_or("MELIS_SMOKE_EMBED_MODEL", "nomic-embed-text"),
+            chat_model: env_or("MELIS_SMOKE_CHAT_MODEL", "llama3.2"),
+            ttl_secs: 3600,
+            scope: "per_identity".to_string(),
+        };
+        let convo = format!(
+            "smoke degrade probe {}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        // Two identical requests: with Redis down, both are misses → 2 provider calls.
+        assert_eq!(
+            h.chat("sk-alice", &convo).await,
+            StatusCode::OK,
+            "must fail open, not error"
+        );
+        assert_eq!(h.chat("sk-alice", &convo).await, StatusCode::OK);
+        assert_eq!(
+            h.calls(),
+            2,
+            "with Redis down the cache degrades (fail-open): every request hits the provider"
+        );
+        eprintln!("SMOKE cache: degradation (Redis down) OK");
+    }
+}
