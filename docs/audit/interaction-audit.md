@@ -101,8 +101,18 @@ Garantias cross-chunk completas para regras arbitrárias exigiriam bufferizar a
 resposta inteira (anula o streaming) ou limites de tamanho por regra. Fica como
 opt-in futuro; **não** é prometido hoje.
 
-**Teste.** `streaming_redact_does_not_leak_keyword_split_across_chunks` (falha antes
-da correção, verificado).
+**Garantia precisa.** Suprimir o chunk que **completa** o padrão não recolhe bytes
+já enviados em chunks anteriores. A garantia é: o padrão sensível (dentro da janela
+de 4096 bytes) nunca aparece **inteiro** na saída reassemblada que o cliente recebe;
+conteúdo benigno já emitido antes de o padrão se completar permanece visível. Não é
+uma proteção geral contra vazamento de qualquer padrão (ver limites acima).
+
+**Testes (examinam a saída reassemblada efetivamente recebida pelo cliente).**
+- `streaming_redact_does_not_leak_keyword_split_across_chunks` (redact; falha antes
+  da correção, verificado);
+- `streaming_block_split_keyword_not_in_client_output` (block, palavra dividida);
+- `streaming_already_emitted_prefix_cannot_be_recalled` (documenta que o prefixo
+  benigno já enviado não é recolhido, e o keyword nunca aparece inteiro).
 
 ## 5. Consistência de configuração por requisição — Corrigido
 

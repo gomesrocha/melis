@@ -596,6 +596,78 @@ mod tests {
         assert!(!chunk.contains("badword"), "keyword leaked: {}", chunk);
     }
 
+    /// Reassembles the assistant content the CLIENT actually receives across all
+    /// emitted SSE data lines (concatenated delta.content), ignoring [DONE]/errors.
+    fn client_visible_content(data_lines: &[String]) -> String {
+        data_lines
+            .iter()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| {
+                v.get("choices")
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("content"))
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn streaming_block_split_keyword_not_in_client_output() {
+        // Sensitive word "blockme" split across two chunks under a BLOCK rule. The
+        // reassembled client output must never contain it; the stream ends in an
+        // error event.
+        let provider_stream = mock_provider_stream(vec![
+            Ok(content_chunk("start bloc")),
+            Ok(content_chunk("kme tail")),
+        ]);
+        let transpiler: Box<dyn PayloadTranspiler> = Box::new(OpenAiTranspiler);
+        let g = outbound_keyword_guardrail(GuardrailAction::Block, "blockme");
+
+        let transformed = transform_sse_stream_guarded(provider_stream, transpiler, Some(g), None);
+        let data_lines = collect_data_lines(transformed).await;
+        let seen = client_visible_content(&data_lines);
+        assert!(
+            !seen.replace(' ', "").contains("blockme"),
+            "client received the blocked keyword: {seen:?}"
+        );
+        assert!(
+            data_lines.join("\n").contains("content_blocked"),
+            "expected a guardrail block error event"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_already_emitted_prefix_cannot_be_recalled() {
+        // Precise guarantee: suppressing the chunk that COMPLETES a pattern cannot
+        // retract bytes already sent in an earlier chunk. Here the first chunk's
+        // benign text is delivered before the pattern completes in a later chunk;
+        // we document that the earlier chunk is (correctly) already visible, while
+        // the keyword itself never appears in the client output.
+        let provider_stream = mock_provider_stream(vec![
+            Ok(content_chunk("harmless preamble ")),
+            Ok(content_chunk("lead")),
+            Ok(content_chunk("ved tail")), // "leadved"? no; keyword is "leadved"
+        ]);
+        let transpiler: Box<dyn PayloadTranspiler> = Box::new(OpenAiTranspiler);
+        let g = outbound_keyword_guardrail(GuardrailAction::Block, "leadved");
+
+        let transformed = transform_sse_stream_guarded(provider_stream, transpiler, Some(g), None);
+        let data_lines = collect_data_lines(transformed).await;
+        let seen = client_visible_content(&data_lines);
+        // The earlier benign chunk was delivered (cannot be recalled).
+        assert!(
+            seen.contains("harmless preamble"),
+            "benign prefix should have been delivered: {seen:?}"
+        );
+        // The keyword never appears in full.
+        assert!(
+            !seen.replace(' ', "").contains("leadved"),
+            "keyword leaked: {seen:?}"
+        );
+    }
+
     #[tokio::test]
     async fn streaming_redact_does_not_leak_keyword_split_across_chunks() {
         // "secret" is split across two chunks. The window detects it (Redacted),
