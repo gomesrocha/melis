@@ -57,6 +57,12 @@ pub enum RoutesConfigError {
     #[error("semantic_scoring inválido na rota {route_index}: {reason}")]
     InvalidSemanticScoring { route_index: usize, reason: String },
 
+    #[error("alias de modelo inválido '{alias}': {reason}")]
+    InvalidAlias { alias: String, reason: String },
+
+    #[error("rota {route_index} define 'model' e 'default_model' ao mesmo tempo; use apenas um")]
+    ModelAndDefaultModel { route_index: usize },
+
     #[error("Rota duplicada: {path} {method} (rotas {first} e {second})")]
     DuplicateRoute {
         path: String,
@@ -266,13 +272,45 @@ pub struct GuardrailsConfig {
     pub fail_closed: Option<bool>,
 }
 
+/// A single target of a model alias (Phase 6A). `name` is a provider id;
+/// `model` is the concrete model that provider understands.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AliasTarget {
+    pub provider: String,
+    pub model: String,
+    #[serde(default = "default_alias_weight")]
+    pub weight: u32,
+}
+
+fn default_alias_weight() -> u32 {
+    1
+}
+
+/// A declarative model alias (virtual model). Selected by the request `model`
+/// field; resolves to one or more concrete targets (Phase 6A).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelAlias {
+    /// Alias name. May be written with or without a leading `@`; stored canonically
+    /// without the `@` (see [`canonical_alias_name`]).
+    pub name: String,
+    pub targets: Vec<AliasTarget>,
+}
+
 /// Definition of an individual route.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouteDefinition {
     pub path: String,
     pub method: String,
     pub provider: Option<String>,
+    /// Mandatory model override: when set, forces this model regardless of the
+    /// client's `model` (existing behavior). Mutually exclusive with `default_model`.
     pub model: Option<String>,
+    /// Default model used only when the client did not supply a usable model.
+    /// Unlike `model`, it does NOT shadow an alias the client sent explicitly.
+    #[serde(default)]
+    pub default_model: Option<String>,
     pub providers: Option<Vec<WeightedProvider>>,
     pub token_optimization: Option<TokenOptimizationConfig>,
     /// Optional semantic cache configuration (Phase 2). Absent = disabled.
@@ -297,6 +335,18 @@ pub struct RouteConfigFile {
     pub routes: Vec<RouteDefinition>,
     #[serde(default)]
     pub custom_providers: Vec<CustomProviderDef>,
+    /// Declarative model aliases (Phase 6A). Absent = none.
+    #[serde(default)]
+    pub model_aliases: Vec<ModelAlias>,
+}
+
+/// Canonical form of an alias name: the name without a leading `@`.
+///
+/// `@fast` and `fast` are the same alias; `@` is reserved syntax that forces alias
+/// interpretation at resolution time. Returns the trimmed name (callers also trim
+/// surrounding whitespace before use).
+pub fn canonical_alias_name(name: &str) -> &str {
+    name.strip_prefix('@').unwrap_or(name)
 }
 
 /// Load and parse a routes.yaml file from the given path.
@@ -392,6 +442,12 @@ pub fn validate(config: &RouteConfigFile) -> Result<(), Vec<RoutesConfigError>> 
             }
         }
 
+        // Phase 6A: a route declares at most one of `model` (mandatory override)
+        // and `default_model` (default when the client sends none).
+        if route.model.is_some() && route.default_model.is_some() {
+            errors.push(RoutesConfigError::ModelAndDefaultModel { route_index: idx });
+        }
+
         // Phase 5: validate opt-in semantic scoring (values only; never request data).
         if let Some(opt) = &route.token_optimization {
             if let Some(setting) = &opt.semantic_scoring {
@@ -429,6 +485,114 @@ pub fn validate(config: &RouteConfigFile) -> Result<(), Vec<RoutesConfigError>> 
         }
     }
 
+    // ─── Phase 6A: model aliases ─────────────────────────────────────────────
+    // Declared concrete model names: route `model`/`default_model` and the models
+    // of each route's `providers`. Used for collision detection WITHOUT remote
+    // discovery (we only know the concretes named in the config).
+    let mut concrete_models: HashSet<String> = HashSet::new();
+    for route in &config.routes {
+        if let Some(m) = &route.model {
+            concrete_models.insert(m.clone());
+        }
+        if let Some(m) = &route.default_model {
+            concrete_models.insert(m.clone());
+        }
+        if let Some(ps) = &route.providers {
+            for p in ps {
+                concrete_models.insert(p.model.clone());
+            }
+        }
+    }
+
+    let mut seen_alias: HashMap<String, usize> = HashMap::new();
+    for (aidx, alias) in config.model_aliases.iter().enumerate() {
+        let raw = alias.name.trim();
+        let canonical = canonical_alias_name(raw).trim().to_string();
+
+        if canonical.is_empty() {
+            errors.push(RoutesConfigError::InvalidAlias {
+                alias: alias.name.clone(),
+                reason: "alias name must not be empty".to_string(),
+            });
+            continue;
+        }
+
+        // Ambiguity: `fast` and `@fast` are the same alias; declaring both is an error.
+        if let Some(&first) = seen_alias.get(&canonical) {
+            errors.push(RoutesConfigError::InvalidAlias {
+                alias: alias.name.clone(),
+                reason: format!(
+                    "duplicate alias (canonical '{canonical}'); already declared at index {first}"
+                ),
+            });
+            continue;
+        }
+        seen_alias.insert(canonical.clone(), aidx);
+
+        // Collision with a declared concrete model name.
+        if concrete_models.contains(&canonical) {
+            errors.push(RoutesConfigError::InvalidAlias {
+                alias: alias.name.clone(),
+                reason: format!("alias name '{canonical}' collides with a declared concrete model"),
+            });
+        }
+
+        if alias.targets.is_empty() {
+            errors.push(RoutesConfigError::InvalidAlias {
+                alias: alias.name.clone(),
+                reason: "alias must have at least one target".to_string(),
+            });
+        }
+
+        let mut weight_sum: u64 = 0;
+        for t in &alias.targets {
+            weight_sum += t.weight as u64;
+            if t.weight == 0 {
+                errors.push(RoutesConfigError::InvalidAlias {
+                    alias: alias.name.clone(),
+                    reason: "target weight must be >= 1".to_string(),
+                });
+            }
+            if t.model.trim().is_empty() {
+                errors.push(RoutesConfigError::InvalidAlias {
+                    alias: alias.name.clone(),
+                    reason: "target model must not be empty".to_string(),
+                });
+            }
+            // Target provider must be a known built-in or a registered custom provider.
+            if !KNOWN_PROVIDERS.contains(&t.provider.as_str())
+                && !custom_names.contains(t.provider.as_str())
+            {
+                errors.push(RoutesConfigError::InvalidAlias {
+                    alias: alias.name.clone(),
+                    reason: format!("unknown target provider '{}'", t.provider),
+                });
+            }
+        }
+        if !alias.targets.is_empty() && weight_sum == 0 {
+            errors.push(RoutesConfigError::InvalidAlias {
+                alias: alias.name.clone(),
+                reason: "sum of target weights must be > 0".to_string(),
+            });
+        }
+    }
+
+    // No chaining: a target `model` must not name an alias (aliases point only to
+    // concrete models in this phase).
+    for alias in &config.model_aliases {
+        for t in &alias.targets {
+            if seen_alias.contains_key(canonical_alias_name(t.model.trim())) {
+                errors.push(RoutesConfigError::InvalidAlias {
+                    alias: alias.name.clone(),
+                    reason: format!(
+                        "target model '{}' names an alias; alias chaining is not allowed",
+                        t.model
+                    ),
+                });
+            }
+        }
+    }
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -446,6 +610,23 @@ pub struct RouteResolver {
     config: RouteConfigFile,
     /// Maps (path, METHOD_UPPERCASE) -> index in config.routes
     lookup: HashMap<(String, String), usize>,
+    /// Canonical alias name (without `@`) -> targets (Phase 6A).
+    aliases: HashMap<String, Vec<AliasTarget>>,
+}
+
+/// Outcome of resolving the request `model` field against aliases (Phase 6A).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelResolution {
+    /// A concrete model name (no alias matched); forwarded as-is.
+    Concrete(String),
+    /// An alias resolved to its targets (canonical name + targets).
+    Alias {
+        name: String,
+        targets: Vec<AliasTarget>,
+    },
+    /// `@name` was given but no such alias exists — a hard error, never forwarded
+    /// as a concrete model.
+    UnknownRequiredAlias(String),
 }
 
 impl RouteResolver {
@@ -458,7 +639,76 @@ impl RouteResolver {
             let key = (route.path.clone(), route.method.to_uppercase());
             lookup.insert(key, idx);
         }
-        RouteResolver { config, lookup }
+        let mut aliases = HashMap::with_capacity(config.model_aliases.len());
+        for alias in &config.model_aliases {
+            aliases.insert(
+                canonical_alias_name(alias.name.trim()).trim().to_string(),
+                alias.targets.clone(),
+            );
+        }
+        RouteResolver {
+            config,
+            lookup,
+            aliases,
+        }
+    }
+
+    /// Resolve the request `model` field against the declared aliases.
+    ///
+    /// - `@name` forces alias interpretation: resolves if the alias exists, else
+    ///   [`ModelResolution::UnknownRequiredAlias`] (never forwarded as concrete).
+    /// - a bare name that matches a declared alias resolves to it;
+    /// - otherwise it is a concrete model forwarded as-is.
+    pub fn resolve_model(&self, requested: &str) -> ModelResolution {
+        let trimmed = requested.trim();
+        if let Some(stripped) = trimmed.strip_prefix('@') {
+            let canonical = stripped.trim();
+            return match self.aliases.get(canonical) {
+                Some(targets) => ModelResolution::Alias {
+                    name: canonical.to_string(),
+                    targets: targets.clone(),
+                },
+                None => ModelResolution::UnknownRequiredAlias(canonical.to_string()),
+            };
+        }
+        match self.aliases.get(trimmed) {
+            Some(targets) => ModelResolution::Alias {
+                name: trimmed.to_string(),
+                targets: targets.clone(),
+            },
+            None => ModelResolution::Concrete(trimmed.to_string()),
+        }
+    }
+
+    /// Whether `name` (canonical, no `@`) is a declared alias.
+    pub fn is_alias(&self, name: &str) -> bool {
+        self.aliases
+            .contains_key(canonical_alias_name(name.trim()).trim())
+    }
+
+    /// All declared alias names (canonical) — for `/v1/models`.
+    pub fn alias_names(&self) -> Vec<String> {
+        self.aliases.keys().cloned().collect()
+    }
+
+    /// Declared concrete model names (route model/default_model/providers) — for
+    /// `/v1/models`. No remote discovery.
+    pub fn concrete_model_names(&self) -> Vec<String> {
+        let mut set = std::collections::BTreeSet::new();
+        for route in &self.config.routes {
+            if let Some(m) = &route.model {
+                set.insert(m.clone());
+            }
+            if let Some(m) = &route.default_model {
+                set.insert(m.clone());
+            }
+            if let Some(ps) = &route.providers {
+                for p in ps {
+                    set.insert(p.model.clone());
+                }
+            }
+        }
+        set.into_iter().collect()
     }
 
     /// Resolve a route by exact path and method match.
@@ -673,6 +923,7 @@ impl RouteConfigManager {
     #[cfg(test)]
     pub fn new_for_test() -> Self {
         let empty_config = RouteConfigFile {
+            model_aliases: Vec::new(),
             routes: vec![],
             custom_providers: vec![],
         };
@@ -837,6 +1088,199 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    // ── Phase 6A: model aliases — config + resolution ────────────────────────
+
+    fn aliases_config(yaml_body: &str) -> RouteConfigFile {
+        serde_yaml::from_str(yaml_body).unwrap()
+    }
+
+    fn resolver_with_aliases() -> RouteResolver {
+        let cfg = aliases_config(
+            r#"
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "openai"
+model_aliases:
+  - name: "fast"
+    targets:
+      - provider: "ollama"
+        model: "llama3.2"
+  - name: "team"
+    targets:
+      - provider: "openai"
+        model: "gpt-4o-mini"
+        weight: 3
+      - provider: "ollama"
+        model: "llama3.2"
+        weight: 1
+"#,
+        );
+        assert!(validate(&cfg).is_ok(), "fixture must be valid");
+        RouteResolver::new(cfg)
+    }
+
+    #[test]
+    fn canonical_alias_name_strips_at() {
+        assert_eq!(canonical_alias_name("@fast"), "fast");
+        assert_eq!(canonical_alias_name("fast"), "fast");
+    }
+
+    #[test]
+    fn resolve_model_bare_alias_concrete_and_at_prefix() {
+        let r = resolver_with_aliases();
+        // Bare name matching an alias resolves.
+        match r.resolve_model("fast") {
+            ModelResolution::Alias { name, targets } => {
+                assert_eq!(name, "fast");
+                assert_eq!(targets.len(), 1);
+                assert_eq!(targets[0].provider, "ollama");
+                assert_eq!(targets[0].model, "llama3.2");
+                assert_eq!(targets[0].weight, 1); // default
+            }
+            other => panic!("expected alias, got {other:?}"),
+        }
+        // @-prefixed known alias resolves.
+        assert!(matches!(
+            r.resolve_model("@team"),
+            ModelResolution::Alias { .. }
+        ));
+        // Concrete (not an alias) is forwarded as-is.
+        assert_eq!(
+            r.resolve_model("gpt-4o"),
+            ModelResolution::Concrete("gpt-4o".to_string())
+        );
+        // @-prefixed UNKNOWN alias is a hard error, never concrete.
+        assert_eq!(
+            r.resolve_model("@nope"),
+            ModelResolution::UnknownRequiredAlias("nope".to_string())
+        );
+        // A bare unknown name is concrete (passthrough).
+        assert_eq!(
+            r.resolve_model("nope"),
+            ModelResolution::Concrete("nope".to_string())
+        );
+    }
+
+    #[test]
+    fn alias_at_and_bare_forms_resolve_to_same_target() {
+        let r = resolver_with_aliases();
+        assert_eq!(r.resolve_model("fast"), r.resolve_model("@fast"));
+    }
+
+    #[test]
+    fn validate_rejects_ambiguous_at_and_bare_alias() {
+        let cfg = aliases_config(
+            r#"
+routes:
+  - path: "/p"
+    method: "POST"
+    provider: "openai"
+model_aliases:
+  - name: "fast"
+    targets: [{provider: "ollama", model: "llama3.2"}]
+  - name: "@fast"
+    targets: [{provider: "openai", model: "gpt-4o"}]
+"#,
+        );
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, RoutesConfigError::InvalidAlias { .. })));
+    }
+
+    #[test]
+    fn validate_rejects_alias_colliding_with_concrete() {
+        let cfg = aliases_config(
+            r#"
+routes:
+  - path: "/p"
+    method: "POST"
+    provider: "openai"
+    model: "gpt-4o"
+model_aliases:
+  - name: "gpt-4o"
+    targets: [{provider: "ollama", model: "llama3.2"}]
+"#,
+        );
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(
+            e,
+            RoutesConfigError::InvalidAlias { reason, .. } if reason.contains("collides")
+        )));
+    }
+
+    #[test]
+    fn validate_rejects_bad_alias_definitions() {
+        // empty targets, zero weight, unknown provider, chaining
+        for body in [
+            r#"
+routes: [{path: "/p", method: "POST", provider: "openai"}]
+model_aliases: [{name: "a", targets: []}]
+"#,
+            r#"
+routes: [{path: "/p", method: "POST", provider: "openai"}]
+model_aliases: [{name: "a", targets: [{provider: "ollama", model: "m", weight: 0}]}]
+"#,
+            r#"
+routes: [{path: "/p", method: "POST", provider: "openai"}]
+model_aliases: [{name: "a", targets: [{provider: "nonexistent", model: "m"}]}]
+"#,
+            r#"
+routes: [{path: "/p", method: "POST", provider: "openai"}]
+model_aliases:
+  - name: "a"
+    targets: [{provider: "ollama", model: "b"}]
+  - name: "b"
+    targets: [{provider: "ollama", model: "llama3.2"}]
+"#,
+        ] {
+            let cfg = aliases_config(body);
+            assert!(
+                validate(&cfg).is_err(),
+                "expected validation error for: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_model_and_default_model_together() {
+        let cfg = aliases_config(
+            r#"
+routes:
+  - path: "/p"
+    method: "POST"
+    provider: "openai"
+    model: "gpt-4o"
+    default_model: "llama3.2"
+"#,
+        );
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, RoutesConfigError::ModelAndDefaultModel { .. })));
+    }
+
+    #[test]
+    fn legacy_config_without_aliases_is_valid_and_has_no_aliases() {
+        let cfg = aliases_config(
+            r#"
+routes:
+  - path: "/p"
+    method: "POST"
+    provider: "openai"
+    model: "gpt-4o"
+"#,
+        );
+        assert!(validate(&cfg).is_ok());
+        let r = RouteResolver::new(cfg);
+        assert!(r.alias_names().is_empty());
+        assert_eq!(
+            r.resolve_model("gpt-4o"),
+            ModelResolution::Concrete("gpt-4o".to_string())
+        );
+    }
 
     // ── Phase 5: semantic_scoring config ─────────────────────────────────────
 
@@ -1847,6 +2291,7 @@ mod property_tests {
         )
             .prop_map(
                 |(path, method, provider, model, token_opt)| RouteDefinition {
+                    default_model: None,
                     path,
                     method,
                     provider: Some(provider),
@@ -1871,6 +2316,7 @@ mod property_tests {
             // Ensure at least one route
             let routes = if unique_routes.is_empty() {
                 vec![RouteDefinition {
+                    default_model: None,
                     path: "/v1/default".to_string(),
                     method: "POST".to_string(),
                     provider: Some("openai".to_string()),
@@ -1884,6 +2330,7 @@ mod property_tests {
                 unique_routes
             };
             RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes,
                 custom_providers: vec![],
             }
@@ -1911,7 +2358,9 @@ mod property_tests {
         #[test]
         fn prop16_missing_path_returns_error(method in arb_http_method(), provider in arb_known_provider()) {
             let config = RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: vec![RouteDefinition {
+                    default_model: None,
                     path: "".to_string(),
                     method,
                     provider: Some(provider),
@@ -1937,7 +2386,9 @@ mod property_tests {
         #[test]
         fn prop16_missing_method_returns_error(path in arb_path(), provider in arb_known_provider()) {
             let config = RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: vec![RouteDefinition {
+                    default_model: None,
                     path,
                     method: "".to_string(),
                     provider: Some(provider),
@@ -1963,7 +2414,9 @@ mod property_tests {
         #[test]
         fn prop16_missing_provider_returns_error(path in arb_path(), method in arb_http_method()) {
             let config = RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: vec![RouteDefinition {
+                    default_model: None,
                     path,
                     method,
                     provider: None,
@@ -1993,7 +2446,9 @@ mod property_tests {
             bad_provider in "[a-z]{5,15}_invalid"
         ) {
             let config = RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: vec![RouteDefinition {
+                    default_model: None,
                     path,
                     method,
                     provider: Some(bad_provider.clone()),
@@ -2033,6 +2488,7 @@ mod property_tests {
             // Simulate the model override logic:
             // If route has model defined, it takes precedence over the payload model.
             let route = RouteDefinition {
+                default_model: None,
                 path: "/v1/chat/test".to_string(),
                 method: "POST".to_string(),
                 provider: Some("openai".to_string()),
@@ -2054,6 +2510,7 @@ mod property_tests {
             payload_model in arb_model(),
         ) {
             let route = RouteDefinition {
+                default_model: None,
                 path: "/v1/chat/test".to_string(),
                 method: "POST".to_string(),
                 provider: Some("openai".to_string()),
@@ -2087,6 +2544,7 @@ mod property_tests {
             global_tokenizer in "[a-z][a-z0-9_]{3,15}",
         ) {
             let route = RouteDefinition {
+                default_model: None,
                 path: "/v1/chat/test".to_string(),
                 method: "POST".to_string(),
                 provider: Some("openai".to_string()),
@@ -2115,6 +2573,7 @@ mod property_tests {
             };
 
             let config = RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: vec![route.clone()],
                 custom_providers: vec![],
             };
@@ -2136,6 +2595,7 @@ mod property_tests {
             global_tokenizer in "[a-z][a-z0-9_]{3,15}",
         ) {
             let route = RouteDefinition {
+                default_model: None,
                 path: "/v1/chat/test".to_string(),
                 method: "POST".to_string(),
                 provider: Some("openai".to_string()),
@@ -2155,6 +2615,7 @@ mod property_tests {
             };
 
             let config = RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: vec![route.clone()],
                 custom_providers: vec![],
             };
@@ -2272,6 +2733,7 @@ mod property_tests {
             let route_defs: Vec<RouteDefinition> = unique_routes
                 .iter()
                 .map(|(path, method, provider, model)| RouteDefinition {
+                    default_model: None,
                     path: path.clone(),
                     method: method.clone(),
                     provider: Some(provider.clone()),
@@ -2284,6 +2746,7 @@ mod property_tests {
                 .collect();
 
             let config = RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: route_defs,
                 custom_providers: vec![],
             };
@@ -2327,6 +2790,7 @@ mod property_tests {
             let route_defs: Vec<RouteDefinition> = unique_routes
                 .iter()
                 .map(|(path, method, provider, model)| RouteDefinition {
+                    default_model: None,
                     path: path.clone(),
                     method: method.clone(),
                     provider: Some(provider.clone()),
@@ -2339,6 +2803,7 @@ mod property_tests {
                 .collect();
 
             let config = RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: route_defs,
                 custom_providers: vec![],
             };
@@ -2366,7 +2831,9 @@ mod property_tests {
             model in arb_model(),
         ) {
             let config = RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: vec![RouteDefinition {
+                    default_model: None,
                     path: path.clone(),
                     method: method.clone(),
                     provider: Some(provider.clone()),

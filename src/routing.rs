@@ -117,6 +117,7 @@ mod proptest_tests {
 
         fn empty_route_config() -> RouteConfigFile {
             RouteConfigFile {
+                model_aliases: Vec::new(),
                 routes: vec![],
                 custom_providers: vec![],
             }
@@ -328,6 +329,7 @@ routes:
     fn test_no_providers_and_no_routes_returns_error() {
         let providers: Vec<ProviderConfig> = vec![];
         let route_config = RouteConfigFile {
+            model_aliases: Vec::new(),
             routes: vec![],
             custom_providers: vec![],
         };

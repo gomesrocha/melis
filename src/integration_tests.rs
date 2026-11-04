@@ -58,6 +58,7 @@ auth:
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
             guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
                 &crate::route_config::RouteConfigFile {
+                    model_aliases: Vec::new(),
                     routes: vec![],
                     custom_providers: vec![],
                 },
@@ -132,6 +133,7 @@ auth:
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
             guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
                 &crate::route_config::RouteConfigFile {
+                    model_aliases: Vec::new(),
                     routes: vec![],
                     custom_providers: vec![],
                 },
@@ -716,6 +718,7 @@ auth:
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
             guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
                 &crate::route_config::RouteConfigFile {
+                    model_aliases: Vec::new(),
                     routes: vec![],
                     custom_providers: vec![],
                 },

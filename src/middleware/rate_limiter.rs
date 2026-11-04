@@ -467,6 +467,7 @@ mod tests {
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
             guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
                 &crate::route_config::RouteConfigFile {
+                    model_aliases: Vec::new(),
                     routes: vec![],
                     custom_providers: vec![],
                 },
@@ -640,6 +641,7 @@ rate_limit:
             outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
             guardrails: Arc::new(crate::guardrails::GuardrailEngine::new(
                 &crate::route_config::RouteConfigFile {
+                    model_aliases: Vec::new(),
                     routes: vec![],
                     custom_providers: vec![],
                 },
