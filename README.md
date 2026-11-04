@@ -181,6 +181,34 @@ auth:
 routes_config_path: "./routes.yaml"
 ```
 
+> **⚠️ Migration note — `allowed_models` is now enforced.**
+> In earlier versions `auth.api_keys[].allowed_models` was accepted but **never
+> applied**: any authenticated client could call any model. It is now enforced on
+> the chat path. **Before upgrading, review every API key that has a non-empty
+> `allowed_models`** — those clients will start receiving `403` for models not in
+> their list.
+>
+> - **Empty list = unrestricted** (unchanged behavior). Keys without
+>   `allowed_models` keep working exactly as before.
+> - The requested model, the effective model (after a route override/default),
+>   **and every resolved alias destination** must all be in the list. A virtual
+>   model alias cannot be used to reach a model the client is not allowed to use.
+> - This is an **authorization** change, not a config-format change: old
+>   `config.yaml`/`routes.yaml` files remain valid and parse identically; only the
+>   authorization decision changed (from "silently ignored" to "enforced"). The
+>   security fix is intentional and is not reverted for compatibility.
+>
+> Examples (client with `allowed_models: ["gpt-4o", "fast"]`, where `fast` is an
+> alias → `gpt-4o`):
+>
+> | Request `model` | Resolves to | Result |
+> |-----------------|-------------|--------|
+> | `gpt-4o` | `gpt-4o` | allowed |
+> | `fast` | `gpt-4o` (alias) | allowed (name and destination permitted) |
+> | `llama3.2` | `llama3.2` | **403** (not in the list) |
+> | `fast` but alias → `llama3.2` | `llama3.2` | **403** (destination not permitted, even though the alias name is) |
+> | (any) with `allowed_models: []` | — | allowed (empty = unrestricted) |
+
 #### Provider Types Reference
 
 | Provider | `provider_type` | `base_url` |

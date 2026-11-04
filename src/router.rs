@@ -484,6 +484,11 @@ async fn chat_completions_handler(
     let mut cache_ctx: Option<crate::semantic_cache::CacheKeyCtx> = None;
     let mut cache_entry_id: Option<String> = None;
     let mut cache_embedding: Option<Vec<f64>> = None;
+    // The destination (provider id, concrete model) the cache ctx/key was built
+    // for. Lookup targets this deterministic primary destination; store must only
+    // happen when the response actually came from it, so a failover response is
+    // never stored under an incompatible destination's namespace.
+    let mut cache_primary_dest: Option<(String, String)> = None;
 
     // Resolve the cache reuse scope (security isolation). `per_identity` (default)
     // keys the cache by the authenticated client identity; a request with no
@@ -668,6 +673,10 @@ async fn chat_completions_handler(
 
         cache_entry_id = Some(crate::semantic_cache::entry_id_for(&normalized));
         cache_ctx = Some(ctx);
+        cache_primary_dest = resolved
+            .providers
+            .first()
+            .map(|p| (p.name.clone(), p.model.clone()));
     }
 
     // ─── Context Compaction ───────────────────────────────────────────────────
@@ -1048,13 +1057,35 @@ async fn chat_completions_handler(
                             fill_usage_if_missing(&mut final_response, &payload, &token_counter);
 
                             // ─── Semantic cache store on miss (Phase 2) ──────────
-                            if let (Some(ctx), Some(entry_id), Some(embedding)) =
-                                (&cache_ctx, &cache_entry_id, &cache_embedding)
+                            // Only store when the response came from the SAME
+                            // destination the cache key was built for. A failover to
+                            // a different provider/model must not be stored under the
+                            // primary destination's namespace (it would be an
+                            // incompatible entry). The lookup was deterministic
+                            // against the primary; a diverged store is skipped.
+                            let dest_matches = cache_primary_dest
+                                .as_ref()
+                                .map(|(name, model)| {
+                                    *name == selected_name && *model == attempt_model
+                                })
+                                .unwrap_or(false);
+                            if let (Some(ctx), Some(entry_id), Some(embedding), true) =
+                                (&cache_ctx, &cache_entry_id, &cache_embedding, dest_matches)
                             {
                                 state
                                     .semantic_cache
                                     .store(ctx, entry_id, embedding, &final_response, false)
                                     .await;
+                            } else if cache_ctx.is_some() && !dest_matches {
+                                state
+                                    .metrics
+                                    .cache_skipped_total
+                                    .with_label_values(&["failover_destination_changed"])
+                                    .inc();
+                                tracing::debug!(
+                                    "cache store skipped: response came from a failover destination, \
+                                     not the primary the key was built for"
+                                );
                             }
 
                             // Phase 2 reserved hook (kept) + Phase 3 real outbound

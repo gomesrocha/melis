@@ -2733,3 +2733,142 @@ mod phase6a_virtual_models_e2e {
         drop(resolver_before);
     }
 }
+
+/// Cache + failover destination (audit): a response produced by a failover
+/// provider must not be stored under the primary destination's namespace.
+#[cfg(test)]
+mod cache_failover_destination_e2e {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use serde_json::json;
+    use tower::ServiceExt;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::balancer::WeightedRoundRobin;
+    use crate::circuit_breaker::LocalCircuitBreaker;
+    use crate::client::ReqwestLlmClient;
+    use crate::config::GatewayConfig;
+    use crate::guardrails::GuardrailEngine;
+    use crate::middleware::rate_limiter::LocalTokenBucket;
+    use crate::observability::Metrics;
+    use crate::route_config::RouteConfigManager;
+    use crate::router::build_router;
+    use crate::semantic_cache::{CacheKeyCtx, CacheLookup, SemanticCache};
+    use crate::state::AppState;
+
+    /// Records the namespaces that receive a store.
+    #[derive(Default)]
+    struct StoreRecordingCache {
+        stored_ns: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl SemanticCache for StoreRecordingCache {
+        async fn lookup(&self, _ctx: &CacheKeyCtx, _embedding: &[f64]) -> CacheLookup {
+            CacheLookup::Miss
+        }
+        async fn store(
+            &self,
+            ctx: &CacheKeyCtx,
+            _entry_id: &str,
+            _embedding: &[f64],
+            _response: &serde_json::Value,
+            _was_streaming: bool,
+        ) {
+            self.stored_ns.lock().unwrap().push(ctx.namespace());
+        }
+        async fn invalidate_namespace(&self, _ctx: &CacheKeyCtx) {}
+    }
+
+    #[tokio::test]
+    async fn failover_response_not_stored_under_primary_destination() {
+        // Primary provider returns 500 (triggers failover); secondary returns 200.
+        let primary = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&primary)
+            .await;
+        let secondary = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "x", "object": "chat.completion", "created": 0, "model": "m2",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&secondary)
+            .await;
+
+        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let routes_path = dir.path().join("routes.yaml");
+        // Route lists two providers: prov-a (primary) then prov-b (secondary).
+        std::fs::write(
+            &routes_path,
+            "routes:\n  - path: \"/v1/chat/completions\"\n    method: \"POST\"\n    providers:\n      - name: \"prov-a\"\n        weight: 1\n        model: \"m1\"\n      - name: \"prov-b\"\n        weight: 1\n        model: \"m2\"\n    semantic_cache:\n      enabled: true\n      scope: \"shared\"\ncustom_providers:\n  - name: \"prov-a\"\n    base_url: \"unused\"\n    api_format: \"openai_compatible\"\n  - name: \"prov-b\"\n    base_url: \"unused\"\n    api_format: \"openai_compatible\"\n",
+        )
+        .unwrap();
+        let gateway_config = GatewayConfig::from_yaml(&format!(
+            "server:\n  host: \"0.0.0.0\"\n  port: 8080\nredis:\n  cluster_urls: [\"redis://localhost:6379\"]\nauth:\n  enabled: false\nproviders:\n  - id: \"prov-a\"\n    provider_type: \"openai\"\n    api_key: \"k\"\n    base_url: \"{}/v1\"\n  - id: \"prov-b\"\n    provider_type: \"openai\"\n    api_key: \"k\"\n    base_url: \"{}/v1\"\n",
+            primary.uri(),
+            secondary.uri()
+        ))
+        .unwrap();
+        let route_config = RouteConfigManager::new_without_watcher(routes_path);
+        let guardrails = Arc::new(GuardrailEngine::new(
+            route_config.current().config(),
+            gateway_config.guardrails.clone(),
+        ));
+        let cache = Arc::new(StoreRecordingCache::default());
+        let metrics = Arc::new(Metrics::new());
+        let state = AppState {
+            route_config: Arc::new(route_config),
+            gateway_config: Arc::new(gateway_config),
+            rate_limiter: Arc::new(LocalTokenBucket::new()),
+            load_balancer: Arc::new(WeightedRoundRobin::new()),
+            circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+            http_client: Arc::new(ReqwestLlmClient::new()),
+            metrics: metrics.clone(),
+            redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: cache.clone(),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails,
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+        };
+
+        let app = build_router(state);
+        let payload = json!({"model": "m1", "messages": [{"role": "user", "content": "hi"}]});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Failover delivered the secondary's 200.
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The response came from prov-b, but the cache key was built for the primary
+        // (prov-a). The store must have been SKIPPED (not stored under prov-a's
+        // namespace), and the skip must be counted.
+        let stored = cache.stored_ns.lock().unwrap().clone();
+        assert!(
+            stored.is_empty(),
+            "a failover response must not be stored under the primary namespace: {stored:?}"
+        );
+        assert_eq!(
+            metrics
+                .cache_skipped_total
+                .with_label_values(&["failover_destination_changed"])
+                .get(),
+            1,
+            "failover store-skip must be recorded"
+        );
+    }
+}

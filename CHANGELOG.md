@@ -5,6 +5,23 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed — cache store on failover destination
+- A semantic-cache miss that then **failed over** to a different provider stored the
+  response under the PRIMARY destination's namespace (the key was built before
+  provider selection). A later request to the primary could then receive a response
+  actually produced by a different destination. Store now happens only when the
+  responding provider+model matches the destination the key was built for; a
+  diverged failover store is skipped and counted
+  (`melis_cache_skipped_total{reason="failover_destination_changed"}`). Lookup is
+  unchanged (deterministic against the primary). Single-provider routes and
+  single-target aliases are unaffected. Failing-first test included.
+
+> **Migration note — `allowed_models` enforcement (see Phase 6A below and README).**
+> The field was previously inert and is now enforced for the requested name, the
+> effective model, and every resolved alias destination. Empty list = unrestricted.
+> This is an authorization change, not a config-format change; old config files
+> remain valid. Review keys with a non-empty `allowed_models` before upgrading.
+
 ### Phase 6A — Virtual models (declarative aliases)
 #### Added
 - `model_aliases` in `routes.yaml`: `[{name, targets: [{provider, model, weight}]}]`.

@@ -511,9 +511,9 @@ impl Metrics {
             &["reason"],
         )
         .expect("failed to create melis_cache_skipped_total metric");
-        cache_skipped_total
-            .with_label_values(&["multi_target_alias"])
-            .inc_by(0);
+        for r in ["multi_target_alias", "failover_destination_changed"] {
+            cache_skipped_total.with_label_values(&[r]).inc_by(0);
+        }
         for r in crate::semantic_scoring::FallbackReason::ALL {
             compaction_scoring_fallback_total
                 .with_label_values(&[r.label()])
