@@ -5,6 +5,18 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Integrity — per-request guardrail configuration snapshot (audit fix)
+#### Fixed
+- The route/model/cache/scoring config is resolved once per request into a
+  consistent `ResolvedRoute`, but compiled guardrails live in a separate `ArcSwap`
+  that was read independently up to four times per request (inbound, cache-hit
+  outbound, streaming setup, provider-response outbound). A hot reload landing
+  mid-request could make the inbound check use one guardrail version and an
+  outbound check a newer one. The route's compiled guardrails are now resolved once
+  at the start of the request and reused for every inbound/outbound check, so a
+  single request always sees one consistent guardrail policy. Public behavior is
+  unchanged.
+
 ### Security/integrity — streaming guardrail redaction across chunk boundaries (audit fix)
 #### Fixed
 - Streaming outbound guardrails detected a keyword/pattern split across SSE chunks

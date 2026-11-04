@@ -302,12 +302,19 @@ async fn chat_completions_handler(
         "Route resolved for /v1/chat/completions"
     );
 
+    // Resolve the route's compiled guardrails ONCE per request and reuse the same
+    // snapshot for the inbound check and every outbound check. The guardrail engine
+    // is a separate ArcSwap from the route resolver, so reading it repeatedly could
+    // otherwise observe different versions mid-request across a hot reload (audit:
+    // per-request configuration consistency).
+    let request_guardrails = state.guardrails.for_route(request_path, request_method);
+
     // ─── Inbound Guardrails (Phase 3) ─────────────────────────────────────────
     // Runs AFTER auth + rate limit (Tower layers) and BEFORE cache lookup/store
     // and compaction. A block rejects with 400 (never touching cache or provider);
     // a redact rewrites the payload so the redacted content is what flows into the
     // cache key, compaction, and the provider.
-    if let Some(guardrails) = state.guardrails.for_route(request_path, request_method) {
+    if let Some(guardrails) = request_guardrails.clone() {
         use crate::guardrails::GuardrailDecision;
         use crate::route_config::GuardrailDirection;
 
@@ -421,9 +428,7 @@ async fn chat_completions_handler(
                         // guardrails: a cache hit must pass through output filtering
                         // exactly like a provider response.
                         let mut body = state.outbound_guardrail.apply(cached.body);
-                        if let Some(guardrails) =
-                            state.guardrails.for_route(request_path, request_method)
-                        {
+                        if let Some(guardrails) = request_guardrails.clone() {
                             if let Err(rule) = crate::guardrails::apply_outbound_to_response(
                                 &mut body,
                                 &guardrails,
@@ -787,7 +792,7 @@ async fn chat_completions_handler(
                     .await;
 
                 let transpiler = crate::transpiler::get_transpiler(&ptype);
-                let guardrails = state.guardrails.for_route(request_path, request_method);
+                let guardrails = request_guardrails.clone();
                 let transformed = crate::streaming::transform_sse_stream_guarded(
                     Box::pin(stream.map(|r| {
                         r.map_err(|e| crate::streaming::StreamError::Connection(e.to_string()))
@@ -858,9 +863,7 @@ async fn chat_completions_handler(
                             // response above; filtering is applied on every delivery
                             // (fresh and cache hit), so a cache hit still passes through here.
                             let mut final_response = state.outbound_guardrail.apply(final_response);
-                            if let Some(guardrails) =
-                                state.guardrails.for_route(request_path, request_method)
-                            {
+                            if let Some(guardrails) = request_guardrails.clone() {
                                 if let Err(rule) = crate::guardrails::apply_outbound_to_response(
                                     &mut final_response,
                                     &guardrails,
