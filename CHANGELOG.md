@@ -5,6 +5,19 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Security/integrity — streaming guardrail redaction across chunk boundaries (audit fix)
+#### Fixed
+- Streaming outbound guardrails detected a keyword/pattern split across SSE chunks
+  via the sliding window, but on a `redact` action only the current chunk's delta
+  was re-scanned — so a keyword straddling two chunks was detected yet neither half
+  was redacted, leaking the partial halves. The straddling chunk's content is now
+  suppressed (emitted empty) when the in-delta redaction would be a no-op. `block`
+  behavior is unchanged.
+- Documented the streaming guardrail guarantees and limits honestly (4096-byte
+  window, boundary eviction, assistant-content-only scanning, regex case folding).
+  Full cross-chunk guarantees for arbitrary rules are explicitly not claimed.
+- Failing-first test: `streaming_redact_does_not_leak_keyword_split_across_chunks`.
+
 ### Security/integrity — semantic cache isolation (audit fix)
 #### Fixed
 - The semantic cache keyed responses only by `(route, method, effective model)`,

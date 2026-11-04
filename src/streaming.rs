@@ -201,7 +201,14 @@ pub fn transform_sse_stream_guarded(
                                         return;
                                     }
                                     GuardrailDecision::Redacted(_) => {
-                                        // Redact only this chunk's delta for emission.
+                                        // The window matched. Try to redact within
+                                        // this delta. If the match straddles the
+                                        // chunk boundary (the delta alone has no
+                                        // match), redacting the delta is a no-op and
+                                        // would leak the partial halves — suppress
+                                        // this delta's content instead. Safe and
+                                        // bounded (no full-response buffering); may
+                                        // drop adjacent benign text in the same delta.
                                         if let Some(slot) = translated
                                             .get_mut("choices")
                                             .and_then(|c| c.as_array_mut())
@@ -209,14 +216,17 @@ pub fn transform_sse_stream_guarded(
                                             .and_then(|c| c.get_mut("delta"))
                                             .and_then(|d| d.get_mut("content"))
                                         {
-                                            // Re-evaluate just the delta to redact its spans.
-                                            if let GuardrailDecision::Redacted(red) = g.evaluate(
+                                            let replacement = match g.evaluate(
                                                 GuardrailDirection::Outbound,
                                                 &delta,
                                                 metrics_ref,
                                             ) {
-                                                *slot = serde_json::Value::String(red);
-                                            }
+                                                GuardrailDecision::Redacted(red) => red,
+                                                // No in-delta match => cross-boundary
+                                                // straddle: drop this delta's content.
+                                                _ => String::new(),
+                                            };
+                                            *slot = serde_json::Value::String(replacement);
                                         }
                                     }
                                     GuardrailDecision::Allow => {}
@@ -584,6 +594,41 @@ mod tests {
             chunk
         );
         assert!(!chunk.contains("badword"), "keyword leaked: {}", chunk);
+    }
+
+    #[tokio::test]
+    async fn streaming_redact_does_not_leak_keyword_split_across_chunks() {
+        // "secret" is split across two chunks. The window detects it (Redacted),
+        // but neither single delta contains the whole keyword. The partial halves
+        // must NOT be emitted verbatim; the straddling delta's content is
+        // suppressed instead (safe, bounded; no full-response buffering).
+        let provider_stream = mock_provider_stream(vec![
+            Ok(content_chunk("the sec")),
+            Ok(content_chunk("ret value")),
+        ]);
+        let transpiler: Box<dyn PayloadTranspiler> = Box::new(OpenAiTranspiler);
+        let g = outbound_keyword_guardrail(GuardrailAction::Redact, "secret");
+
+        let transformed = transform_sse_stream_guarded(provider_stream, transpiler, Some(g), None);
+        let data_lines = collect_data_lines(transformed).await;
+        let joined: String = data_lines.join("");
+        // Reassembled emitted content must not contain the keyword.
+        let emitted: String = data_lines
+            .iter()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| {
+                v.get("choices")
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("content"))
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string)
+            })
+            .collect();
+        assert!(
+            !emitted.replace(' ', "").contains("secret"),
+            "split keyword leaked across chunks: emitted={emitted:?} raw={joined:?}"
+        );
     }
 
     #[tokio::test]

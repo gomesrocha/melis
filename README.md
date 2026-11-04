@@ -759,6 +759,28 @@ cache hits**. For streaming, a sliding-window buffer evaluates the accumulated
 text before emitting each chunk (emission latency ≤ 1 chunk); a blocking match
 ends the stream with an SSE error event without leaking the blocked content.
 
+**Streaming guardrails: supported guarantees and limits.** Scanning runs over a
+sliding window of the accumulated assistant text (last 4096 bytes), so patterns
+that span chunk boundaries are detected, not just per-chunk matches.
+
+- `block`: a match anywhere in the window ends the stream with an error event; the
+  offending chunk is not emitted. Chunks emitted *before* the match was completable
+  cannot be retracted (streaming is incremental by nature).
+- `redact`: the matched span in the current chunk is replaced with `[REDACTED]`.
+  When a keyword/pattern straddles a chunk boundary, the window still detects it and
+  the straddling chunk's content is **suppressed** (emitted empty) rather than
+  leaked; this can drop benign text sharing that chunk.
+- Limits: a match split across the 4096-byte window trim boundary (i.e. whose start
+  was already evicted) may escape detection. Only assistant `delta.content` is
+  scanned, not tool-call deltas or other fields. Regex rules are matched without
+  case folding, so use `(?i)` for case-insensitive regex (keyword and
+  prompt-injection rules are case-insensitive).
+
+These are the honest guarantees of a bounded-buffer, low-latency design. Full
+cross-chunk guarantees for arbitrary rules would require buffering the whole
+response (defeating streaming) or per-rule maximum-length bounds; that tradeoff is
+left to a future opt-in and is not claimed today.
+
 ### Configuration (per route in `routes.yaml`)
 
 ```yaml
