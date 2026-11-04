@@ -70,6 +70,12 @@ pub struct CacheKeyCtx {
     pub route_path: String,
     pub route_method: String,
     pub model: String,
+    /// Hex hash of everything that must match for a cached response to be safely
+    /// reusable but is NOT captured by the conversation embedding: the namespace
+    /// version, the system instructions, the generation parameters, and the tool
+    /// definitions. Two requests that differ in any of these land in different
+    /// namespaces (see [`compatibility_salt`]).
+    pub key_salt: String,
     pub threshold: f64,
     pub ttl_secs: u64,
     pub max_entries: u64,
@@ -79,22 +85,41 @@ impl CacheKeyCtx {
     /// Redis namespace prefix for entries: `melis:cache:{path}:{method}:{model}`.
     pub fn namespace(&self) -> String {
         format!(
-            "melis:cache:{}:{}:{}",
-            self.route_path, self.route_method, self.model
+            "melis:cache:{}:{}:{}:{}",
+            self.route_path, self.route_method, self.model, self.key_salt
         )
     }
 
     /// Redis key of the namespace index (ZSET member=entry_id score=stored_at_ms).
     pub fn index_key(&self) -> String {
         format!(
-            "melis:cache:idx:{}:{}:{}",
-            self.route_path, self.route_method, self.model
+            "melis:cache:idx:{}:{}:{}:{}",
+            self.route_path, self.route_method, self.model, self.key_salt
         )
     }
 
     /// Full entry key for a given entry id.
     pub fn entry_key(&self, entry_id: &str) -> String {
         format!("{}:{}", self.namespace(), entry_id)
+    }
+
+    /// SCAN glob matching the entry keys of EVERY salt for this (path, method,
+    /// model). Used by model-change cleanup, which runs before the per-request
+    /// salt is known.
+    pub fn model_entry_pattern(&self) -> String {
+        format!(
+            "melis:cache:{}:{}:{}:*",
+            self.route_path, self.route_method, self.model
+        )
+    }
+
+    /// SCAN glob matching the index keys of every salt for this (path, method,
+    /// model).
+    pub fn model_index_pattern(&self) -> String {
+        format!(
+            "melis:cache:idx:{}:{}:{}:*",
+            self.route_path, self.route_method, self.model
+        )
     }
 }
 
@@ -126,6 +151,92 @@ pub trait SemanticCache: Send + Sync {
 }
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
+
+/// Bump when the reuse rules change so old (incompatible) entries are never
+/// reused. Part of every cache key via [`compatibility_salt`]; no destructive
+/// cleanup is performed — old namespaces simply age out by TTL.
+pub const CACHE_NAMESPACE_VERSION: u32 = 2;
+
+/// Generation parameters that change the response and therefore must be part of
+/// the cache key. A cached answer produced under different parameters must not be
+/// reused for a request that set them differently.
+const GENERATION_PARAM_KEYS: &[&str] = &[
+    "temperature",
+    "top_p",
+    "top_k",
+    "max_tokens",
+    "max_completion_tokens",
+    "presence_penalty",
+    "frequency_penalty",
+    "repetition_penalty",
+    "stop",
+    "seed",
+    "response_format",
+    "n",
+    "logprobs",
+    "top_logprobs",
+    "logit_bias",
+];
+
+/// Hash of everything that must match for a cached response to be reusable but is
+/// NOT captured by the conversation embedding: the namespace version, the system
+/// instructions, the generation parameters, and the tool definitions.
+///
+/// Rationale (cache-isolation audit): the embedding is built from non-system
+/// message content only, so without this salt two requests that differ only in
+/// their system prompt, temperature, or tools would share a namespace and could
+/// return each other's responses. Different salt ⇒ different namespace ⇒ no reuse.
+/// Values are serialized canonically (serde_json sorts object keys via BTreeMap)
+/// and hashed; the system text is included verbatim (not lowercased) because an
+/// instruction's case can be semantically significant.
+pub fn compatibility_salt(messages: &[Value], payload: &Value) -> String {
+    use std::collections::BTreeMap;
+
+    // System instructions, in order, joined with a separator unlikely to collide.
+    let system: Vec<&str> = messages
+        .iter()
+        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+        .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+        .collect();
+
+    // Generation parameters present in the request, in a stable (sorted) order.
+    let mut params: BTreeMap<&str, &Value> = BTreeMap::new();
+    for key in GENERATION_PARAM_KEYS {
+        if let Some(v) = payload.get(*key) {
+            if !v.is_null() {
+                params.insert(key, v);
+            }
+        }
+    }
+
+    // Tool definitions and selection strategy.
+    let tools = payload.get("tools");
+    let tool_choice = payload.get("tool_choice");
+    let functions = payload.get("functions"); // legacy function-calling
+    let function_call = payload.get("function_call");
+
+    // Canonical JSON (BTreeMap => sorted keys) of everything that must match.
+    let canonical = serde_json::json!({
+        "v": CACHE_NAMESPACE_VERSION,
+        "system": system,
+        "params": params,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "functions": functions,
+        "function_call": function_call,
+    });
+    let bytes = serde_json::to_vec(&canonical).unwrap_or_default();
+
+    // FNV-1a 64-bit, same family as entry_id_for; collisions are astronomically
+    // unlikely for this low-cardinality input and would only cause a false reuse
+    // within one (path, method, model) — acceptable vs the cost of a real hash dep.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in &bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", hash)
+}
 
 /// Normalize a conversation into a single string for embedding:
 /// concatenate the content of all non-`system` messages (in order), lowercase,
@@ -450,31 +561,32 @@ impl SemanticCache for RedisSemanticCache {
     async fn invalidate_namespace(&self, ctx: &CacheKeyCtx) {
         use fred::interfaces::KeysInterface;
 
-        // Best-effort: delete the index and SCAN+DEL entry keys. Tolerant to failure.
-        let pattern = format!("{}:*", ctx.namespace());
-        // Delete the index first.
-        let _: Result<(), _> = self.client.del(ctx.index_key()).await.map(|_: i64| ());
-
-        // SCAN entry keys and delete them in batches.
+        // Best-effort: delete every salt's entries AND index for this
+        // (path, method, model). The salt is not known at cleanup time, so both
+        // entry keys and index keys are matched by glob. Tolerant to failure;
+        // non-destructive to other namespaces.
         use fred::types::Scanner;
         use futures_util::StreamExt;
-        let mut scan = self.client.scan(&pattern, Some(256), None);
-        while let Some(result) = scan.next().await {
-            match result {
-                Ok(mut page) => {
-                    if let Some(keys) = page.take_results() {
-                        for key in keys {
-                            let _: Result<(), _> = self.client.del::<i64, _>(key).await.map(|_| ());
+        for pattern in [ctx.model_entry_pattern(), ctx.model_index_pattern()] {
+            let mut scan = self.client.scan(&pattern, Some(256), None);
+            while let Some(result) = scan.next().await {
+                match result {
+                    Ok(mut page) => {
+                        if let Some(keys) = page.take_results() {
+                            for key in keys {
+                                let _: Result<(), _> =
+                                    self.client.del::<i64, _>(key).await.map(|_| ());
+                            }
                         }
+                        let _ = page.next();
                     }
-                    let _ = page.next();
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "semantic cache namespace cleanup scan error (ignored): {}",
-                        e
-                    );
-                    break;
+                    Err(e) => {
+                        tracing::warn!(
+                            "semantic cache namespace cleanup scan error (ignored): {}",
+                            e
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -538,19 +650,104 @@ mod tests {
         assert_ne!(entry_id_for("hello world"), entry_id_for("hello there"));
     }
 
+    // ── cache isolation: compatibility_salt (audit fix) ──────────────────────
+
+    #[test]
+    fn salt_isolates_system_params_and_tools() {
+        let user = json!([{"role": "user", "content": "hi"}]);
+        let base = json!({"model": "m", "messages": user});
+        let salt =
+            |msgs: &Value, payload: &Value| compatibility_salt(msgs.as_array().unwrap(), payload);
+
+        let baseline = salt(&user, &base);
+
+        // Different system instruction must change the salt (embedding skips system).
+        let with_system = json!([
+            {"role": "system", "content": "You are a pirate."},
+            {"role": "user", "content": "hi"}
+        ]);
+        assert_ne!(
+            baseline,
+            salt(&with_system, &base),
+            "system prompt must affect the key"
+        );
+        let with_other_system = json!([
+            {"role": "system", "content": "You are a lawyer."},
+            {"role": "user", "content": "hi"}
+        ]);
+        assert_ne!(
+            salt(&with_system, &base),
+            salt(&with_other_system, &base),
+            "different system prompts must differ"
+        );
+
+        // Case of a system instruction is significant (not lowercased).
+        let sys_upper = json!([
+            {"role": "system", "content": "YOU ARE A PIRATE."},
+            {"role": "user", "content": "hi"}
+        ]);
+        assert_ne!(salt(&with_system, &base), salt(&sys_upper, &base));
+
+        // Generation parameters must change the salt.
+        let hot = json!({"model": "m", "messages": user, "temperature": 0.9});
+        let cold = json!({"model": "m", "messages": user, "temperature": 0.1});
+        assert_ne!(
+            salt(&user, &hot),
+            salt(&user, &cold),
+            "temperature must affect the key"
+        );
+        assert_ne!(
+            baseline,
+            salt(&user, &hot),
+            "adding a param must affect the key"
+        );
+        let capped = json!({"model": "m", "messages": user, "max_tokens": 100});
+        assert_ne!(baseline, salt(&user, &capped));
+
+        // Tools must change the salt.
+        let tooled = json!({
+            "model": "m", "messages": user,
+            "tools": [{"type": "function", "function": {"name": "f"}}]
+        });
+        assert_ne!(baseline, salt(&user, &tooled), "tools must affect the key");
+
+        // Stability: identical inputs produce identical salt; param order irrelevant.
+        let a = json!({"model": "m", "messages": user, "temperature": 0.5, "top_p": 0.9});
+        let b = json!({"top_p": 0.9, "model": "m", "temperature": 0.5, "messages": user});
+        assert_eq!(
+            salt(&user, &a),
+            salt(&user, &b),
+            "param order must not matter"
+        );
+
+        // Unrelated fields (not generation params) do not change the salt.
+        let with_user_field = json!({"model": "m", "messages": user, "user": "abc"});
+        assert_eq!(baseline, salt(&user, &with_user_field));
+    }
+
+    #[test]
+    fn salt_changes_with_namespace_version() {
+        // Guards against forgetting to bump behavior: the version is part of the salt.
+        let user = json!([{"role": "user", "content": "hi"}]);
+        let payload = json!({"model": "m", "messages": user});
+        let s = compatibility_salt(user.as_array().unwrap(), &payload);
+        assert_eq!(s.len(), 16, "salt is a 64-bit hex hash");
+    }
+
     #[test]
     fn cache_key_ctx_namespaces_include_route_and_model() {
         let ctx = CacheKeyCtx {
             route_path: "/v1/chat/completions".to_string(),
             route_method: "POST".to_string(),
             model: "llama3.2".to_string(),
+            key_salt: "deadbeef".to_string(),
             threshold: 0.92,
             ttl_secs: 3600,
             max_entries: 1000,
         };
         assert_eq!(
             ctx.namespace(),
-            "melis:cache:/v1/chat/completions:POST:llama3.2"
+            "melis:cache:/v1/chat/completions:POST:llama3.2:deadbeef"
         );
         // Same conversation, different model => different namespace => no cross-hit.
         let ctx2 = CacheKeyCtx {
@@ -644,6 +841,7 @@ mod tests {
             route_path: path.to_string(),
             route_method: "POST".to_string(),
             model: model.to_string(),
+            key_salt: "testsalt".to_string(),
             threshold,
             ttl_secs: 3600,
             max_entries: 1000,
@@ -760,6 +958,7 @@ mod tests {
             route_path: "/p".to_string(),
             route_method: "POST".to_string(),
             model: "m".to_string(),
+            key_salt: "s".to_string(),
             threshold: 0.9,
             ttl_secs: 10,
             max_entries: 10,

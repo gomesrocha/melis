@@ -372,10 +372,17 @@ async fn chat_completions_handler(
             .cloned()
             .unwrap_or_default();
         let normalized = crate::semantic_cache::normalize_conversation(&messages);
+        // Fold system instructions, generation parameters, and tool definitions
+        // into the key: the embedding only covers non-system content, so without
+        // this a different system prompt / temperature / tool set would share a
+        // namespace and could return an incompatible cached response (cache
+        // isolation audit).
+        let key_salt = crate::semantic_cache::compatibility_salt(&messages, &payload);
         let ctx = crate::semantic_cache::CacheKeyCtx {
             route_path: request_path.to_string(),
             route_method: request_method.to_string(),
             model: effective_model.clone(),
+            key_salt,
             threshold: sc.similarity_threshold,
             ttl_secs: sc.ttl_secs,
             max_entries: sc.max_entries,

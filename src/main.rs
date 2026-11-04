@@ -162,10 +162,13 @@ async fn main() {
         route_config.set_model_change_hook(Arc::new(move |path, method, old_model| {
             let cache = cache_for_hook.clone();
             tokio::spawn(async move {
+                // Salt is unknown here; invalidate_namespace clears every salt for
+                // this (path, method, model) by glob, so an empty salt is fine.
                 let ctx = semantic_cache::CacheKeyCtx {
                     route_path: path,
                     route_method: method,
                     model: old_model,
+                    key_salt: String::new(),
                     threshold: 0.0,
                     ttl_secs: 0,
                     max_entries: 0,

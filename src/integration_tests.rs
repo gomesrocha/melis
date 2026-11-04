@@ -1212,6 +1212,119 @@ custom_providers:
                 .get();
             assert_eq!(blocked, 1, "outbound guardrail should block the cached hit");
         }
+
+        // ── cache isolation (audit fix): namespace must reflect system/params/tools ──
+
+        /// Cache that records the namespaces it is asked to look up, and serves a
+        /// hit only for an exact namespace it has "stored".
+        #[derive(Default)]
+        struct NamespaceRecordingCache {
+            looked_up: Mutex<Vec<String>>,
+            hits_for: Mutex<std::collections::HashSet<String>>,
+        }
+
+        #[async_trait]
+        impl SemanticCache for NamespaceRecordingCache {
+            async fn lookup(&self, ctx: &CacheKeyCtx, _embedding: &[f64]) -> CacheLookup {
+                let ns = ctx.namespace();
+                self.looked_up.lock().unwrap().push(ns.clone());
+                if self.hits_for.lock().unwrap().contains(&ns) {
+                    return CacheLookup::Hit(crate::semantic_cache::CachedResponse {
+                        body: serde_json::json!({
+                            "object": "chat.completion",
+                            "choices": [{"index": 0, "finish_reason": "stop",
+                                         "message": {"role": "assistant", "content": "cached"}}]
+                        }),
+                        was_streaming: false,
+                        stored_at_unix: crate::semantic_cache::now_unix(),
+                    });
+                }
+                CacheLookup::Miss
+            }
+            async fn store(
+                &self,
+                ctx: &CacheKeyCtx,
+                _entry_id: &str,
+                _embedding: &[f64],
+                _response: &serde_json::Value,
+                _was_streaming: bool,
+            ) {
+                self.hits_for.lock().unwrap().insert(ctx.namespace());
+            }
+            async fn invalidate_namespace(&self, _ctx: &CacheKeyCtx) {}
+        }
+
+        async fn lookup_namespace(cache: Arc<NamespaceRecordingCache>, payload: serde_json::Value) {
+            let dir = tempfile::tempdir().unwrap();
+            let routes = r#"
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "mock-primary"
+    model: "mock-model"
+    semantic_cache:
+      enabled: true
+custom_providers:
+  - name: "mock-primary"
+    base_url: "http://127.0.0.1:59998/v1"
+    api_format: "openai_compatible"
+"#;
+            let (state, _m) = build_state(
+                &dir,
+                routes,
+                cache,
+                Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+            );
+            let app = build_router(state);
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                .unwrap();
+            // The provider is unreachable; we only care about the cache namespace
+            // used during lookup, which happens before the provider call.
+            let _ = app.oneshot(request).await.unwrap();
+        }
+
+        /// A response cached for one (system, params, tools) must NOT be returned
+        /// for a request that differs in any of them, even with identical user
+        /// messages (the embedding covers only non-system content).
+        #[tokio::test]
+        async fn cache_does_not_reuse_across_incompatible_requests() {
+            let cache = Arc::new(NamespaceRecordingCache::default());
+            let user = serde_json::json!([{"role": "user", "content": "what is the policy?"}]);
+
+            // Base request: seed the cache with its namespace via a store.
+            let base = serde_json::json!({"model": "mock-model", "messages": user});
+            // Variants that must land in different namespaces.
+            let with_system = serde_json::json!({
+                "model": "mock-model",
+                "messages": [
+                    {"role": "system", "content": "Tenant A. Only answer about tenant A."},
+                    {"role": "user", "content": "what is the policy?"}
+                ]
+            });
+            let hot =
+                serde_json::json!({"model": "mock-model", "messages": user, "temperature": 0.9});
+            let tooled = serde_json::json!({
+                "model": "mock-model", "messages": user,
+                "tools": [{"type": "function", "function": {"name": "lookup"}}]
+            });
+
+            for p in [&base, &with_system, &hot, &tooled] {
+                lookup_namespace(cache.clone(), p.clone()).await;
+            }
+
+            let seen = cache.looked_up.lock().unwrap().clone();
+            assert_eq!(seen.len(), 4);
+            let distinct: std::collections::HashSet<_> = seen.iter().collect();
+            assert_eq!(
+                distinct.len(),
+                4,
+                "each of base/system/temperature/tools must use a distinct cache namespace: {seen:?}"
+            );
+        }
     }
 }
 

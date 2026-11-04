@@ -5,6 +5,31 @@ All notable changes to the Melis AI Gateway are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Security/integrity — semantic cache isolation (audit fix)
+#### Fixed
+- The semantic cache keyed responses only by `(route, method, effective model)`,
+  and the conversation embedding covers only non-system messages. As a result a
+  cached response could be reused across requests that differ in their **system
+  instructions**, **generation parameters** (temperature, top_p, max_tokens, stop,
+  seed, response_format, penalties, ...), or **tool definitions** — returning an
+  answer produced under an incompatible context.
+- The cache key now folds a `compatibility_salt` into the namespace: a hash of a
+  namespace version plus the system instructions (case-sensitive), the generation
+  parameters, and the tools/tool_choice/functions. Any difference now lands in a
+  different namespace, so incompatible responses are never reused. A different
+  salt simply causes a cache miss (acceptable: a miss is preferred to an
+  incompatible hit).
+- Namespace versioning (`CACHE_NAMESPACE_VERSION`) is part of the salt, so future
+  reuse-rule changes invalidate old entries without destructive Redis cleanup;
+  old namespaces age out by TTL. Model-change cleanup now clears every salt for a
+  `(route, method, model)` by glob.
+- Tenant/identity is still NOT part of the key (auth identity is not currently
+  threaded to the handler); cross-tenant isolation is listed as a pending decision
+  in the audit, not addressed here.
+- Tests: `salt_isolates_system_params_and_tools` (unit) and
+  `cache_does_not_reuse_across_incompatible_requests` (HTTP E2E); both fail before
+  the fix (verified).
+
 ### Test infrastructure — G1 reproducibility
 #### Changed
 - Live-provider integration tests (`test_json_response_with_valid_payload`,
