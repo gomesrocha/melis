@@ -384,8 +384,52 @@ Key behaviors:
 
 Redis operations are bounded (100ms timeout) and skipped for 1s after a failure,
 so an outage costs at most one timeout per second, not one per request. Watch
-`melis_circuit_breaker_backend`, `melis_circuit_breaker_degraded` and
-`melis_redis_up`.
+`melis_circuit_breaker_backend`, `melis_circuit_breaker_degraded`,
+`melis_circuit_breaker_degraded_decisions_total{decision}` and `melis_redis_up`.
+
+**Local protection during a Redis outage (limits).** When a replica has observed a
+provider in Open/Half-Open and then loses Redis, it keeps denying that provider for
+at most
+
+```
+on read (admit saw Open/Half-Open):  horizon = max_ttl_secs + probe_lease
+on write (this replica opened it):   horizon = max_ttl_secs + open_ttl_secs
+probe_lease = provider timeout + 1s
+```
+
+counted from the last time it read or wrote the unhealthy state. After the
+horizon it fails open again, so a long Redis outage cannot block a provider forever.
+When Redis answers again, the next read reconciles the local knowledge with the
+shared state automatically (if another replica closed the circuit meanwhile, this
+replica allows traffic and drops its local "unhealthy" mark).
+
+This is a **conservative local protection, not a global single-probe guarantee**.
+During a Redis partition there is no coordination: replicas that never observed the
+cycle (new pods, pods that were idle for that provider) fail open, and each replica
+decides on its own. The single-probe guarantee only holds while Redis is reachable.
+
+Distinguishing a Redis outage from a provider failure:
+
+| Signal | Provider-failure circuit | Redis outage |
+|--------|-------------------------|--------------|
+| `Admission` | `Deny` | `DenyUnverified` (or `Allow` when the replica knows nothing) |
+| `melis_failover_total{reason}` / `melis_fallback_mode_total{reason}` | `circuit_open` | `breaker_state_unavailable` |
+| `melis_circuit_breaker_degraded_decisions_total{decision}` | — | `allow` \| `deny` \| `write_skipped` |
+| Log | — | `redis unavailable: denying (...bounded local protection)` (warn) |
+| `melis_redis_up` | 1 | 0 |
+
+**Health endpoints and Redis.**
+
+| Endpoint | Depends on Redis? | Redis down |
+|----------|-------------------|------------|
+| `/healthz` (liveness) | never | always 200 |
+| `/readyz`, `redis.required_for_readiness: false` (default) — Redis is an *optional* dependency | no | 200 `{"status":"ready","degraded":["redis"]}` |
+| `/readyz`, `redis.required_for_readiness: true` — Redis is a *required* dependency | yes | 503 `{"status":"not_ready","reason":"Redis connection unavailable"}` |
+
+Optional (default) fits the degradation policy above: cache and breaker keep
+working in degraded mode, so a Redis outage must not pull every replica out of the
+load balancer at once. Use `true` only if your deployment cannot serve correctly
+without Redis.
 
 ### Retry/Failover Loop
 
@@ -737,8 +781,9 @@ Melis exposes all metrics at `GET /metrics` in Prometheus text exposition format
 | `melis_cache_entries` | Gauge | `namespace` | Cache entry count per (route, model) namespace |
 | `melis_guardrail_actions_total` | Counter | `rule`, `direction`, `action` | Guardrail actions taken (block/redact/warn) |
 | `melis_circuit_breaker_backend` | Gauge | `backend` | Active circuit breaker backend (`local` or `redis`); value 1 for the active one |
-| `melis_circuit_breaker_degraded` | Counter | — | Redis circuit breaker fail-open degradations |
-| `melis_redis_up` | Gauge | — | Shared Redis reachability (1 = PING ok), refreshed every 5s; also drives `/readyz` |
+| `melis_circuit_breaker_degraded` | Counter | — | Redis circuit breaker operations that could not reach Redis |
+| `melis_circuit_breaker_degraded_decisions_total` | Counter | `decision` | Breaker decisions while Redis was unavailable: `allow`, `deny` (bounded local protection), `write_skipped` |
+| `melis_redis_up` | Gauge | — | Shared Redis reachability (1 = PING ok), refreshed every 5s; drives `/readyz` only when `redis.required_for_readiness: true` |
 | `melis_cache_embed_seconds` | Histogram | — | Embedding computation time in the cache lookup path |
 
 > **Note on `melis_circuit_breaker_state` with the Redis backend:** replicas read

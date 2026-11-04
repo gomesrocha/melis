@@ -97,6 +97,18 @@ pub enum Admission {
     Probe(String),
     /// Do not call the provider (open, or a probe is already in flight).
     Deny,
+    /// Do not call the provider: Redis is unreadable and this replica recently
+    /// observed an Open/Half-Open cycle (local, bounded, conservative protection).
+    /// Distinct from `Deny` so logs/metrics separate "Redis outage" from
+    /// "circuit open because the provider failed".
+    DenyUnverified,
+}
+
+impl Admission {
+    /// True for any decision that must not reach the provider.
+    pub fn is_denied(&self) -> bool {
+        matches!(self, Admission::Deny | Admission::DenyUnverified)
+    }
 }
 
 // ─── Local (In-Memory) Implementation ────────────────────────────────────────
@@ -513,10 +525,34 @@ impl RedisCircuitBreaker {
     fn on_redis_unavailable(&self, provider: &str) -> Admission {
         self.degraded();
         let until = self.known_unhealthy.lock().unwrap().get(provider).copied();
-        match until {
-            Some(t) if Instant::now() < t => Admission::Deny,
+        let decision = match until {
+            Some(t) if Instant::now() < t => Admission::DenyUnverified,
             _ => Admission::Allow,
+        };
+        let label = if decision.is_denied() {
+            "deny"
+        } else {
+            "allow"
+        };
+        self.metrics
+            .circuit_breaker_degraded_decisions
+            .with_label_values(&[label])
+            .inc();
+        if decision.is_denied() {
+            tracing::warn!(
+                provider,
+                "redis unavailable: denying (replica observed an unhealthy cycle; bounded local protection)"
+            );
         }
+        decision
+    }
+
+    fn write_skipped(&self) {
+        self.degraded();
+        self.metrics
+            .circuit_breaker_degraded_decisions
+            .with_label_values(&["write_skipped"])
+            .inc();
     }
 }
 
@@ -524,7 +560,7 @@ impl RedisCircuitBreaker {
 impl CircuitBreaker for RedisCircuitBreaker {
     async fn is_available(&self, provider_id: &str) -> bool {
         let lease = Duration::from_secs(self.config.open_ttl_secs.max(1));
-        self.admit(provider_id, lease).await != Admission::Deny
+        !self.admit(provider_id, lease).await.is_denied()
     }
 
     async fn record_result(&self, provider_id: &str, result: CallResult) {
@@ -602,7 +638,7 @@ impl CircuitBreaker for RedisCircuitBreaker {
 
     async fn record_outcome(&self, provider_id: &str, result: CallResult, admission: &Admission) {
         if self.gate.suppressed() {
-            self.degraded();
+            self.write_skipped();
             return;
         }
 
@@ -659,7 +695,7 @@ impl CircuitBreaker for RedisCircuitBreaker {
                 );
             }
             Some(_) => {}
-            None => self.degraded(),
+            None => self.write_skipped(),
         }
     }
 }
@@ -1129,6 +1165,7 @@ mod redis_it {
             pool_size: 1,
             connect_timeout_secs: boot_timeout_secs,
             command_timeout_secs: 1,
+            required_for_readiness: false,
         }
     }
 
@@ -1216,6 +1253,7 @@ mod redis_it {
                 Admission::Probe(_) => probes += 1,
                 Admission::Allow => allows += 1,
                 Admission::Deny => denies += 1,
+                Admission::DenyUnverified => panic!("Redis is up; no unverified denial expected"),
             }
         }
         (probes, allows, denies)
@@ -1707,17 +1745,131 @@ mod redis_it {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let mut allows = 0;
         for _ in 0..20 {
-            if cb.admit(&p, Duration::from_secs(5)).await != Admission::Deny {
+            let a = cb.admit(&p, Duration::from_secs(5)).await;
+            assert_eq!(
+                a,
+                Admission::DenyUnverified,
+                "Redis-outage denial must be distinguishable from a provider-failure Deny"
+            );
+            if !a.is_denied() {
                 allows += 1;
             }
         }
         assert_eq!(allows, 0, "no traffic may leak during an unhealthy cycle");
         assert!(m.circuit_breaker_degraded.get() >= 1);
+        assert!(
+            m.circuit_breaker_degraded_decisions
+                .with_label_values(&["deny"])
+                .get()
+                >= 20
+        );
 
         // A provider this replica has never seen unhealthy still fails open.
         assert_eq!(
             cb.admit(&pid("never-seen"), Duration::from_secs(5)).await,
             Admission::Allow
+        );
+
+        let direct = shared(REDIS).await;
+        cleanup(&direct, &p).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn recovery_reconciles_local_unhealthy_knowledge() {
+        // Replica A saw a probe cycle, lost Redis, and kept denying. During the
+        // outage replica B closes the circuit. When Redis returns, A must read the
+        // shared state, Allow, and drop its stale local "unhealthy" knowledge.
+        let proxy = Proxy::start("127.0.0.1:0", REDIS).await;
+        let port = proxy.addr.port();
+        let sr_a = shared(&proxy.addr.to_string()).await;
+        let p = pid("reconcile");
+        let ma = metrics();
+        let a = fast_breaker(&sr_a, cfg(2, 0), &ma);
+
+        a.record_result(&p, CallResult::RateLimited).await;
+        tokio::time::sleep(Duration::from_millis(2150)).await; // half-open
+        let probe = a.admit(&p, Duration::from_secs(1)).await; // lease 1s
+        assert!(matches!(probe, Admission::Probe(_)), "got {:?}", probe);
+
+        proxy.stop();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            a.admit(&p, Duration::from_secs(1)).await,
+            Admission::DenyUnverified
+        );
+        assert!(a.known_unhealthy.lock().unwrap().contains_key(&p));
+
+        // Replica B (talks to Redis directly): A's probe lease lapses, B probes
+        // and succeeds, closing the circuit while A is partitioned.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let direct = shared(REDIS).await;
+        let b = breaker(&direct, cfg(2, 0), &metrics());
+        let pb = b.admit(&p, Duration::from_secs(5)).await;
+        assert!(matches!(pb, Admission::Probe(_)), "got {:?}", pb);
+        b.record_outcome(&p, CallResult::Success, &pb).await;
+        assert!(
+            get(&direct, &p, "backoff").await.is_none(),
+            "B's successful probe ended the cycle"
+        );
+
+        let _proxy2 = Proxy::start(&format!("127.0.0.1:{}", port), REDIS).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut reconciled = false;
+        while std::time::Instant::now() < deadline {
+            if a.admit(&p, Duration::from_secs(5)).await == Admission::Allow
+                && !a.known_unhealthy.lock().unwrap().contains_key(&p)
+            {
+                reconciled = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(
+            reconciled,
+            "A must reconcile with the shared (closed) state"
+        );
+        cleanup(&direct, &p).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Redis at 127.0.0.1:6379; run in pre-merge env (G1)"]
+    async fn outage_protection_expires_after_bounded_horizon() {
+        // Horizon = max_ttl_secs + probe_lease. With max_ttl=1 and lease=1 the
+        // local protection must end ~2s after the last observed cycle, then the
+        // replica fails open again (a long Redis outage cannot block forever).
+        let proxy = Proxy::start("127.0.0.1:0", REDIS).await;
+        let sr = shared(&proxy.addr.to_string()).await;
+        let p = pid("horizon");
+        let m = metrics();
+        let mut c = cfg(1, 0);
+        c.max_ttl_secs = 1;
+        let cb = fast_breaker(&sr, c, &m);
+
+        cb.record_result(&p, CallResult::RateLimited).await;
+        tokio::time::sleep(Duration::from_millis(1150)).await;
+        let probe = cb.admit(&p, Duration::from_secs(1)).await;
+        assert!(matches!(probe, Admission::Probe(_)), "got {:?}", probe);
+
+        proxy.stop();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            cb.admit(&p, Duration::from_secs(1)).await,
+            Admission::DenyUnverified,
+            "inside the horizon"
+        );
+
+        tokio::time::sleep(Duration::from_millis(2300)).await; // past 1s + 1s
+        assert_eq!(
+            cb.admit(&p, Duration::from_secs(1)).await,
+            Admission::Allow,
+            "after the horizon the replica fails open"
+        );
+        assert!(
+            m.circuit_breaker_degraded_decisions
+                .with_label_values(&["allow"])
+                .get()
+                >= 1
         );
 
         let direct = shared(REDIS).await;

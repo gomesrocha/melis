@@ -170,6 +170,17 @@ pub struct RedisConfig {
     pub connect_timeout_secs: u64,
     #[serde(default = "default_command_timeout_secs")]
     pub command_timeout_secs: u64,
+    /// Whether Redis is a REQUIRED dependency for readiness (`/readyz`).
+    ///
+    /// - `false` (default): Redis is optional. Every Redis-backed component
+    ///   (semantic cache, Redis circuit breaker) degrades gracefully, so a Redis
+    ///   outage reports `/readyz` 200 with `"degraded": ["redis"]` instead of
+    ///   pulling every replica out of service at once.
+    /// - `true`: `/readyz` returns 503 while Redis is unreachable.
+    ///
+    /// Liveness (`/healthz`) never depends on Redis.
+    #[serde(default)]
+    pub required_for_readiness: bool,
 }
 
 impl RedisConfig {

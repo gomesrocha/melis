@@ -83,6 +83,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - 18 real-Redis integration tests (concurrency on one and two replicas, late probe,
   healthy-vs-half-open, abandoned probe, degradation at boot / at runtime /
   recovery via a controllable TCP proxy, parity).
+#### Changed (follow-up 2 — outage semantics and readiness)
+- **`/readyz` no longer fails on a Redis outage by default.** New
+  `redis.required_for_readiness` (default `false`): Redis is an optional dependency,
+  and `/readyz` answers 200 `{"status":"ready","degraded":["redis"]}` while it is
+  unreachable, so an outage doesn't pull every replica out of rotation. Set `true`
+  to keep the 503 behavior. `/healthz` (liveness) never depends on Redis.
+- **Redis-outage denials are distinguishable from provider-failure circuits:** new
+  `Admission::DenyUnverified`; failover/fallback metrics use
+  `reason="breaker_state_unavailable"` instead of `circuit_open`; warn log on each
+  such denial.
+- New metric `melis_circuit_breaker_degraded_decisions_total{decision=allow|deny|write_skipped}`
+  (`melis_circuit_breaker_degraded` kept).
+- Documented the bounded protection horizon (`max_ttl_secs + probe_lease` on read,
+  `max_ttl_secs + open_ttl_secs` when the replica itself opened it), automatic
+  reconciliation when Redis returns, and that this is local, conservative protection,
+  not a global single-probe guarantee during a partition.
+- 2 more real-Redis tests (reconciliation after another replica closed the circuit
+  during the outage; protection expiry after the horizon): 20 in total.
 
 ### Phase 3 — Bidirectional Guardrails
 

@@ -148,6 +148,8 @@ pub struct Metrics {
     pub circuit_breaker_backend: IntGaugeVec,
     /// Counter of Redis circuit breaker fail-open degradations.
     pub circuit_breaker_degraded: IntCounter,
+    /// Decisions taken while Redis was unavailable, by `decision` (allow|deny|write_skipped).
+    pub circuit_breaker_degraded_decisions: IntCounterVec,
     /// Histogram of embedding computation time in the cache lookup path.
     pub cache_embed_seconds: Histogram,
     /// 1 when the shared Redis answers PING, 0 otherwise (refreshed periodically).
@@ -406,6 +408,20 @@ impl Metrics {
         ))
         .expect("failed to create melis_circuit_breaker_degraded metric");
 
+        let circuit_breaker_degraded_decisions = IntCounterVec::new(
+            Opts::new(
+                "melis_circuit_breaker_degraded_decisions_total",
+                "Circuit breaker decisions taken while Redis was unavailable (allow|deny|write_skipped)",
+            ),
+            &["decision"],
+        )
+        .expect("failed to create melis_circuit_breaker_degraded_decisions_total metric");
+        for d in ["allow", "deny", "write_skipped"] {
+            circuit_breaker_degraded_decisions
+                .with_label_values(&[d])
+                .inc_by(0);
+        }
+
         let redis_up = prometheus::IntGauge::with_opts(Opts::new(
             "melis_redis_up",
             "Shared Redis reachability (1 = PING ok, 0 = unreachable or not configured)",
@@ -510,6 +526,9 @@ impl Metrics {
             .register(Box::new(circuit_breaker_degraded.clone()))
             .expect("failed to register melis_circuit_breaker_degraded");
         registry
+            .register(Box::new(circuit_breaker_degraded_decisions.clone()))
+            .expect("failed to register melis_circuit_breaker_degraded_decisions_total");
+        registry
             .register(Box::new(cache_embed_seconds.clone()))
             .expect("failed to register melis_cache_embed_seconds");
         registry
@@ -576,6 +595,7 @@ impl Metrics {
             guardrail_actions_total,
             circuit_breaker_backend,
             circuit_breaker_degraded,
+            circuit_breaker_degraded_decisions,
             cache_embed_seconds,
             redis_up,
             registry,

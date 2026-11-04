@@ -21,6 +21,11 @@ redis:
   pool_size: 10
   connect_timeout_secs: 5
   command_timeout_secs: 2
+  # false (padrão): Redis é dependência opcional; com Redis fora, /readyz responde
+  # 200 {"status":"ready","degraded":["redis"]} e cache/circuit breaker operam
+  # degradados. true: Redis é obrigatório; /readyz responde 503 enquanto estiver fora.
+  # /healthz (liveness) nunca depende do Redis.
+  required_for_readiness: false
 
 # Provedores LLM — adicione seus provedores aqui
 providers:

@@ -351,6 +351,7 @@ auth:
     #[tokio::test]
     async fn test_readyz_returns_503_when_redis_unavailable() {
         let mut state = build_test_app_state();
+        require_redis_for_readiness(&mut state);
         state.redis_available = Arc::new(AtomicBool::new(false));
         let app = build_router(state);
 
@@ -368,6 +369,56 @@ auth:
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["status"], "not_ready");
         assert!(json["reason"].as_str().unwrap().contains("Redis"));
+    }
+
+    /// Marks Redis as a REQUIRED readiness dependency (`redis.required_for_readiness`).
+    fn require_redis_for_readiness(state: &mut AppState) {
+        let mut cfg = (*state.gateway_config).clone();
+        cfg.redis.required_for_readiness = true;
+        state.gateway_config = Arc::new(cfg);
+    }
+
+    #[tokio::test]
+    async fn test_readyz_stays_ready_when_redis_optional_and_unavailable() {
+        // Default: Redis is optional, so an outage must not pull replicas out of
+        // rotation; readiness reports the degradation instead.
+        let mut state = build_test_app_state();
+        assert!(
+            !state.gateway_config.redis.required_for_readiness,
+            "default is optional"
+        );
+        state.redis_available = Arc::new(AtomicBool::new(false));
+        let app = build_router(state);
+        let request = Request::builder()
+            .method("GET")
+            .uri("/readyz")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_to_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["status"], "ready");
+        assert_eq!(json["degraded"], serde_json::json!(["redis"]));
+    }
+
+    #[tokio::test]
+    async fn test_healthz_never_depends_on_redis() {
+        for required in [false, true] {
+            let mut state = build_test_app_state();
+            if required {
+                require_redis_for_readiness(&mut state);
+            }
+            state.redis_available = Arc::new(AtomicBool::new(false));
+            let app = build_router(state);
+            let request = Request::builder()
+                .method("GET")
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "required={required}");
+        }
     }
 
     // ─── Test 5: Metrics Endpoint ────────────────────────────────────────────
@@ -643,7 +694,8 @@ auth:
 
     #[tokio::test]
     async fn test_readyz_reflects_redis_state_changes() {
-        let state = build_test_app_state();
+        let mut state = build_test_app_state();
+        require_redis_for_readiness(&mut state);
         let redis_flag = state.redis_available.clone();
         let app = build_router(state);
 

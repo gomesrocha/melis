@@ -130,20 +130,30 @@ async fn healthz_handler() -> &'static str {
 /// Returns HTTP 200 with `{"status": "ready"}` when Redis is reachable,
 /// or HTTP 503 with `{"status": "not_ready", "reason": "..."}` otherwise.
 async fn readyz_handler(State(state): State<AppState>) -> Response {
-    // TODO: Ping Redis connection pool instead of relying on a flag.
+    // `redis_available` is refreshed by a periodic PING (see main.rs).
     let redis_ok = state.redis_available.load(Ordering::Relaxed);
+    let required = state.gateway_config.redis.required_for_readiness;
 
-    if redis_ok {
-        (StatusCode::OK, Json(serde_json::json!({"status": "ready"}))).into_response()
-    } else {
-        (
+    match (redis_ok, required) {
+        (true, _) => (StatusCode::OK, Json(serde_json::json!({"status": "ready"}))).into_response(),
+        // Redis is a required dependency: take this replica out of rotation.
+        (false, true) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
                 "status": "not_ready",
                 "reason": "Redis connection unavailable"
             })),
         )
-            .into_response()
+            .into_response(),
+        // Redis is optional: Redis-backed features degrade, the replica keeps serving.
+        (false, false) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "ready",
+                "degraded": ["redis"]
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -608,16 +618,22 @@ async fn chat_completions_handler(
                 .circuit_breaker
                 .admit(&selected_name, probe_lease)
                 .await;
-            if admission == crate::circuit_breaker::Admission::Deny {
+            if admission.is_denied() {
+                // Distinguish a provider-failure circuit from a Redis outage.
+                let reason = if admission == crate::circuit_breaker::Admission::DenyUnverified {
+                    "breaker_state_unavailable"
+                } else {
+                    "circuit_open"
+                };
                 state
                     .metrics
                     .failover_total
-                    .with_label_values(&[&selected_name, "circuit_open"])
+                    .with_label_values(&[&selected_name, reason])
                     .inc();
                 state
                     .metrics
                     .fallback_mode_total
-                    .with_label_values(&[&selected_name, "next", "circuit_open"])
+                    .with_label_values(&[&selected_name, "next", reason])
                     .inc();
                 excluded_providers.push(selected_name);
                 continue;
@@ -1948,6 +1964,7 @@ server:
 redis:
   cluster_urls:
     - "redis://localhost:6379"
+  required_for_readiness: true
 routes_config_path: "./routes.yaml"
 "#,
         )
