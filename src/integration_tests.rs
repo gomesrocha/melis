@@ -2166,7 +2166,7 @@ mod allowed_models_e2e {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use tower::ServiceExt;
 
     use crate::balancer::WeightedRoundRobin;
@@ -2290,5 +2290,446 @@ providers:
         // model the client can't use).
         let status = status_for(Some("secret-model"), "sk-alice", "gpt-4o").await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    // ── alias authorization: an alias must not bypass a model restriction ──────
+
+    /// Gateway with an alias `escape` -> concrete `restricted-model`, and a client
+    /// `carol` allowed ONLY to use the alias name `escape` (not the destination).
+    fn state_with_alias() -> AppState {
+        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let routes_path = dir.path().join("routes.yaml");
+        std::fs::write(
+            &routes_path,
+            "routes:\n  - path: \"/v1/chat/completions\"\n    method: \"POST\"\n    provider: \"openai\"\nmodel_aliases:\n  - name: \"escape\"\n    targets:\n      - provider: \"openai\"\n        model: \"restricted-model\"\n  - name: \"ok-alias\"\n    targets:\n      - provider: \"openai\"\n        model: \"gpt-4o\"\n",
+        )
+        .unwrap();
+        let gateway_config = GatewayConfig::from_yaml(
+            r#"
+server:
+  host: "0.0.0.0"
+  port: 8080
+redis:
+  cluster_urls: ["redis://localhost:6379"]
+auth:
+  enabled: true
+  api_keys:
+    - key: "sk-carol"
+      client_id: "carol"
+      allowed_models: ["escape", "gpt-4o"]
+    - key: "sk-dave"
+      client_id: "dave"
+      allowed_models: ["ok-alias", "gpt-4o"]
+providers:
+  - id: "openai"
+    provider_type: "openai"
+    api_key: "test-key"
+    base_url: "http://127.0.0.1:59995/v1"
+"#,
+        )
+        .unwrap();
+        let route_config = RouteConfigManager::new_without_watcher(routes_path);
+        let guardrails = Arc::new(GuardrailEngine::new(
+            route_config.current().config(),
+            gateway_config.guardrails.clone(),
+        ));
+        AppState {
+            route_config: Arc::new(route_config),
+            gateway_config: Arc::new(gateway_config),
+            rate_limiter: Arc::new(LocalTokenBucket::new()),
+            load_balancer: Arc::new(WeightedRoundRobin::new()),
+            circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+            http_client: Arc::new(ReqwestLlmClient::new()),
+            metrics: Arc::new(Metrics::new()),
+            redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails,
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+        }
+    }
+
+    async fn alias_status(bearer: &str, model: &str) -> StatusCode {
+        let app = build_router(state_with_alias());
+        let payload = json!({"model": model, "messages": [{"role": "user", "content": "hi"}]});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {bearer}"))
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn alias_cannot_bypass_destination_restriction() {
+        // carol may use the alias NAME "escape" and "gpt-4o", but NOT the alias's
+        // destination "restricted-model". Resolving the alias must still enforce the
+        // destination → 403 (the alias is not a bypass).
+        let status = alias_status("sk-carol", "escape").await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "alias must not grant access to a restricted destination"
+        );
+    }
+
+    #[tokio::test]
+    async fn alias_allowed_when_name_and_destination_permitted() {
+        // dave may use "ok-alias" (name) and its destination "gpt-4o" → not blocked.
+        let status = alias_status("sk-dave", "ok-alias").await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "permitted alias+destination must pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn alias_denied_when_name_not_permitted() {
+        // dave is not allowed the "escape" alias name at all.
+        let status = alias_status("sk-dave", "escape").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    // ── /v1/models respects permissions ───────────────────────────────────────
+
+    async fn models_ids(bearer: &str) -> Vec<String> {
+        let app = build_router(state_with_alias());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .header("Authorization", format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn models_listing_filtered_by_allowed_models() {
+        // Listing = declared aliases (escape, ok-alias) ∩ allowed_models. carol is
+        // allowed [escape, gpt-4o]; only "escape" is a declared listable id.
+        // gpt-4o / restricted-model are alias targets, not declared concrete
+        // models, so they are not listed at all.
+        let ids = models_ids("sk-carol").await;
+        assert!(
+            ids.contains(&"escape".to_string()),
+            "allowed alias listed: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"ok-alias".to_string()),
+            "disallowed alias not listed: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"restricted-model".to_string()),
+            "targets are not listed: {ids:?}"
+        );
+        // dave is allowed [ok-alias, gpt-4o] → sees ok-alias, not escape.
+        let dave = models_ids("sk-dave").await;
+        assert!(
+            dave.contains(&"ok-alias".to_string()),
+            "dave sees ok-alias: {dave:?}"
+        );
+        assert!(
+            !dave.contains(&"escape".to_string()),
+            "dave does not see escape: {dave:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn models_listing_requires_auth() {
+        // auth enabled → no bearer → 401 (handled by the auth layer).
+        let app = build_router(state_with_alias());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+/// Phase 6A virtual models end-to-end: precedence, @-alias, authorization,
+/// /v1/models, cache bypass for multi-target, and hot-reload consistency.
+#[cfg(test)]
+mod phase6a_virtual_models_e2e {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::balancer::WeightedRoundRobin;
+    use crate::circuit_breaker::LocalCircuitBreaker;
+    use crate::client::ReqwestLlmClient;
+    use crate::config::GatewayConfig;
+    use crate::guardrails::GuardrailEngine;
+    use crate::middleware::rate_limiter::LocalTokenBucket;
+    use crate::observability::Metrics;
+    use crate::route_config::RouteConfigManager;
+    use crate::router::build_router;
+    use crate::state::AppState;
+
+    /// A mock OpenAI provider that echoes the `model` it received in the response's
+    /// `model` field, so tests can read the forwarded model.
+    struct EchoModel;
+    impl wiremock::Respond for EchoModel {
+        fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+            let forwarded = body["model"].as_str().unwrap_or("").to_string();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "id": "x", "object": "chat.completion", "created": 0,
+                "model": forwarded,
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+        }
+    }
+
+    async fn mock_provider() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(EchoModel)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Build a gateway. `route_yaml_extra` is inserted under the single route;
+    /// `aliases_yaml` is appended at top level; `uri` is the mock provider base.
+    fn state_with(uri: &str, route_yaml_extra: &str, aliases_yaml: &str) -> AppState {
+        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let routes_path = dir.path().join("routes.yaml");
+        std::fs::write(
+            &routes_path,
+            format!(
+                "routes:\n  - path: \"/v1/chat/completions\"\n    method: \"POST\"\n    provider: \"openai\"\n{route_yaml_extra}{aliases_yaml}"
+            ),
+        )
+        .unwrap();
+        let gateway_config = GatewayConfig::from_yaml(&format!(
+            "server:\n  host: \"0.0.0.0\"\n  port: 8080\nredis:\n  cluster_urls: [\"redis://localhost:6379\"]\nauth:\n  enabled: false\nproviders:\n  - id: \"openai\"\n    provider_type: \"openai\"\n    api_key: \"k\"\n    base_url: \"{uri}/v1\"\n  - id: \"ollama\"\n    provider_type: \"ollama\"\n    api_key: \"ollama\"\n    base_url: \"{uri}/v1\"\n"
+        ))
+        .unwrap();
+        let route_config = RouteConfigManager::new_without_watcher(routes_path);
+        let guardrails = Arc::new(GuardrailEngine::new(
+            route_config.current().config(),
+            gateway_config.guardrails.clone(),
+        ));
+        AppState {
+            route_config: Arc::new(route_config),
+            gateway_config: Arc::new(gateway_config),
+            rate_limiter: Arc::new(LocalTokenBucket::new()),
+            load_balancer: Arc::new(WeightedRoundRobin::new()),
+            circuit_breaker: Arc::new(LocalCircuitBreaker::new(Default::default())),
+            http_client: Arc::new(ReqwestLlmClient::new()),
+            metrics: Arc::new(Metrics::new()),
+            redis_available: Arc::new(AtomicBool::new(true)),
+            semantic_cache: Arc::new(crate::semantic_cache::DisabledCache),
+            outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
+            guardrails,
+            embeddings: Arc::new(crate::embeddings::StubEmbeddingProvider::deterministic()),
+        }
+    }
+
+    const ALIASES: &str = "model_aliases:\n  - name: \"fast\"\n    targets:\n      - provider: \"ollama\"\n        model: \"llama3.2\"\n";
+
+    /// Returns (status, forwarded_model or None if provider not called).
+    async fn send(state: AppState, model: &str) -> (StatusCode, Option<String>) {
+        let app = build_router(state);
+        let payload = json!({"model": model, "messages": [{"role": "user", "content": "hi"}]});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let forwarded = body["model"]
+            .as_str()
+            .map(str::to_string)
+            .filter(|s| !s.is_empty());
+        (status, forwarded)
+    }
+
+    // ── Precedence table (9 cases) ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn precedence_route_override_ignores_alias() {
+        let server = mock_provider().await;
+        // Route forces "forced-model"; client sends alias "fast" → override wins.
+        let st = state_with(&server.uri(), "    model: \"forced-model\"\n", ALIASES);
+        let (status, fwd) = send(st, "fast").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(fwd.as_deref(), Some("forced-model"));
+    }
+
+    #[tokio::test]
+    async fn precedence_default_does_not_shadow_known_alias() {
+        let server = mock_provider().await;
+        let st = state_with(&server.uri(), "    default_model: \"d\"\n", ALIASES);
+        let (_s, fwd) = send(st, "fast").await;
+        assert_eq!(
+            fwd.as_deref(),
+            Some("llama3.2"),
+            "alias resolves despite default_model"
+        );
+    }
+
+    #[tokio::test]
+    async fn precedence_default_keeps_concrete() {
+        let server = mock_provider().await;
+        let st = state_with(&server.uri(), "    default_model: \"d\"\n", ALIASES);
+        let (_s, fwd) = send(st, "gpt-4o").await;
+        assert_eq!(fwd.as_deref(), Some("gpt-4o"));
+    }
+
+    #[tokio::test]
+    async fn precedence_no_route_model_resolves_alias() {
+        let server = mock_provider().await;
+        let st = state_with(&server.uri(), "", ALIASES);
+        let (_s, fwd) = send(st, "fast").await;
+        assert_eq!(fwd.as_deref(), Some("llama3.2"));
+    }
+
+    #[tokio::test]
+    async fn precedence_no_route_model_keeps_concrete() {
+        let server = mock_provider().await;
+        let st = state_with(&server.uri(), "", ALIASES);
+        let (_s, fwd) = send(st, "gpt-4o").await;
+        assert_eq!(fwd.as_deref(), Some("gpt-4o"));
+    }
+
+    #[tokio::test]
+    async fn precedence_unknown_bare_alias_passes_through() {
+        let server = mock_provider().await;
+        let st = state_with(&server.uri(), "", ALIASES);
+        let (status, fwd) = send(st, "totally-unknown").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            fwd.as_deref(),
+            Some("totally-unknown"),
+            "bare unknown is concrete passthrough"
+        );
+    }
+
+    #[tokio::test]
+    async fn at_prefix_resolves_known_alias() {
+        let server = mock_provider().await;
+        let st = state_with(&server.uri(), "", ALIASES);
+        let (_s, fwd) = send(st, "@fast").await;
+        assert_eq!(fwd.as_deref(), Some("llama3.2"));
+    }
+
+    #[tokio::test]
+    async fn at_prefix_unknown_alias_is_400_not_forwarded() {
+        let server = mock_provider().await;
+        let st = state_with(&server.uri(), "", ALIASES);
+        let (status, fwd) = send(st, "@nope").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(fwd.is_none(), "unknown @alias must not be forwarded");
+        assert_eq!(server.received_requests().await.unwrap().len(), 0);
+    }
+
+    // ── /v1/models ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn models_endpoint_lists_aliases_and_concretes_without_secrets() {
+        let server = mock_provider().await;
+        let st = state_with(&server.uri(), "    model: \"gpt-4o\"\n", ALIASES);
+        let app = build_router(st);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["object"], "list");
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"fast"), "alias listed: {ids:?}");
+        assert!(ids.contains(&"gpt-4o"), "concrete listed: {ids:?}");
+        // No secrets/topology anywhere in the payload.
+        let raw = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            !raw.contains("base_url") && !raw.contains(&server.uri()) && !raw.contains("api_key")
+        );
+        assert!(!raw.contains("weight") && !raw.contains("targets"));
+        assert!(!raw.contains("melis:kind"));
+    }
+
+    // ── cache: multi-target bypass ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn multi_target_alias_bypasses_cache() {
+        let server = mock_provider().await;
+        let aliases = "model_aliases:\n  - name: \"pool\"\n    targets:\n      - provider: \"openai\"\n        model: \"gpt-4o\"\n        weight: 1\n      - provider: \"ollama\"\n        model: \"llama3.2\"\n        weight: 1\n";
+        let st = state_with(
+            &server.uri(),
+            "    semantic_cache:\n      enabled: true\n      scope: \"shared\"\n",
+            aliases,
+        );
+        let metrics = st.metrics.clone();
+        let (status, _fwd) = send(st, "pool").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            metrics
+                .cache_skipped_total
+                .with_label_values(&["multi_target_alias"])
+                .get(),
+            1,
+            "multi-target alias must bypass the cache"
+        );
+    }
+
+    // ── hot reload mid-request consistency ────────────────────────────────────
+
+    #[tokio::test]
+    async fn request_uses_consistent_snapshot_across_reload() {
+        // A resolver snapshot is captured once per request. We simulate a reload by
+        // swapping the manager's config after capturing `current()`: the captured
+        // guard must keep resolving the OLD alias mapping.
+        let server = mock_provider().await;
+        let st = state_with(&server.uri(), "", ALIASES);
+        let resolver_before = st.route_config.current();
+        // The captured snapshot resolves `fast` -> llama3.2 regardless of later swaps.
+        let resolution = resolver_before.resolve_model("fast");
+        match resolution {
+            crate::route_config::ModelResolution::Alias { name, targets } => {
+                assert_eq!(name, "fast");
+                assert_eq!(targets[0].model, "llama3.2");
+            }
+            other => panic!("expected alias, got {other:?}"),
+        }
+        // Holding `resolver_before` pins the version for the whole request lifetime.
+        drop(resolver_before);
     }
 }

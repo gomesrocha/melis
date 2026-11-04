@@ -88,6 +88,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/metrics", get(metrics_handler))
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
+        .route("/v1/models", get(models_handler))
         .route("/v1/embeddings", post(embeddings_handler));
 
     // Dynamically register routes from RouteConfigManager
@@ -167,6 +168,52 @@ async fn readyz_handler(State(state): State<AppState>) -> Response {
         )
             .into_response(),
     }
+}
+
+/// `GET /v1/models` — OpenAI-compatible model listing (Phase 6A).
+///
+/// Lists declared model aliases and declared concrete models (no remote
+/// discovery). Respects auth: when `auth.enabled`, the request must be
+/// authenticated (the auth layer rejects it otherwise), and if the client's
+/// `allowed_models` is non-empty the list is filtered to permitted ids. Never
+/// reveals credentials, provider endpoints, weights, or the alias mapping.
+async fn models_handler(
+    State(state): State<AppState>,
+    identity: Option<axum::Extension<ClientIdentity>>,
+) -> Response {
+    let resolver = state.route_config.current();
+    let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for a in resolver.alias_names() {
+        ids.insert(a);
+    }
+    for m in resolver.concrete_model_names() {
+        if !m.is_empty() {
+            ids.insert(m);
+        }
+    }
+
+    // Filter by allowed_models when the client is restricted.
+    if let Some(axum::Extension(id)) = &identity {
+        if !id.allowed_models.is_empty() {
+            let allowed: std::collections::HashSet<&str> =
+                id.allowed_models.iter().map(String::as_str).collect();
+            ids.retain(|m| allowed.contains(m.as_str()));
+        }
+    }
+
+    let data: Vec<Value> = ids
+        .into_iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "melis",
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({ "object": "list", "data": data })).into_response()
 }
 
 /// Validates the incoming JSON payload for the chat completions endpoint.

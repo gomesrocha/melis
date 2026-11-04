@@ -1263,6 +1263,59 @@ routes:
     }
 
     #[test]
+    fn held_resolver_guard_is_stable_across_reload() {
+        // A request captures one ArcSwap guard (RouteConfigManager::current) and uses
+        // it for the whole request. A reload that stores a NEW resolver mid-request
+        // must not change what the held guard resolves — the request stays on its
+        // consistent snapshot; a NEW guard sees the new version. This is the exact
+        // mechanism the handler relies on (a single `current()` per request).
+        use arc_swap::ArcSwap;
+        use std::sync::Arc;
+
+        let v1 = aliases_config(
+            r#"
+routes: [{path: "/p", method: "POST", provider: "openai"}]
+model_aliases: [{name: "fast", targets: [{provider: "ollama", model: "llama3.2"}]}]
+"#,
+        );
+        let v2 = aliases_config(
+            r#"
+routes: [{path: "/p", method: "POST", provider: "openai"}]
+model_aliases: [{name: "fast", targets: [{provider: "openai", model: "gpt-4o"}]}]
+"#,
+        );
+        let swap = Arc::new(ArcSwap::from_pointee(RouteResolver::new(v1)));
+
+        // Request captures its snapshot.
+        let held = swap.load();
+        assert_eq!(
+            held.resolve_model("fast"),
+            ModelResolution::Alias {
+                name: "fast".into(),
+                targets: vec![AliasTarget {
+                    provider: "ollama".into(),
+                    model: "llama3.2".into(),
+                    weight: 1
+                }]
+            }
+        );
+
+        // Reload happens mid-request.
+        swap.store(Arc::new(RouteResolver::new(v2)));
+
+        // The held guard still resolves the OLD mapping (consistent snapshot).
+        match held.resolve_model("fast") {
+            ModelResolution::Alias { targets, .. } => assert_eq!(targets[0].model, "llama3.2"),
+            other => panic!("held guard changed mid-request: {other:?}"),
+        }
+        // A fresh read sees the NEW mapping.
+        match swap.load().resolve_model("fast") {
+            ModelResolution::Alias { targets, .. } => assert_eq!(targets[0].model, "gpt-4o"),
+            other => panic!("new guard should see v2: {other:?}"),
+        }
+    }
+
+    #[test]
     fn legacy_config_without_aliases_is_valid_and_has_no_aliases() {
         let cfg = aliases_config(
             r#"
