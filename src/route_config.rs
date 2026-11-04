@@ -666,6 +666,36 @@ impl RouteConfigManager {
         }
     }
 
+    /// Like [`new`](Self::new) (loads + validates the file, panics on invalid
+    /// config) but WITHOUT starting a filesystem watcher. Test-only: tests that
+    /// don't exercise hot reload use this so the suite doesn't exhaust the OS
+    /// inotify instance limit when many managers are built in parallel.
+    #[cfg(test)]
+    pub fn new_without_watcher(config_path: PathBuf) -> Self {
+        let config_file = load_routes(&config_path).unwrap_or_else(|e| {
+            panic!(
+                "Failed to load route config from '{}': {}",
+                config_path.display(),
+                e
+            )
+        });
+        if let Err(errors) = validate(&config_file) {
+            let msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+            panic!(
+                "Route config validation failed for '{}'. Errors:\n{}",
+                config_path.display(),
+                msgs.join("\n")
+            );
+        }
+        let resolver = RouteResolver::new(config_file);
+        RouteConfigManager {
+            config: Arc::new(ArcSwap::from_pointee(resolver)),
+            model_change_hook: Arc::new(arc_swap::ArcSwapOption::from(None)),
+            reload_hook: Arc::new(arc_swap::ArcSwapOption::from(None)),
+            _watcher_handle: tokio::spawn(async {}),
+        }
+    }
+
     /// Background task that processes file change events with debouncing.
     ///
     /// Waits ~200ms after receiving an event before reloading, to avoid

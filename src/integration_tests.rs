@@ -104,7 +104,9 @@ auth:
         tracing::info!(endpoint = %url, model = %model, "G1 live-provider test using model");
         eprintln!("G1 live-provider test: endpoint={url} model={model}");
 
-        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        // new_without_watcher loads the config into memory, so the temp dir can be
+        // dropped right after; no watcher is created (keeps inotify usage low).
+        let dir = tempfile::tempdir().unwrap();
         let routes_path = dir.path().join("routes.yaml");
         std::fs::write(
             &routes_path,
@@ -118,7 +120,7 @@ auth:
         ))
         .unwrap();
         AppState {
-            route_config: Arc::new(RouteConfigManager::new(routes_path)),
+            route_config: Arc::new(RouteConfigManager::new_without_watcher(routes_path)),
             gateway_config: Arc::new(gateway_config),
             rate_limiter: Arc::new(LocalTokenBucket::new()),
             load_balancer: Arc::new(WeightedRoundRobin::new()),
@@ -695,7 +697,7 @@ auth:
   enabled: false
 "#;
         let gateway_config = GatewayConfig::from_yaml(yaml).unwrap();
-        let route_config = RouteConfigManager::new(routes_path);
+        let route_config = RouteConfigManager::new_without_watcher(routes_path);
         let metrics = Arc::new(Metrics::new());
 
         let state = AppState {
@@ -995,7 +997,7 @@ auth:
             )
             .unwrap();
 
-            let route_config = RouteConfigManager::new(routes_path);
+            let route_config = RouteConfigManager::new_without_watcher(routes_path);
             let guardrails = {
                 let resolver = route_config.current();
                 Arc::new(GuardrailEngine::new(
@@ -1412,7 +1414,7 @@ providers:
         ))
         .unwrap();
 
-        let route_config = RouteConfigManager::new(routes_path);
+        let route_config = RouteConfigManager::new_without_watcher(routes_path);
         let guardrails = Arc::new(GuardrailEngine::new(
             route_config.current().config(),
             gateway_config.guardrails.clone(),
@@ -1606,7 +1608,7 @@ mod phase5_scoring_e2e {
         ))
         .unwrap();
 
-        let route_config = RouteConfigManager::new(routes_path);
+        let route_config = RouteConfigManager::new_without_watcher(routes_path);
         let guardrails = Arc::new(GuardrailEngine::new(
             route_config.current().config(),
             gateway_config.guardrails.clone(),
