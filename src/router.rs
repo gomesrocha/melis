@@ -2186,6 +2186,39 @@ routes:
 
     // --- Integration tests for streaming vs JSON response ---
 
+    /// Sanitized, self-contained routes fixture for the HTTP integration tests.
+    ///
+    /// Intentionally NOT read from the repository's gitignored `./routes.yaml`:
+    /// relying on an operator-local, secret-bearing file would make the suite
+    /// unreproducible from a clean checkout. This inline fixture contains no
+    /// secrets and only built-in providers, and is written to a per-test
+    /// temporary file so tests never depend on the process working directory.
+    const TEST_ROUTES_FIXTURE: &str = r#"
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "ollama"
+    model: "llama3.2"
+"#;
+
+    /// Writes [`TEST_ROUTES_FIXTURE`] to a temporary file and builds a
+    /// `RouteConfigManager` from it. Returns the temp file guard so the caller
+    /// can keep it alive if desired; the config is parsed eagerly at
+    /// construction, so dropping the guard afterwards is safe.
+    fn test_route_config() -> (
+        tempfile::NamedTempFile,
+        crate::route_config::RouteConfigManager,
+    ) {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().expect("create temp routes file");
+        file.write_all(TEST_ROUTES_FIXTURE.as_bytes())
+            .expect("write temp routes fixture");
+        file.flush().expect("flush temp routes fixture");
+        let manager =
+            crate::route_config::RouteConfigManager::new_without_watcher(file.path().to_path_buf());
+        (file, manager)
+    }
+
     fn build_test_app() -> Router {
         use crate::balancer::WeightedRoundRobin;
         use crate::circuit_breaker::LocalCircuitBreaker;
@@ -2193,10 +2226,12 @@ routes:
         use crate::config::GatewayConfig;
         use crate::middleware::rate_limiter::LocalTokenBucket;
         use crate::observability::Metrics;
-        use crate::route_config::RouteConfigManager;
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
 
+        // Self-contained config: no dependency on the process working directory
+        // or on any gitignored operator-local file.
+        let (_routes_file, route_config) = test_route_config();
         let gateway_config = GatewayConfig::from_yaml(
             r#"
 server:
@@ -2209,9 +2244,6 @@ routes_config_path: "./routes.yaml"
 "#,
         )
         .unwrap();
-
-        let route_config =
-            RouteConfigManager::new_without_watcher(gateway_config.routes_config_path.clone());
 
         let app_state = AppState {
             route_config: Arc::new(route_config),
@@ -2407,10 +2439,12 @@ routes_config_path: "./routes.yaml"
         use crate::config::GatewayConfig;
         use crate::middleware::rate_limiter::LocalTokenBucket;
         use crate::observability::Metrics;
-        use crate::route_config::RouteConfigManager;
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
 
+        // Self-contained config (see `test_route_config`): no CWD / gitignored
+        // file dependency.
+        let (_routes_file, route_config) = test_route_config();
         let gateway_config = GatewayConfig::from_yaml(
             r#"
 server:
@@ -2424,9 +2458,6 @@ routes_config_path: "./routes.yaml"
 "#,
         )
         .unwrap();
-
-        let route_config =
-            RouteConfigManager::new_without_watcher(gateway_config.routes_config_path.clone());
 
         let app_state = AppState {
             route_config: Arc::new(route_config),
