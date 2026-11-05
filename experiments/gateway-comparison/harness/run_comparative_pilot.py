@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import urllib.request
+from datetime import datetime, timezone
 
 HARNESS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HARNESS)
@@ -36,6 +37,7 @@ import host_pressure  # noqa: E402
 import ids  # noqa: E402
 import melis_preflight  # noqa: E402
 import payload_equiv  # noqa: E402
+import provenance  # noqa: E402
 from csv_writer import CsvTableWriter  # noqa: E402
 from manifest import build_manifest, git_state, sha256_file, write_manifest  # noqa: E402
 from schemas import SCHEMA_VERSION  # noqa: E402
@@ -312,14 +314,11 @@ def _image_record(container):
     image = info.get("Image")
     img_proc = subprocess.run(["docker", "image", "inspect", image], capture_output=True, text=True)
     meta = json.loads(img_proc.stdout)[0] if img_proc.returncode == 0 else {}
-    return {
-        "container": container,
-        "image_id": meta.get("Id") or image,
-        "repo_digests": meta.get("RepoDigests") or [],
-        "architecture": meta.get("Architecture"),
-        "os": meta.get("Os"),
-        "created": meta.get("Created"),
-    }
+    identity = provenance.image_identity_from_inspect(meta)
+    identity["container"] = container
+    if not identity["image_id"]:
+        identity["image_id"] = image
+    return identity
 
 
 def run(args):
@@ -327,13 +326,15 @@ def run(args):
     print(json.dumps({"estimate": est}, indent=2))
     if args.dry_estimate:
         return 0
+    process_started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    execution_state = git_state(REPO)
     if est["load_seconds"] > args.max_load_seconds:
         raise SystemExit(
             f"refusing grid: configured load {est['load_seconds']}s "
             f"> --max-load-seconds {args.max_load_seconds}"
         )
     if args.require_clean:
-        state = git_state(REPO)
+        state = execution_state
         if not state["clean"]:
             raise SystemExit(
                 "refusing to measure a dirty tree: "
@@ -515,9 +516,10 @@ def run(args):
             "memory_rss_bytes": "cgroup v2 Docker stats have no rss field; anon is not substituted",
             "tokens": "SSE chunks are not tokenizer tokens",
             "melis_image": (
-                "built from this checkout before the run"
-                if args.build_melis
-                else "started with --no-build; the image id is not evidence of HEAD"
+                "image_id is the local engine id. repo_digests are registry "
+                "digests and may be empty. A source commit is recorded only "
+                "from an image label or from a build this process produced "
+                "on a clean checkout. An image id is not a commit."
             ),
             "duration": "duration_s is effective wall time including drain, not the configured window",
             "backend_latency_ms": "0 is the zero-latency mock; 100 is a different scenario and is not pooled",
@@ -546,7 +548,32 @@ def run(args):
             },
         },
     )
-    write_manifest(manifest, os.path.join(args.out_dir, "manifest.json"))
+    manifest_path = os.path.join(args.out_dir, "manifest.json")
+    write_manifest(manifest, manifest_path)
+    melis_image = manifest["image_digests"].get("melis") or {}
+    image_build = provenance.build_source(
+        invoked_build=bool(args.build_melis),
+        execution_clean=bool(execution_state.get("clean")),
+        execution_commit=execution_state.get("commit"),
+        label_revision=melis_image.get("label_revision"),
+        image_created=melis_image.get("created"),
+        process_started=process_started,
+    )
+    compose_files = {os.path.basename(path): provenance.sha256_file(path) for path in [DET, *extra]}
+    provenance.write_json(provenance.assemble_provenance(
+        collection_id=collection,
+        original_manifest_sha256=provenance.sha256_file(manifest_path),
+        execution=execution_state,
+        images=manifest["image_digests"],
+        build=image_build,
+        harness_hashes=manifest["extra"]["harness_hashes"],
+        compose_files=compose_files,
+        config_hashes=manifest["config_hashes"],
+        notes=[
+            "image_id and repo_digests are different fields",
+            "duration_s in the CSVs is effective wall time, including drain",
+        ],
+    ), os.path.join(args.out_dir, "provenance.json"))
     import validate
     report = validate.validate_dir(args.out_dir)
     with open(os.path.join(args.out_dir, "validation_report.json"), "w", encoding="utf-8") as fh:
