@@ -1,0 +1,3 @@
+schema_version,experiment_id,phase,question,outcome,contrast,population,independent_units,n,estimate,unit,effect_size,ci_lower,ci_upper,method,seed,p_raw,p_adjusted,margin,decision,expected,observed,pass_fail
+1.0.0,exp-synthetic-known-2b56f935ee9c,smoke,RQ1,median_latency_overhead,melis_minus_direct,ok_requests_by_block_median,block,3,3.0,ms,3.0,3.0,3.0,paired_block_median_bootstrap_percentile,20261105,,,,,,,
+1.0.0,exp-synthetic-known-2b56f935ee9c,smoke,RQ1,median_latency_overhead,litellm_minus_direct,ok_requests_by_block_median,block,3,6.0,ms,6.0,6.0,6.0,paired_block_median_bootstrap_percentile,20261105,,,,,,,

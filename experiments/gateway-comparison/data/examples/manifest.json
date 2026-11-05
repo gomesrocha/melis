@@ -1,0 +1,61 @@
+{
+  "artifact": {
+    "clean": false,
+    "commit": "d1868f5dcf81cfda919ff42b5d68a13d22bd5135",
+    "dirty_files": [
+      "src/bedrock.rs",
+      "experiments/gateway-comparison/PROTOCOL.md",
+      "experiments/gateway-comparison/data/",
+      "experiments/gateway-comparison/instrumentation/"
+    ]
+  },
+  "config_hashes": {
+    "litellm_config_deterministic": "sha256:c3d91e33535e29fd5f9e184a8d9cb10d9b415ee6cb60dcc85b2c8ad899264de4",
+    "melis_config_deterministic": "sha256:c6a5a731e34ef99a20eaf5622562fd0fed19b2fd4516d121a1044d1b8b9eaf06",
+    "melis_routes_deterministic": "sha256:8aca076a7d853c139245e713c12610196817b8ca3afa76e76fa12012fc7f554c"
+  },
+  "dataset_hashes": {
+    "requests_csv": "sha256:18b7964c87c202e3d343d535ad54176a0e06f9982579cdfa87673c798fe4d83b"
+  },
+  "experiment_id": "exp-synthetic-known-2b56f935ee9c",
+  "field_limitations": {
+    "SYNTHETIC": "this manifest describes the SYNTHETIC example dataset; NOT experimental evidence",
+    "attempts": "external gateways may not expose per-attempt detail; aggregate only when so",
+    "backend_call_count": "only on the deterministic profile; empty on real Ollama"
+  },
+  "generated_at_utc": "2026-11-05T13:57:51.106Z",
+  "hardware": {
+    "cpu_count": 16,
+    "gpu": null,
+    "machine": "x86_64",
+    "mem_total_bytes": 66070204416,
+    "platform": "Linux-7.0.0-38-generic-x86_64-desconhecido-with-glibc2.43",
+    "processor": "desconhecido",
+    "python": "3.14.4"
+  },
+  "image_digests": {
+    "backend_python": "python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30",
+    "litellm": "ghcr.io/berriai/litellm@sha256:d781cd3d736b1bd34f9964ebc491a9f91fb8fa140f35d4e6b4176c19dd2b306b",
+    "melis": "built-from-worktree-Dockerfile (digest recorded at build time)",
+    "redis": "redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
+  },
+  "measurement_origin": {
+    "backend_call_count": "deterministic backend /__count endpoint",
+    "first_content_ms": "client wall clock, first SSE content event",
+    "latency_ms": "client wall clock (harness/bench_client.py, perf_counter)",
+    "output_tokens": "provider usage when available; else empty (not fabricated)",
+    "resources": "cgroup/stat sampling (to be wired for real runs)",
+    "ttfb_ms": "client wall clock, first HTTP byte (SSE)"
+  },
+  "models": {
+    "direct": "mock-model",
+    "litellm": "mock-model",
+    "melis": "mock-model"
+  },
+  "phase": "smoke",
+  "schema_version": "1.0.0",
+  "seeds": {
+    "aggregation_bootstrap": 20261105,
+    "scheduling": "n/a (synthetic example)"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "data_dir": "/home/fabio/organizacao/repository/melis-exp/experiments/gateway-comparison/data/examples",
+  "schema_version": "1.0.0",
+  "tables": {
+    "requests": {
+      "present": true,
+      "rows": 45
+    },
+    "attempts": {
+      "present": true,
+      "rows": 45
+    },
+    "runs": {
+      "present": true,
+      "rows": 9
+    },
+    "resources": {
+      "present": false,
+      "rows": 0
+    },
+    "quality": {
+      "present": false,
+      "rows": 0
+    },
+    "resilience_events": {
+      "present": false,
+      "rows": 0
+    },
+    "safety_cases": {
+      "present": false,
+      "rows": 0
+    },
+    "comparisons": {
+      "present": true,
+      "rows": 2
+    }
+  },
+  "errors": [],
+  "warnings": [],
+  "ok": true
+}
