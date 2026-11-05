@@ -191,3 +191,42 @@ Ollama with the dummy `ollama` key.
   fixed here** — to be defined in the protocol, not chosen to favor a gateway.
 - **Streaming parity**: the deterministic backend emits one SSE chunk per token
   segment; a real provider chunks differently. Compare JSON and SSE separately.
+
+## Pilot (RQ1, deterministic) — reproduce
+
+`harness/run_pilot_rq1.py` drives one gateway at a time and writes
+schema-compliant `requests.csv`/`attempts.csv` (`phase=pilot`) that validate
+against schema 1.0.0. It is **pilot only**; its data never enters the final set
+and is kept local (see `data/.gitignore`).
+
+Estimate the workload before running an extended grid. The deterministic RQ1
+pilot used here is small: 5 blocks x {json,sse} x 3 paths x 30 nested requests
+= 900 requests, ~20 s of request work plus gateway start/stop.
+
+```bash
+# backend up; then ONE gateway at a time:
+scripts/up.sh deterministic backend
+python3 harness/run_pilot_rq1.py --gateway direct  --url http://127.0.0.1:7070 \
+    --count-url http://127.0.0.1:7070/__count --blocks 5 --reqs-per-cell 30 \
+    --concurrency 1 --modes json sse --out-dir data/pilot --phase pilot
+docker compose -f docker-compose.deterministic.yml --profile melis up -d melis
+python3 harness/run_pilot_rq1.py --gateway melis   --url http://127.0.0.1:7071 \
+    --count-url http://127.0.0.1:7070/__count --blocks 5 --reqs-per-cell 30 \
+    --concurrency 1 --modes json sse --out-dir data/pilot --phase pilot
+# stop melis, start litellm, repeat with --gateway litellm --url http://127.0.0.1:4000
+# then:
+python3 instrumentation/validate.py --data-dir data/pilot
+python3 instrumentation/aggregate.py --data-dir data/pilot \
+    --runs-out data/pilot/runs.csv --comparisons-out data/pilot/comparisons.csv --seed 20261105
+python3 instrumentation/validate.py --data-dir data/pilot --report data/pilot/validation_report.json
+```
+
+**Known pilot limitations** (to resolve before the final collection):
+
+- The runner is **closed-loop and sequential**; `concurrency` is recorded as a
+  factor but a true concurrent load needs a parallel sender. Do not read the
+  pilot's `concurrency` column as concurrent throughput.
+- The deterministic backend removes model/network variance, so pilot latencies
+  are **mediation overhead under this exact setup**, not inference performance,
+  and the tiny between-block variance does **not** by itself size the final
+  sample — the real-profile and quality pilots drive that.
