@@ -38,7 +38,7 @@ from collections import defaultdict
 from typing import Optional
 
 # Bump when the contrast definition changes, even if the file hash also changes.
-ANALYSIS_REVISION = "1.1.0"
+ANALYSIS_REVISION = "1.2.0"
 
 from csv_writer import CsvTableWriter
 
@@ -95,6 +95,7 @@ def summarize_runs(requests, facts_by_run=None):
         window = fact.get("window") or sample.get("window") or None
         row = {
             "experiment_id": sample["experiment_id"],
+            "collection_id": sample.get("collection_id") or fact.get("collection_id") or None,
             "phase": sample["phase"],
             "run_id": run_id,
             "block_id": sample["block_id"],
@@ -108,6 +109,9 @@ def summarize_runs(requests, facts_by_run=None):
             "order_in_block": int(fact["order_in_block"]) if fact.get("order_in_block") not in (None, "") else None,
             "warmup_s": _f(fact.get("warmup_s")) if fact.get("warmup_s") not in (None, "") else None,
             "duration_s": duration,
+            "requested_duration_s": _f(fact.get("requested_duration_s")) if fact.get("requested_duration_s") not in (None, "") else None,
+            "termination_reason": fact.get("termination_reason") or None,
+            "truncated": fact.get("truncated") if fact.get("truncated") not in (None, "") else None,
             "n_requests": n_req,
             "n_ok": n_ok,
             "n_failed": n_req - n_ok,
@@ -132,6 +136,7 @@ def summarize_runs(requests, facts_by_run=None):
 
 # Factors that change the treatment. A contrast never pools across these.
 STRATUM_FIELDS = (
+    "collection_id",
     "phase",
     "backend_profile",
     "streaming",
@@ -139,6 +144,14 @@ STRATUM_FIELDS = (
     "policy",
     "feature_profile",
     "scenario",
+)
+
+# Family registered for the final analysis. The pilot leaves p-values empty.
+# Holm across these three contrasts is the multiplicity plan, not a result.
+RQ1_CONTRASTS = (
+    ("melis_minus_direct", "melis", "direct"),
+    ("litellm_minus_direct", "litellm", "direct"),
+    ("melis_minus_litellm", "melis", "litellm"),
 )
 
 REQUIRED_GATEWAYS = ("direct", "melis", "litellm")
@@ -231,14 +244,31 @@ def _bootstrap_ci(diffs, seed, iters=2000, alpha=0.05):
     return (round(lo, 4), round(hi, 4))
 
 
-def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory"):
-    """Paired latency contrasts, one population per stratum.
+def truncated_block_ids(facts):
+    """Measured executions whose duration window was cut by a cap."""
+    found = set()
+    for fact in facts or []:
+        window = (fact.get("window") or "").strip()
+        if window not in ("", "measured"):
+            continue
+        flag = str(fact.get("truncated") or "").strip().lower()
+        if flag == "true":
+            found.add(fact.get("block_id"))
+    found.discard(None)
+    found.discard("")
+    return found
 
-    A block contributes only when direct, Melis and LiteLLM are all present
-    in that stratum. Incomplete blocks are omitted here and listed by
-    `pairing_report`. Smoke and pilot rows are exploratory. This function
-    does not emit a confirmatory role unless the caller asks for it, and it
-    never pools c=1 with c=8.
+
+def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory",
+                  facts=None):
+    """Mean, across blocks, of differences of per-execution completion medians.
+
+    A block contributes to the estimate only when direct, Melis and LiteLLM
+    each have a successful median in that stratum, and the block was not
+    truncated. Blocks that fail or are truncated stay in ``excluded``; they
+    are not dropped without a trace and they are not removed because the
+    latency looks large. The three contrasts share that block set. p-values
+    stay empty; Holm is the final-analysis plan, not a pilot result.
     """
     grouped = defaultdict(list)
     for r in requests:
@@ -248,10 +278,13 @@ def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory"):
             continue
         grouped[stratum_key(r)].append(r)
 
+    truncated = truncated_block_ids(facts)
     rows = []
+    excluded = []
     aid = analysis_id()
     for key, group in grouped.items():
-        phase = key[0]
+        phase = key[1] if key else ""
+        collection = key[0] if key else ""
         report = pairing_report(group)
         complete_ids = {entry["block_id"] for entry in report["complete"]}
         if not complete_ids:
@@ -260,21 +293,35 @@ def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory"):
         block_med = _block_medians(kept)
         population = stratum_population(key)
         role = evidence_role if phase == "final" else "exploratory"
-        for gw in ("melis", "litellm"):
-            diffs = []
-            for block_id, meds in block_med.items():
-                if gw in meds and "direct" in meds and "litellm" in meds and "melis" in meds:
-                    diffs.append(meds[gw] - meds["direct"])
+        usable = []
+        for block_id in sorted(complete_ids):
+            meds = block_med.get(block_id, {})
+            if block_id in truncated:
+                excluded.append({
+                    "block_id": block_id, "population": population, "reason": "truncated",
+                })
+                continue
+            if not all(name in meds for name in REQUIRED_GATEWAYS):
+                excluded.append({
+                    "block_id": block_id, "population": population,
+                    "reason": "no_successful_median",
+                    "gateways_with_success": sorted(meds),
+                })
+                continue
+            usable.append((block_id, meds))
+        for contrast, left, right in RQ1_CONTRASTS:
+            diffs = [meds[left] - meds[right] for _, meds in usable]
             if not diffs:
                 continue
             est = round(statistics.fmean(diffs), 4)
             lo, hi = _bootstrap_ci(diffs, seed)
             rows.append({
                 "experiment_id": experiment_id,
+                "collection_id": collection,
                 "phase": phase,
                 "question": "RQ1",
                 "outcome": "median_latency_overhead",
-                "contrast": f"{gw}_minus_direct",
+                "contrast": contrast,
                 "population": population,
                 "independent_units": "block",
                 "n": len(diffs),
@@ -283,7 +330,7 @@ def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory"):
                 "effect_size": est,
                 "ci_lower": lo,
                 "ci_upper": hi,
-                "method": "paired_block_median_bootstrap_percentile",
+                "method": "mean_of_paired_block_median_differences_bootstrap_percentile",
                 "seed": str(seed),
                 "p_raw": None,
                 "p_adjusted": None,
@@ -295,7 +342,7 @@ def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory"):
                 "analysis_id": aid,
                 "evidence_role": role,
             })
-    return rows
+    return rows, excluded
 
 
 def _facts_by_run(data_dir):
@@ -320,28 +367,35 @@ def build(data_dir, runs_out, comparisons_out, experiment_id, phase, seed,
     if phase:
         requests = [r for r in requests if r.get("phase") == phase]
 
-    runs_rows = summarize_runs(requests, _facts_by_run(data_dir))
+    facts = _facts_by_run(data_dir)
+    runs_rows = summarize_runs(requests, facts)
     if runs_out:
         w = CsvTableWriter("runs", runs_out)
         w.write_rows(runs_rows)
+        w.close()
 
     comparisons_rows = []
+    excluded = []
     if requests:
         experiment_id = experiment_id or requests[0]["experiment_id"]
-        comparisons_rows.extend(
-            rq1_contrasts(requests, experiment_id, seed, evidence_role=evidence_role)
+        comparisons_rows, excluded = rq1_contrasts(
+            requests, experiment_id, seed, evidence_role=evidence_role,
+            facts=list(facts.values()),
         )
     if comparisons_out and comparisons_rows:
         w = CsvTableWriter("comparisons", comparisons_out)
         w.write_rows(comparisons_rows)
+        w.close()
 
     report = pairing_report(requests)
+    report["excluded"] = excluded
     return {
         "runs": len(runs_rows),
         "comparisons": len(comparisons_rows),
         "analysis_id": analysis_id(),
         "complete_blocks": len(report["complete"]),
         "incomplete_blocks": len(report["incomplete"]),
+        "excluded_blocks": len(excluded),
         "pairing": report,
     }
 

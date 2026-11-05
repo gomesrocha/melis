@@ -133,6 +133,7 @@ def _one_request(chat_url, payload, timeout, stream):
 
 def run(args):
     experiment_id = ids.experiment_id(args.experiment_name, "1.0", SCHEMA_VERSION)
+    collection = ids.collection_id(experiment_id, ids.new_collection_nonce())
     os.makedirs(args.out_dir, exist_ok=True)
     req_writer = CsvTableWriter("requests", os.path.join(args.out_dir, "requests.csv"))
     att_writer = CsvTableWriter("attempts", os.path.join(args.out_dir, "attempts.csv"))
@@ -142,14 +143,14 @@ def run(args):
     t_start = time.perf_counter()
 
     for b in range(args.blocks):
-        block = ids.block_id(experiment_id, args.phase, b)
+        block = ids.block_id(experiment_id, args.phase, b, collection)
         case = ids.case_id(experiment_id, "rq1-probe", 0)
         for mode in args.modes:
             stream = mode == "sse"
             for conc in args.concurrency:
-                pair = ids.pair_id(block, case, "rq1_fixed_load", stream, conc)
+                pair = ids.pair_id(block, case, "rq1_fixed_load", stream, conc, collection)
                 run_id = ids.run_id(experiment_id, args.phase, args.gateway, block,
-                                    "rq1_fixed_load", stream, conc)
+                                    "rq1_fixed_load", stream, conc, 0, collection)
                 for i in range(args.reqs_per_cell):
                     payload = {
                         "model": args.model,
@@ -166,7 +167,8 @@ def run(args):
                         bcount = sum(after.values()) - sum(before.values())
                     request_id = ids.request_id(run_id, pair, i)
                     req_writer.write_row({
-                        "experiment_id": experiment_id, "phase": args.phase, "run_id": run_id,
+                        "experiment_id": experiment_id, "collection_id": collection,
+                        "phase": args.phase, "run_id": run_id,
                         "block_id": block, "pair_id": pair, "case_id": case, "request_id": request_id,
                         "gateway": args.gateway, "scenario": "rq1_fixed_load",
                         "backend_profile": "deterministic", "streaming": stream, "concurrency": conc,
@@ -182,7 +184,8 @@ def run(args):
                         "token_count_source": "gateway_estimate",
                     })
                     att_writer.write_row({
-                        "run_id": run_id, "request_id": request_id, "attempt_index": 0,
+                        "collection_id": collection, "run_id": run_id,
+                        "request_id": request_id, "attempt_index": 0,
                         "destination_id": f"dest-{args.gateway}", "started_at_utc": r["started_at"],
                         "latency_ms": round(r["latency_ms"], 3), "status": r["status"],
                         "http_status": r["http_status"], "is_probe": False, "is_fallback": False,

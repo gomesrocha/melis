@@ -1,6 +1,6 @@
 # Data dictionary — gateway-comparison raw CSVs
 
-Schema version: **1.1.0** (see `SCHEMA_VERSION`; every row carries
+Schema version: **1.2.0** (see `SCHEMA_VERSION`; every row carries
 `schema_version`). Authoritative column definitions live in `schemas.py`; this
 document is the human-readable companion and the protocol→schema traceability.
 
@@ -26,8 +26,9 @@ document is the human-readable companion and the protocol→schema traceability.
 
 | Id | Scope | Pairing property |
 |----|-------|------------------|
-| `experiment_id` | experiment definition (name + protocol + schema) | — |
-| `block_id` | one independent repetition unit | — |
+| `experiment_id` | experiment definition (name + protocol). Schema version is not part of it | — |
+| `collection_id` | one collection. Same nonce reproduces it; a new nonce does not, even with the same seed | gateways inside the collection stay paired; two collections are not one sample |
+| `block_id` | one independent repetition unit inside that collection | — |
 | `pair_id` | one (block, case, scenario, streaming, concurrency) cell | **gateway-independent**: identical across direct/melis/litellm |
 | `run_id` | one gateway running one cell | — |
 | `request_id` | one logical request | nested under run + pair |
@@ -201,6 +202,7 @@ pairing preserved):
 |---|---|
 | 1.0.0 | Initial protocol columns. Historical smoke/pilot files stay at this version and are not rewritten. |
 | 1.1.0 | Separate cgroup memory, working set and RSS; per-sample timing and method; stratum fields; execution facts; analysis id. |
+| 1.2.0 | `collection_id` on new rows; block/run/request ids include it. Requested versus effective duration, termination reason, truncation. Third RQ1 contrast. Historical 1.0.0 and 1.1.0 files are not rewritten; analysis namespaces them. |
 
 Any future change to a column, unit, type, or enum **bumps `SCHEMA_VERSION`**
 and is recorded here and in the git history. Data written under an older schema

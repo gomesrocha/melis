@@ -100,6 +100,15 @@ class TestBlockDesign(unittest.TestCase):
         firsts = [order[0] for order in orders]
         self.assertEqual(len(set(firsts)), 3)
 
+    def test_twelve_blocks_use_each_permutation_twice(self):
+        gates = ["direct", "melis", "litellm"]
+        orders = block_design.permutation_orders(gates, repeats=2, seed=20261105)
+        again = block_design.permutation_orders(gates, repeats=2, seed=20261105)
+        self.assertEqual(orders, again)
+        self.assertEqual(len(orders), 12)
+        self.assertTrue(block_design.permutation_coverage(orders, gates, 2))
+        self.assertTrue(block_design.positions_balanced(orders))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

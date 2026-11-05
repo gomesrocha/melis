@@ -28,7 +28,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 
 
 def _read_version_file() -> Optional[str]:
@@ -105,13 +105,17 @@ EVALUATOR_TYPES = ("human", "llm_judge", "automatic")
 WINDOWS = ("warmup", "measured")
 EVIDENCE_ROLES = ("exploratory", "confirmatory")
 COUNT_SCOPES = ("execution",)
+TERMINATION_REASONS = ("deadline", "safety_cap", "request_cap")
 
 # ── requests.csv ────────────────────────────────────────────────────────────
 # One row per LOGICAL request (including failures). Retries do NOT duplicate the
 # logical request here; they go to attempts.csv.
 REQUESTS = (
     Column("schema_version", STR, required=True, doc="Schema version of this row."),
-    Column("experiment_id", STR, required=True, doc="Stable experiment identifier."),
+    Column("experiment_id", STR, required=True,
+           doc="Stable experiment definition (name + protocol). Not unique per collection."),
+    Column("collection_id", STR, required=True,
+           doc="Unique identity of one collection. Reprocessing that collection keeps it; a new collection does not."),
     Column("phase", ENUM, required=True, enum=PHASES, doc="smoke|pilot|final."),
     Column("run_id", STR, required=True, doc="Measured run (see ids.py)."),
     Column("block_id", STR, required=True, doc="Independent repetition unit."),
@@ -160,6 +164,7 @@ REQUESTS = (
 # One row per OBSERVABLE attempt. Keyed to a requests.csv request_id.
 ATTEMPTS = (
     Column("schema_version", STR, required=True),
+    Column("collection_id", STR, required=True),
     Column("run_id", STR, required=True),
     Column("request_id", STR, required=True),
     Column("attempt_index", INT, required=True, doc="0-based attempt ordinal within the request."),
@@ -178,6 +183,7 @@ ATTEMPTS = (
 RUNS = (
     Column("schema_version", STR, required=True),
     Column("experiment_id", STR, required=True),
+    Column("collection_id", STR, required=True),
     Column("phase", ENUM, required=True, enum=PHASES),
     Column("run_id", STR, required=True),
     Column("block_id", STR, required=True),
@@ -190,7 +196,13 @@ RUNS = (
     Column("seed", STR, doc="Seed(s) fixing scheduling/corpus order for this run."),
     Column("order_in_block", INT, doc="Randomized order of this gateway within the block."),
     Column("warmup_s", FLOAT, unit="s"),
-    Column("duration_s", FLOAT, unit="s", doc="Measured window duration (wall clock)."),
+    Column("duration_s", FLOAT, unit="s",
+           doc="Effective wall time, including drain of in-flight requests. Not the configured duration."),
+    Column("requested_duration_s", FLOAT, unit="s",
+           doc="Configured window. Empty when the cell was count-capped on purpose."),
+    Column("termination_reason", ENUM, enum=TERMINATION_REASONS,
+           doc="Why admission stopped: deadline, safety_cap, or request_cap."),
+    Column("truncated", BOOL, doc="True when a safety or request cap cut a duration window short."),
     Column("n_requests", INT, required=True),
     Column("n_ok", INT, required=True),
     Column("n_failed", INT, required=True),
@@ -220,6 +232,7 @@ RUNS = (
 # Definitions that the source did not provide stay empty (missing != zero).
 RESOURCES = (
     Column("schema_version", STR, required=True),
+    Column("collection_id", STR, required=True),
     Column("run_id", STR, required=True),
     Column("timestamp_utc", TS_UTC, required=True,
            doc="Time of THIS sample. Engine read time when the source provides one."),
@@ -314,6 +327,7 @@ SAFETY_CASES = (
 COMPARISONS = (
     Column("schema_version", STR, required=True),
     Column("experiment_id", STR, required=True),
+    Column("collection_id", STR, required=True),
     Column("phase", ENUM, required=True, enum=PHASES),
     Column("question", STR, required=True, doc="RQ1|RQ2|RQ3|RQ4|guardrails."),
     Column("outcome", STR, required=True, doc="Primary/secondary outcome name."),
@@ -349,6 +363,7 @@ COMPARISONS = (
 EXECUTION_FACTS = (
     Column("schema_version", STR, required=True),
     Column("experiment_id", STR, required=True),
+    Column("collection_id", STR, required=True),
     Column("phase", ENUM, required=True, enum=PHASES),
     Column("run_id", STR, required=True),
     Column("block_id", STR, required=True),
@@ -363,7 +378,17 @@ EXECUTION_FACTS = (
     Column("order_in_block", INT, doc="Position of this gateway inside the block (0-based)."),
     Column("seed", STR),
     Column("warmup_s", FLOAT, unit="s"),
-    Column("duration_s", FLOAT, unit="s", doc="Measured-window wall time."),
+    Column("duration_s", FLOAT, unit="s",
+           doc="Effective wall time, including in-flight drain. Not the configured duration."),
+    Column("requested_duration_s", FLOAT, unit="s",
+           doc="Configured window. Empty when the cell was a planned request cap."),
+    Column("termination_reason", ENUM, required=True, enum=TERMINATION_REASONS),
+    Column("truncated", BOOL, required=True,
+           doc="True when safety_cap or an explicit request cap ended a duration window early."),
+    Column("throughput_per_s", FLOAT, unit="req_per_s",
+           doc="Finished requests divided by effective wall time, including drain. Not divided by the configured window."),
+    Column("admitted_n", INT, doc="Requests that started. In-flight work at the deadline is included."),
+    Column("drained_n", INT, doc="Admitted requests that finished after the admission deadline."),
     Column("backend_call_count", INT,
            doc="Counter delta for this execution only. Empty when the delta is ambiguous."),
     Column("backend_peak_inflight", INT,
@@ -383,7 +408,7 @@ SCHEMAS = {
     "quality": (QUALITY, ("run_id", "case_id", "policy", "generation_rep", "answer_id", "evaluator_id")),
     "resilience_events": (RESILIENCE_EVENTS, ("run_id", "episode_id", "relative_ms", "event_type")),
     "safety_cases": (SAFETY_CASES, ("run_id", "case_id")),
-    "comparisons": (COMPARISONS, ("experiment_id", "question", "outcome", "contrast", "population")),
+    "comparisons": (COMPARISONS, ("collection_id", "question", "outcome", "contrast", "population")),
     "execution_facts": (EXECUTION_FACTS, ("run_id", "window")),
 }
 

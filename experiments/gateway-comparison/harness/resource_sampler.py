@@ -396,7 +396,8 @@ def iter_stats_stream(sock_path, container, stop_event):
 
 
 class ResourceSampler:
-    def __init__(self, out_dir, containers, interval=0.5, include_host=True, sock_path=None):
+    def __init__(self, out_dir, containers, interval=0.5, include_host=True, sock_path=None,
+                 collection_id=None):
         self.containers = list(containers)
         self.interval = float(interval)
         self.include_host = include_host
@@ -413,6 +414,7 @@ class ResourceSampler:
         self._stream_threads = {}
         self.samples = 0
         self.errors = 0
+        self.collection_id = collection_id
 
     def set_containers(self, containers):
         with self._lock:
@@ -493,6 +495,7 @@ class ResourceSampler:
         index, effective, lag = self._claim(run_id, sample["component"], sample["received_mono"])
         elapsed = sample["received_mono"] - cell_t0
         self.writer.write_row({
+            "collection_id": self.collection_id,
             "run_id": run_id,
             "timestamp_utc": sample["timestamp_utc"],
             "elapsed_s": round(elapsed, 6),

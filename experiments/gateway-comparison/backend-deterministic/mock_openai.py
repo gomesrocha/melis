@@ -70,14 +70,21 @@ def _record_seen(path, req):
     # The hash compares forwarded payloads without storing message content.
     params = {k: req.get(k) for k in ("temperature", "max_tokens", "top_p", "stream")
               if k in req}
+    messages = req.get("messages", []) or []
+    messages_canon = json.dumps(messages, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     canonical = json.dumps(req, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     encoded = canonical.encode("utf-8")
     entry = {
         "path": path,
         "model": req.get("model"),
         "stream": bool(req.get("stream", False)),
+        "stream_key_present": "stream" in req,
+        "temperature": req.get("temperature"),
+        "max_tokens": req.get("max_tokens"),
+        "top_p": req.get("top_p"),
         "params": params,
-        "n_messages": len(req.get("messages", []) or []),
+        "n_messages": len(messages),
+        "messages_sha256": hashlib.sha256(messages_canon.encode("utf-8")).hexdigest(),
         "keys": sorted(req.keys()),
         "body_sha256": hashlib.sha256(encoded).hexdigest(),
         "body_len": len(encoded),

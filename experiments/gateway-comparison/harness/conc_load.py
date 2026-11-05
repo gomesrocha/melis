@@ -9,8 +9,8 @@ Closed-loop model
 -----------------
 For each (block, mode, concurrency) cell we start `concurrency` worker threads.
 Each worker runs a loop: claim the next request index from a shared atomic
-counter, issue ONE request, record it, repeat — until the cell's request budget
-is exhausted. So at any moment up to `concurrency` requests are in flight
+counter, issue ONE request, record it, repeat — until the admission deadline
+or a cap is reached. So at any moment up to `concurrency` requests are in flight
 (closed loop: a worker only starts its next request after its previous one
 completes). This is the standard closed-loop generator; open-loop arrival
 scheduling is a separate future mode (documented, not implemented here).
@@ -189,33 +189,88 @@ class Conn:
             self._c = None
 
 
-def run_cell(base_url, model, mode, concurrency, n_requests, max_tokens, timeout,
-             deadline_mono=None):
-    """Run one closed-loop cell with `concurrency` workers; return list of result dicts.
+# Hard ceiling for a duration window. A fast mock must not be stopped by the
+# old 2000-request default. Hitting this marks the cell truncated.
+DEFAULT_SAFETY_CAP = 2_000_000
 
-    `n_requests` is a cap. When `deadline_mono` is set, workers also stop once
-    that monotonic deadline is reached. In-flight requests are still recorded.
-    Configured concurrency is the worker count, not the observed backend peak.
+
+def run_cell(base_url, model, mode, concurrency, n_requests, max_tokens, timeout,
+             deadline_mono=None, safety_cap=None, on_result=None, collect=None,
+             requested_duration_s=None):
+    """Run one closed-loop cell.
+
+    Admission stops at the first of: ``deadline_mono``, a planned
+    ``n_requests`` cap, or ``safety_cap``. Requests already started are
+    drained and recorded; they are not dropped and they are not restamped
+    onto the deadline. ``effective_duration_s`` is the wall clock until that
+    drain finishes. It is not the configured duration.
+
+    ``on_result`` is called per finished request so a long window does not
+    accumulate every result in RAM. ``collect`` defaults to True only for a
+    small planned cap without a deadline (unit tests). Duration mode does
+    not preallocate.
     """
     stream = mode == "sse"
     path = urlparse(base_url).path.rstrip("/") + "/v1/chat/completions"
-    if path == "/v1/chat/completions":
-        path = "/v1/chat/completions"
-    results = [None] * n_requests
-    next_idx = {"i": 0}
+    planned = None if n_requests is None else int(n_requests)
+    ceiling = int(safety_cap) if safety_cap is not None else DEFAULT_SAFETY_CAP
+    if collect is None:
+        collect = planned is not None and planned <= 10_000 and deadline_mono is None
+    if collect and planned is not None and planned > 10_000:
+        collect = False
+    results = [] if collect else None
+    state = {
+        "admitted": 0,
+        "reason": None,
+        "truncated": False,
+        "drained": 0,
+        "n_ok": 0,
+        "n_failed": 0,
+    }
     lock = threading.Lock()
+
+    def admit():
+        with lock:
+            if state["reason"] is not None:
+                return None
+            now = time.perf_counter()
+            if deadline_mono is not None and now >= deadline_mono:
+                state["reason"] = "deadline"
+                state["truncated"] = False
+                return None
+            if planned is not None and state["admitted"] >= planned:
+                state["reason"] = "request_cap"
+                state["truncated"] = deadline_mono is not None
+                return None
+            if state["admitted"] >= ceiling:
+                state["reason"] = "safety_cap"
+                state["truncated"] = True
+                return None
+            i = state["admitted"]
+            state["admitted"] = i + 1
+            return i
+
+    def publish(record):
+        if on_result is not None:
+            on_result(record)
+        with lock:
+            if record.get("drained"):
+                state["drained"] += 1
+            if record.get("status") == "ok":
+                state["n_ok"] += 1
+            else:
+                state["n_failed"] += 1
+            if results is not None:
+                results.append(record)
 
     def worker():
         conn = Conn(base_url, timeout)
         try:
             while True:
-                if deadline_mono is not None and time.perf_counter() >= deadline_mono:
+                i = admit()
+                if i is None:
                     return
-                with lock:
-                    i = next_idx["i"]
-                    if i >= n_requests:
-                        return
-                    next_idx["i"] = i + 1
+                started = time.perf_counter()
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": f"conc probe {i}"}],
@@ -223,21 +278,43 @@ def run_cell(base_url, model, mode, concurrency, n_requests, max_tokens, timeout
                     "max_tokens": max_tokens,
                     "stream": stream,
                 }
-                r = conn.post(path, payload, stream)
-                r["i"] = i
-                results[i] = r
+                record = conn.post(path, payload, stream)
+                ended = time.perf_counter()
+                record["i"] = i
+                record["drained"] = bool(
+                    deadline_mono is not None and started < deadline_mono and ended > deadline_mono
+                )
+                publish(record)
         finally:
             conn.close()
 
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(concurrency)]
     t0 = time.perf_counter()
+    if deadline_mono is not None and requested_duration_s is None:
+        requested_duration_s = max(0.0, deadline_mono - t0)
     for t in threads:
         t.start()
     for t in threads:
         t.join()
     wall = time.perf_counter() - t0
-    finished = [r for r in results if r is not None]
-    return finished, wall
+    finished = state["n_ok"] + state["n_failed"]
+    if state["reason"] is None:
+        state["reason"] = "request_cap" if planned is not None else "deadline"
+        state["truncated"] = False
+    throughput = (finished / wall) if wall > 0 else None
+    return {
+        "results": results,
+        "n": finished,
+        "n_ok": state["n_ok"],
+        "n_failed": state["n_failed"],
+        "effective_duration_s": wall,
+        "requested_duration_s": requested_duration_s,
+        "termination_reason": state["reason"],
+        "truncated": state["truncated"],
+        "admitted": state["admitted"],
+        "drained": state["drained"],
+        "throughput_per_s": throughput,
+    }
 
 
 def execution_backend_calls(before_total, after_total):
@@ -316,11 +393,12 @@ def execute_cell(cell):
     block = cell["block_id"]
     case = cell["case_id"]
     scenario = cell.get("scenario", "rq1_fixed_load")
-    pair = ids.pair_id(block, case, scenario, stream, conc)
+    collection = cell["collection_id"]
+    pair = ids.pair_id(block, case, scenario, stream, conc, collection)
     attempt = int(cell.get("attempt", 0))
     measured_run = ids.run_id(
         cell["experiment_id"], cell["phase"], cell["gateway"], block,
-        scenario, stream, conc, attempt,
+        scenario, stream, conc, attempt, collection,
     )
     registry = cell["registry"]
     registry.claim_run(measured_run)
@@ -330,31 +408,40 @@ def execute_cell(cell):
     policy = cell.get("policy", "none")
     timeout = cell["timeout"]
     max_tokens = cell["max_tokens"]
-    cap = cell["max_requests"]
+    safety_cap = int(cell.get("safety_cap") or DEFAULT_SAFETY_CAP)
     inflight = cell.get("inflight_url")
     count_url = cell.get("count_url")
     sampler = cell.get("sampler")
+    write_lock = threading.Lock()
+
+    def _emit(run_id, pair_id, scenario_name, window):
+        def on_result(record):
+            with write_lock:
+                _write_one(
+                    req_writer, registry, record, cell, run_id, block, pair_id, case,
+                    scenario_name, stream, conc, feature, policy, window,
+                )
+        return on_result
 
     warmup_s = float(cell.get("warmup_s") or 0)
     if warmup_s > 0:
         warm_run = ids.run_id(
             cell["experiment_id"], cell["phase"], cell["gateway"], block,
-            "rq1_warmup", stream, conc, attempt + 1,
+            "rq1_warmup", stream, conc, attempt + 1, collection,
         )
         registry.claim_run(warm_run)
-        warm_pair = ids.pair_id(block, case, "rq1_warmup", stream, conc)
+        warm_pair = ids.pair_id(block, case, "rq1_warmup", stream, conc, collection)
         tw = time.perf_counter()
-        warm, warm_wall = run_cell(
-            cell["url"], cell["model"], mode, conc, cap, max_tokens, timeout,
-            deadline_mono=tw + warmup_s,
-        )
-        _write_requests(
-            req_writer, registry, warm, cell, warm_run, block, warm_pair, case,
-            "rq1_warmup", stream, conc, feature, policy, "warmup",
+        warm = run_cell(
+            cell["url"], cell["model"], mode, conc, None, max_tokens, timeout,
+            deadline_mono=tw + warmup_s, safety_cap=safety_cap,
+            requested_duration_s=warmup_s, on_result=_emit(
+                warm_run, warm_pair, "rq1_warmup", "warmup",
+            ), collect=False,
         )
         fact_writer.write_row(_fact_row(
             cell, warm_run, block, "rq1_warmup", stream, conc, feature, policy,
-            "warmup", warmup_s=None, duration_s=round(warm_wall, 3),
+            "warmup", warmup_s=None, summary=warm,
             backend_call_count=None, peak=None, reset_ok=False,
         ))
 
@@ -362,12 +449,23 @@ def execute_cell(cell):
     before = _count_total(count_url) if count_url else None
     if sampler is not None:
         sampler.set_run(measured_run)
+    measure_s = cell.get("measure_s")
     t0 = time.perf_counter()
-    deadline = (t0 + float(cell["measure_s"])) if cell.get("measure_s") else None
+    if measure_s:
+        deadline = t0 + float(measure_s)
+        planned = None
+        requested = float(measure_s)
+    else:
+        deadline = None
+        planned = int(cell["max_requests"])
+        requested = None
     try:
-        results, wall = run_cell(
-            cell["url"], cell["model"], mode, conc, cap, max_tokens, timeout,
-            deadline_mono=deadline,
+        measured = run_cell(
+            cell["url"], cell["model"], mode, conc, planned, max_tokens, timeout,
+            deadline_mono=deadline, safety_cap=safety_cap,
+            requested_duration_s=requested,
+            on_result=_emit(measured_run, pair, scenario, "measured"),
+            collect=False,
         )
     finally:
         if sampler is not None:
@@ -375,70 +473,72 @@ def execute_cell(cell):
     after = _count_total(count_url) if count_url else None
     peak = read_peak(inflight) if reset_ok else None
     calls = execution_backend_calls(before, after)
-    _write_requests(
-        req_writer, registry, results, cell, measured_run, block, pair, case,
-        scenario, stream, conc, feature, policy, "measured",
-    )
     fact_writer.write_row(_fact_row(
         cell, measured_run, block, scenario, stream, conc, feature, policy,
-        "measured", warmup_s=warmup_s, duration_s=round(wall, 3),
+        "measured", warmup_s=warmup_s, summary=measured,
         backend_call_count=calls, peak=peak, reset_ok=reset_ok,
     ))
-    oks = sum(1 for r in results if r["status"] == "ok")
+    req_writer.flush()
+    fact_writer.flush()
     return {
         "run_id": measured_run,
         "gateway": cell["gateway"],
         "mode": mode,
         "concurrency": conc,
-        "ok": oks,
-        "n": len(results),
-        "wall_s": round(wall, 3),
+        "ok": measured["n_ok"],
+        "n": measured["n"],
+        "wall_s": round(measured["effective_duration_s"], 3),
+        "requested_duration_s": requested,
+        "termination_reason": measured["termination_reason"],
+        "truncated": measured["truncated"],
         "backend_peak_inflight": peak,
         "backend_call_count": calls,
         "order_in_block": cell.get("order_in_block"),
     }
 
 
-def _write_requests(writer, registry, results, cell, run_id, block, pair, case,
-                    scenario, stream, conc, feature, policy, window):
-    for r in results:
-        request_id = ids.request_id(run_id, pair, r["i"])
-        registry.claim_request(request_id)
-        writer.write_row({
-            "experiment_id": cell["experiment_id"],
-            "phase": cell["phase"],
-            "run_id": run_id,
-            "block_id": block,
-            "pair_id": pair,
-            "case_id": case,
-            "request_id": request_id,
-            "gateway": cell["gateway"],
-            "scenario": scenario,
-            "backend_profile": cell["backend_profile"],
-            "streaming": stream,
-            "concurrency": conc,
-            "policy": policy,
-            "feature_profile": feature,
-            "window": window,
-            "started_at_utc": r["started_at"],
-            "latency_ms": round(r["latency_ms"], 3),
-            "ttfb_ms": round(r["ttfb_ms"], 3) if r.get("ttfb_ms") is not None else None,
-            "first_content_ms": round(r["first_content_ms"], 3) if r.get("first_content_ms") is not None else None,
-            "status": r["status"],
-            "http_status": r.get("http_status"),
-            "error_class": r.get("error_class"),
-            "timeout": r["timeout"],
-            "completion_valid": r["completion_valid"],
-            "requested_model": cell["model"],
-            "effective_model": cell["model"],
-        })
+def _write_one(writer, registry, record, cell, run_id, block, pair, case,
+               scenario, stream, conc, feature, policy, window):
+    request_id = ids.request_id(run_id, pair, record["i"])
+    registry.claim_request(request_id)
+    writer.write_row({
+        "experiment_id": cell["experiment_id"],
+        "collection_id": cell["collection_id"],
+        "phase": cell["phase"],
+        "run_id": run_id,
+        "block_id": block,
+        "pair_id": pair,
+        "case_id": case,
+        "request_id": request_id,
+        "gateway": cell["gateway"],
+        "scenario": scenario,
+        "backend_profile": cell["backend_profile"],
+        "streaming": stream,
+        "concurrency": conc,
+        "policy": policy,
+        "feature_profile": feature,
+        "window": window,
+        "started_at_utc": record["started_at"],
+        "latency_ms": round(record["latency_ms"], 3),
+        "ttfb_ms": round(record["ttfb_ms"], 3) if record.get("ttfb_ms") is not None else None,
+        "first_content_ms": round(record["first_content_ms"], 3) if record.get("first_content_ms") is not None else None,
+        "status": record["status"],
+        "http_status": record.get("http_status"),
+        "error_class": record.get("error_class"),
+        "timeout": record["timeout"],
+        "completion_valid": record["completion_valid"],
+        "requested_model": cell["model"],
+        "effective_model": cell["model"],
+    })
 
 
 def _fact_row(cell, run_id, block, scenario, stream, conc, feature, policy, window,
-              warmup_s, duration_s, backend_call_count, peak, reset_ok):
+              warmup_s, summary, backend_call_count, peak, reset_ok):
     sampler = cell.get("sampler")
+    rate = summary["throughput_per_s"]
     return {
         "experiment_id": cell["experiment_id"],
+        "collection_id": cell["collection_id"],
         "phase": cell["phase"],
         "run_id": run_id,
         "block_id": block,
@@ -453,7 +553,13 @@ def _fact_row(cell, run_id, block, scenario, stream, conc, feature, policy, wind
         "order_in_block": cell.get("order_in_block"),
         "seed": cell.get("seed"),
         "warmup_s": warmup_s,
-        "duration_s": duration_s,
+        "duration_s": round(summary["effective_duration_s"], 3),
+        "requested_duration_s": summary["requested_duration_s"],
+        "termination_reason": summary["termination_reason"],
+        "truncated": bool(summary["truncated"]),
+        "throughput_per_s": round(rate, 4) if rate is not None else None,
+        "admitted_n": summary["admitted"],
+        "drained_n": summary["drained"],
         "backend_call_count": backend_call_count,
         "backend_peak_inflight": peak if reset_ok else None,
         "count_scope": "execution" if backend_call_count is not None else None,
@@ -472,6 +578,7 @@ def run(args):
     if os.path.exists(args.out_dir) and os.listdir(args.out_dir):
         raise SystemExit(f"refusing to write into non-empty directory {args.out_dir}")
     experiment_id = ids.experiment_id(args.experiment_name, "1.0", SCHEMA_VERSION)
+    collection = ids.collection_id(experiment_id, ids.new_collection_nonce())
     os.makedirs(args.out_dir, exist_ok=True)
     req_writer = CsvTableWriter("requests", os.path.join(args.out_dir, "requests.csv"))
     fact_writer = CsvTableWriter("execution_facts", os.path.join(args.out_dir, "execution_facts.csv"))
@@ -488,12 +595,13 @@ def run(args):
         count_url = args.inflight_url.replace("/__inflight", "/__count")
     try:
         for b in range(args.blocks):
-            block = ids.block_id(experiment_id, args.phase, b)
+            block = ids.block_id(experiment_id, args.phase, b, collection)
             case = ids.case_id(experiment_id, "rq1-conc", 0)
             for mode in args.modes:
                 for conc in args.concurrency:
                     summary = execute_cell({
                         "experiment_id": experiment_id,
+                        "collection_id": collection,
                         "phase": args.phase,
                         "gateway": args.gateway,
                         "url": args.url,

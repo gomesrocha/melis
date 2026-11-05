@@ -1,91 +1,122 @@
 # Checkpoint — coleta confirmatória ainda não autorizada
 
-Este arquivo registra o desenho proposto depois dos pilotos técnicos de
-2026-11-05. Não é resultado confirmatório. Os intervalos e estimativas dos
-pilotos (incluindo qualquer bloco único ou de três blocos) não entram na
-avaliação final. Nada aqui foi otimizado num conjunto final, porque esse
-conjunto não foi coletado.
+Desenho registrado em 2026-11-05. Smoke, piloto e o piloto de variância são
+exploratórios. Não entram na avaliação final.
 
-## O que os pilotos suportam
+## Commits de main que esta branch não contém
 
-A infraestrutura dos três caminhos sobe, grava CSV 1.1.0 e valida. Isso foi
-exercido com o backend determinístico (JSON e SSE, concorrência real) e com
-um piloto mínimo no Ollama local (`llama3.2`, duas requisições JSON por
-caminho). O host estava carregado: swap cheio e outros stacks em execução.
-Não é ambiente para medição representativa.
+`origin/main` está em `c365c2dc`. A branch de revisão não contém:
 
-## Desfecho primário
+- `d5cf93d4` feat: add Vertex Claude support for CatIA
+- `c365c2dc` merge do PR #3
 
-Família primária, uma célula só, para limitar a multiplicidade:
+O diff adiciona `vertex_anthropic`, autenticação ADC e campos opcionais de
+projeto/região. O `Dockerfile` só muda `EXPOSE 8080` para `EXPOSE 9090`, que
+não altera o bind. O caminho Ollama/OpenAI usado por esta comparação não é
+reescrito: a ramificação nova só corre quando `provider_type` é
+`vertex_anthropic`.
 
-- População: backend determinístico, perfil mínimo (sem cache, compactação ou
-  guardrails), JSON, concorrência configurada 1.
+Decisão: não mesclar nem rebasear antes do congelamento. Integrar esses
+commits mudaria o binário e o `Cargo.lock` em relação ao candidato desta
+branch, e o bloco não autoriza feature de produto. O artefato medido é a
+ponta da branch de revisão.
+
+## RQ1
+
+Célula do piloto de variância, já autorizada, e candidata à coleta final:
+
+- Backend determinístico de latência artificial zero. O backend de 100 ms é
+  outro cenário e não se mistura.
+- Perfil mínimo, JSON, concorrência configurada 1.
 - Unidade independente: bloco. Requisições dentro do bloco são aninhadas.
-- Contrastes: `melis − direct` e `litellm − direct` na mediana de latência de
-  conclusão (`latency_ms`), pareados pelo bloco.
-- Correção: Holm entre esses dois contrastes, alfa 0,05.
-- Papel: confirmatório somente depois da aprovação e de uma coleta `phase=final`
-  num host quieto. Tudo o que existe hoje é `evidence_role=exploratory`.
+- Estimador: média, entre blocos, das diferenças das medianas de conclusão
+  por execução.
+- Contrastes, na mesma célula: `melis − direct`, `litellm − direct`,
+  `melis − litellm`.
+- Multiplicidade planejada para a coleta final: Holm nessa família de três,
+  alfa 0,05. O piloto não calcula p-valor.
+- Falhas e throughput ficam nos CSVs. Um bloco sem mediana de sucesso ou
+  truncado sai da estimativa e fica listado; não se descarta um bloco por a
+  latência ser alta.
 
-Secundários, sem reivindicação confirmatória: os mesmos contrastes em SSE e na
-concorrência 8; throughput útil; taxa de erro; delta do contador de CPU;
-working set. Pico observado no backend não é a concorrência configurada e não
-substitui essa concorrência. `memory_rss_bytes` permanece vazio no cgroup v2.
+`duration_s` é a duração efetiva, com a drenagem dos pedidos em voo. Não é a
+duração configurada. O denominador de `throughput_per_s` é essa parede. O
+numerador são os pedidos terminados, incluindo falhas. Throughput útil, no
+resumo, usa só os sucessos sobre a mesma parede.
 
-## Tamanho amostral
+Secundários, fora desta célula: SSE, concorrência maior, CPU, working set.
+RSS continua vazio no cgroup v2.
 
-Os pilotos têm um bloco por estrato. Com n = 1 não há desvio-padrão entre
-blocos, então não há cálculo honesto de poder nem intervalo. A proposta é:
+### Piloto de variância
 
-1. Num host quieto, um piloto de variância com 10 blocos independentes na
-   célula primária. Esse piloto continua exploratório.
-2. A partir do desvio-padrão desses 10 blocos, fixar N para um intervalo de
-   95% da diferença pareada de medianas com meia-largura de 1 ms, ou poder
-   80% para um efeito de 2 ms, o que exigir mais blocos. O número só é
-   travado depois dessa estimativa.
-3. O candidato de 30 blocos do protocolo não está aprovado e não deve ser
-   executado neste host.
+12 blocos. As seis permutações dos três caminhos, duas vezes, na ordem da
+semente. Janela candidata: 20 s de aquecimento e 60 s medidos por caminho.
+Carga configurada: 12 × 3 × 80 s = 2880 s, 48 minutos, mais trocas. Não é a
+coleta final.
 
-## Qualidade
+### Tamanho final
 
-Não há dados de qualidade. A margem 0,5 não é adotada: numa rubrica 0–3, 0,5
-é um sexto da escala e pode esconder uma queda sistemática de meio ponto.
+Os alvos de meia-largura de 1 ms e efeito de 2 ms não estão aprovados. São a
+escala do overhead de mediação neste mock, não a latência do modelo. A
+proposta de N sai do desvio entre blocos deste piloto, com o estimador acima
+e Holm na família de três. Não se escolhe N para obter significância. A conta
+de 30 blocos × 3 caminhos × 80 s é 120 minutos de carga, não 40. A grade com
+JSON e SSE e duas concorrências continua na ordem de oito horas e não está
+aprovada.
 
-Margem proposta, ainda sujeita a aprovação e não estimada de dado algum:
-δ = 0,25 na diferença pareada média `política − baseline sem compactação`.
-Isso corresponde, na média, a perder um ponto inteiro em cerca de um caso a
-cada quatro. O critério de não inferioridade segue o protocolo: limite
-inferior unilateral de 95% acima de −δ. Equivalência, se for alegada, é um
-desenho separado (intervalo bilateral de 90% dentro de [−δ, +δ]).
+## RQ2
 
-Política primária escolhida antes de qualquer avaliação: **cronológica**.
-Motivo: é a política determinística mais simples já implementada. Não houve
-resultado de qualidade que a selecionasse. Heurística, embedding e híbrida
-ficam como ablações secundárias. Baseline de qualidade: provedor direto sem
-compactação. Controle de mediação: Melis sem compactação.
+A política cronológica é baseline de economia agressiva, não a contribuição
+de relevância. A primária proposta é a heurística já implementada em
+`src/compactor.rs` (termos da última pergunta, marcadores, números, rotas,
+penalidade de preenchimento), configuração congelada no commit medido. A
+escolha é informada pelo estudo exploratório e pelo rascunho anteriores. Não
+é uma escolha sem conhecimento prévio, e não será ajustada no conjunto final.
+Embedding e híbrida ficam secundárias.
 
-Dataset proposto: conversas sintéticas geradas por família de template, com
-fatos, posição, tamanho e rubrica 0–3 ancorada por exemplos. Split de
-desenvolvimento e avaliação por família, não por reembaralhar o mesmo
-template. Licença pretendida: CC0 para o material sintético gerado no
-repositório. Nenhum corpus externo foi escolhido. Os três fixtures atuais por
-split continuam smoke, não avaliação.
+δ = 0,25 não está aprovado. A conta “um ponto em um quarto dos casos” explica
+uma média e esconde uma falha crítica concentrada.
 
-## Tempo e recursos da coleta final
+Rubrica 0–3, ancorada:
 
-Não executar a grade larga neste host. Uma conta só para planejamento, se a
-célula primária for 30 blocos com 20 s de aquecimento e 60 s medidos, um
-caminho por vez: cerca de 40 minutos de carga, mais a troca de gateway. A
-grade completa do protocolo (30 blocos × JSON/SSE × duas concorrências × três
-caminhos × 80 s) passa de 8 horas de carga e não está aprovada. Ollama local
-não tem custo de API; não usar provedor pago sem uma decisão explícita.
+- 3: todos os fatos exigidos presentes, sem contradição, responde à pergunta.
+- 2: todos os fatos críticos presentes; falta um fato não crítico.
+- 1: responde, mas falta um fato exigido não crítico ou há contradição que
+  não inverte a decisão.
+- 0: falta ou contradição de um fato crítico, ou a resposta inventa um fato
+  que muda a decisão.
 
-## Pendências antes da coleta final
+Falha crítica: um fato marcado como crítico está ausente ou contradito. Esse
+caso não passa de 0. Exemplo de 3: a conversa diz que a porta é 7071 e a
+resposta diz 7071. Exemplo de 0: a resposta diz 8080, ou omite a porta quando
+ela é o fato crítico.
 
-- Travar N com o piloto de variância num host sem swap saturado e sem stacks
-  alheios.
-- Aprovar δ = 0,25 e a política cronológica, ou substituí-los antes de coletar.
-- Congelar pin do LiteLLM (`main-v1.83.10-stable`, digest no README). Não é a
-  linha de desenvolvimento atual; a escolha foi anterior aos resultados.
-- Não misturar os CSVs históricos 1.0.0 (`data/pilot/`, `data/pilot-conc/`)
-  nem os pilotos 1.1.0 desta sessão com `phase=final`.
+Desfechos complementares, não substituídos pela média:
+
+- Retenção de fatos críticos: `retidos / exigidos` só no subconjunto crítico.
+  Limite proposto, ainda sem aprovação: nenhuma falha crítica a mais do que
+  o baseline sem compactação. Uma média pode subir enquanto um fato crítico
+  cai; esse caso não passa.
+- Retenção de fatos não críticos: reportada à parte, sem δ.
+- Média da rubrica: descritiva. Sem δ numérico até haver uma margem que não
+  possa ser satisfeita quando o limite crítico falha.
+
+Baseline de qualidade: direto sem compactação. Controle de mediação: Melis
+sem compactação. Cronológica é o baseline de descarte por idade.
+
+Casos de desenvolvimento estão em `quality/dev_cases.json`. São texto
+original escrito para este experimento, não um corpus externo, e não estão
+em CC0 por atribuição a material de terceiros. O repositório não tem arquivo
+LICENSE; a licença destes casos é a do repositório quando ela existir, e até
+lá ficam como material original não publicado à parte. O conjunto de
+avaliação não foi gerado e não foi inspecionado. Famílias inteiras vão para
+desenvolvimento ou avaliação; não se parte o mesmo template. A atribuição
+das famílias de avaliação fica congelada antes de gerar esses casos.
+
+## Pendências
+
+- Executar o piloto de variância num checkout limpo, com imagem construída
+  desse commit, ou declará-lo bloqueado.
+- Propor N com o desvio observado. Não tratar 1 ms ou 2 ms como aprovados.
+- Não aprovar δ nem a heurística como decisão final até revisão deste texto.
+- Não misturar CSVs 1.0.0 ou 1.1.0 com `phase=final`.

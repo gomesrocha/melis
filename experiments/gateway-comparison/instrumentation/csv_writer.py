@@ -86,11 +86,13 @@ def _fmt_cell(col, value) -> str:
 class CsvTableWriter:
     """Appends schema-validated rows to one logical table's CSV file."""
 
-    def __init__(self, table: str, path: str):
+    def __init__(self, table: str, path: str, buffer_rows: int = 1):
         self.table = table
         self.path = path
         self.columns = columns(table)
         self.header = header(table)
+        self._buffer_rows = max(1, int(buffer_rows))
+        self._pending = []
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self._verify_or_write_header()
 
@@ -114,8 +116,19 @@ class CsvTableWriter:
         if unknown:
             raise SchemaError(f"unknown columns for '{self.table}': {sorted(unknown)}")
         cells = [_fmt_cell(col, row.get(col.name)) for col in self.columns]
+        self._pending.append(cells)
+        if len(self._pending) >= self._buffer_rows:
+            self.flush()
+
+    def flush(self):
+        if not self._pending:
+            return
         with open(self.path, "a", newline="", encoding="utf-8") as fh:
-            csv.writer(fh).writerow(cells)
+            csv.writer(fh).writerows(self._pending)
+        self._pending.clear()
+
+    def close(self):
+        self.flush()
 
     def write_rows(self, rows: Iterable[Mapping]):
         for r in rows:

@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -31,9 +32,12 @@ sys.path.insert(0, INSTR)
 
 import block_design  # noqa: E402
 import conc_load  # noqa: E402
+import host_pressure  # noqa: E402
 import ids  # noqa: E402
+import melis_preflight  # noqa: E402
+import payload_equiv  # noqa: E402
 from csv_writer import CsvTableWriter  # noqa: E402
-from manifest import build_manifest, write_manifest  # noqa: E402
+from manifest import build_manifest, git_state, sha256_file, write_manifest  # noqa: E402
 from schemas import SCHEMA_VERSION  # noqa: E402
 
 DET = os.path.join(ROOT, "docker-compose.deterministic.yml")
@@ -57,28 +61,21 @@ HEALTH = {
 def estimate(args):
     gateways = 3
     cells = args.blocks * len(args.modes) * len(args.concurrency) * gateways
-    latency_s = (args.backend_latency_ms or 0) / 1000.0
-    per_cell = []
-    for conc in args.concurrency:
-        if args.measure_s and latency_s > 0:
-            n = min(args.max_requests, int(conc * args.measure_s / latency_s) + conc)
-        else:
-            n = args.max_requests
-        per_cell.append((conc, n))
-    measured = sum(n for _, n in per_cell) * args.blocks * len(args.modes) * gateways
-    warm = 0
-    if args.warmup_s and latency_s > 0:
-        warm = sum(
-            min(args.max_requests, int(conc * args.warmup_s / latency_s) + conc)
-            for conc in args.concurrency
-        ) * args.blocks * len(args.modes) * gateways
     seconds = cells * ((args.warmup_s or 0) + (args.measure_s or 0))
+    duration_mode = bool(args.measure_s)
     return {
         "cells": cells,
-        "measured_requests_upper": measured,
-        "warmup_requests_upper": warm,
         "load_seconds": round(seconds, 1),
-        "note": "Upper bound. Gateway switches add time. Not a final-collection estimate.",
+        "load_minutes": round(seconds / 60.0, 1),
+        "duration_mode": duration_mode,
+        "safety_cap": args.safety_cap,
+        "backend_latency_ms": args.backend_latency_ms,
+        "note": (
+            "Load time is cells times the configured windows. It is not the "
+            "effective duration, and it excludes gateway start and stop. "
+            "A final grid of 30 blocks x 3 paths x 80 s is 120 minutes of load "
+            "before switches. Duration mode does not stop at max_requests."
+        ),
     }
 
 
@@ -113,7 +110,9 @@ def _up(service, extra_files=()):
     if service not in ALLOWED_SERVICES:
         raise RuntimeError(f"refusing to start service {service}")
     profile = service if service in ("melis", "litellm") else None
-    build_flag = ["--no-build"] if service == "melis" else []
+    build_flag = []
+    if service == "melis" and not getattr(_up, "build_melis", False):
+        build_flag = ["--no-build"]
     _compose(["up", "-d", *build_flag, service], extra_files=extra_files, profile=profile)
 
 
@@ -147,6 +146,8 @@ def _activate(gateway, extra_files):
     else:
         raise RuntimeError(gateway)
     _wait_health(gateway if gateway != "direct" else "direct")
+    if gateway == "melis":
+        melis_preflight.assert_mounted_config(_container_logs("gateway-comparison-melis-1"))
     if gateway != "direct":
         _wait_health("direct")
 
@@ -169,14 +170,56 @@ def _post_json(url, payload, timeout=30):
         return resp.status, body
 
 
-def check_forwarded_payloads(extra):
+def _record_pressure(out_dir, stop):
+    path = os.path.join(out_dir, "host_pressure.csv")
+    import csv
+    from datetime import datetime, timezone
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow([
+            "timestamp_utc", "mem_available_bytes", "swap_free_bytes",
+            "swap_total_bytes", "pswpin", "pswpout", "load1",
+        ])
+        while not stop.is_set():
+            try:
+                sample = host_pressure.read_pressure()
+            except OSError:
+                sample = {}
+            writer.writerow([
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                sample.get("mem_available_bytes"),
+                sample.get("swap_free_bytes"),
+                sample.get("swap_total_bytes"),
+                sample.get("pswpin"),
+                sample.get("pswpout"),
+                sample.get("load1"),
+            ])
+            fh.flush()
+            stop.wait(30)
+
+
+def _container_logs(name):
+    started = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.StartedAt}}", name],
+        capture_output=True, text=True,
+    )
+    since = started.stdout.strip() if started.returncode == 0 else ""
+    cmd = ["docker", "logs"]
+    if since:
+        cmd.extend(["--since", since])
+    cmd.append(name)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    return (proc.stdout or "") + (proc.stderr or "")
+
+
+def check_forwarded_payloads(extra, model="mock-model"):
     """Send one identical JSON body through each path and compare backend hashes.
 
     The deterministic backend stores a canonical SHA-256 and length, not the
     message text. A mismatch is recorded; it is not treated as success.
     """
     base = {
-        "model": "mock-model",
+        "model": model,
         "messages": [{"role": "user", "content": "equivalence probe"}],
         "temperature": 0,
         "max_tokens": 16,
@@ -185,6 +228,10 @@ def check_forwarded_payloads(extra):
     client = {}
     for gateway in ("direct", "melis", "litellm"):
         _activate(gateway, extra)
+        if gateway == "melis":
+            melis_preflight.assert_mounted_config(
+                _container_logs("gateway-comparison-melis-1")
+            )
         client[gateway] = {}
         for mode, stream in (("json", False), ("sse", True)):
             payload = dict(base, stream=stream)
@@ -216,6 +263,7 @@ def check_forwarded_payloads(extra):
             }
     seen = json.loads(urllib.request.urlopen("http://127.0.0.1:7070/__seen", timeout=5).read())
     forwarded = seen.get("seen", [])
+    melis_preflight.assert_seen_model(forwarded, model)
 
     def _same(mode):
         rows = [row for row in forwarded if bool(row.get("stream")) is (mode == "sse")]
@@ -232,22 +280,46 @@ def check_forwarded_payloads(extra):
         len({client[gw][mode]["content"] for gw in client}) == 1
         for mode in ("json", "sse")
     )
+
+    def _mode_entries(mode):
+        return [row for row in forwarded if bool(row.get("stream")) is (mode == "sse")]
+
+    compared = {
+        mode: payload_equiv.compare_seen(_mode_entries(mode))
+        for mode in ("json", "sse")
+    }
     return {
         "client": client,
         "forwarded": forwarded,
         "json": _same("json"),
         "sse": _same("sse"),
+        "effective": compared,
         "replies_equal": replies_equal,
-        "note": "SSE on this mock uses Connection: close after [DONE]; JSON keeps the connection. That mode difference is in the backend, shared by all three paths.",
+        "note": "SSE on this mock uses Connection: close after [DONE]; JSON keeps the connection. That mode difference is in the backend, shared by all three paths. A missing stream key is equivalent to false only.",
     }
 
 
-def _image_id(name):
-    proc = subprocess.run(
-        ["docker", "inspect", "-f", "{{.Image}}", name],
-        capture_output=True, text=True,
-    )
-    return proc.stdout.strip() if proc.returncode == 0 else None
+def _image_record(container):
+    """Local image id, registry digest when the engine has one, and architecture.
+
+    A locally built image often has no RepoDigest. That absence is recorded.
+    The container's image id is not treated as a digest of HEAD by itself.
+    """
+    proc = subprocess.run(["docker", "inspect", container], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    info = json.loads(proc.stdout)[0]
+    image = info.get("Image")
+    img_proc = subprocess.run(["docker", "image", "inspect", image], capture_output=True, text=True)
+    meta = json.loads(img_proc.stdout)[0] if img_proc.returncode == 0 else {}
+    return {
+        "container": container,
+        "image_id": meta.get("Id") or image,
+        "repo_digests": meta.get("RepoDigests") or [],
+        "architecture": meta.get("Architecture"),
+        "os": meta.get("Os"),
+        "created": meta.get("Created"),
+    }
 
 
 def run(args):
@@ -255,43 +327,77 @@ def run(args):
     print(json.dumps({"estimate": est}, indent=2))
     if args.dry_estimate:
         return 0
-    if est["measured_requests_upper"] > args.max_total_requests:
+    if est["load_seconds"] > args.max_load_seconds:
         raise SystemExit(
-            f"refusing grid: upper bound {est['measured_requests_upper']} "
-            f"> --max-total-requests {args.max_total_requests}"
+            f"refusing grid: configured load {est['load_seconds']}s "
+            f"> --max-load-seconds {args.max_load_seconds}"
         )
+    if args.require_clean:
+        state = git_state(REPO)
+        if not state["clean"]:
+            raise SystemExit(
+                "refusing to measure a dirty tree: "
+                + ", ".join(state["dirty_files"] or ["unknown"])
+            )
+    if args.order == "permutations":
+        if args.blocks != 6 * args.permutation_repeats:
+            raise SystemExit(
+                "permutation order needs blocks == 6 * repeats "
+                f"({args.blocks} != {6 * args.permutation_repeats})"
+            )
     if os.path.exists(args.out_dir):
         raise SystemExit(f"refusing existing output directory {args.out_dir}")
     os.makedirs(args.out_dir)
+    if args.check_host:
+        delta = host_pressure.sample_delta(5)
+        with open(os.path.join(args.out_dir, "host_pressure_before.json"), "w", encoding="utf-8") as fh:
+            json.dump(delta, fh, indent=2)
+            fh.write("\n")
+        if delta["reason"]:
+            raise SystemExit("host inadequate for this pilot: " + delta["reason"])
     extra = [WINDOW] if args.backend_latency_ms == 100 else []
     if args.backend_latency_ms not in (0, 100):
         raise SystemExit("backend latency must be 0 (compose default) or 100 (pilot-window override)")
 
     experiment_id = ids.experiment_id(args.experiment_name, "1.0", SCHEMA_VERSION)
-    req_writer = CsvTableWriter("requests", os.path.join(args.out_dir, "requests.csv"))
+    nonce = args.collection_nonce or ids.new_collection_nonce()
+    collection = ids.collection_id(experiment_id, nonce)
+    req_writer = CsvTableWriter(
+        "requests", os.path.join(args.out_dir, "requests.csv"), buffer_rows=32,
+    )
     fact_writer = CsvTableWriter(
         "execution_facts", os.path.join(args.out_dir, "execution_facts.csv"),
     )
     registry = conc_load.IdRegistry()
-    orders = block_design.balanced_orders(
-        ["direct", "melis", "litellm"], args.blocks, args.seed,
-    )
+    gates = ["direct", "melis", "litellm"]
+    if args.order == "permutations":
+        orders = block_design.permutation_orders(gates, args.permutation_repeats, args.seed)
+    else:
+        orders = block_design.balanced_orders(gates, args.blocks, args.seed)
     from resource_sampler import ResourceSampler
     sampler = None
     cells = []
     payload_report = None
+    pressure_stop = threading.Event()
+    pressure_thread = threading.Thread(
+        target=_record_pressure, args=(args.out_dir, pressure_stop), daemon=True,
+    )
     try:
+        if args.check_host:
+            pressure_thread.start()
         _up("backend", extra)
         _compose(["restart", "backend"])
         _wait_health("direct")
         # Open stats streams only after the backend container that will serve
         # this run exists. A stream opened before `up` can sit on the replaced
         # container and record nothing.
+        _up.build_melis = bool(args.build_melis)
         if not args.no_sampler:
             sampler = ResourceSampler(
                 args.out_dir, _containers("direct"), interval=args.sample_interval,
+                collection_id=collection,
             ).start()
-        payload_report = check_forwarded_payloads(extra) if args.check_payloads else None
+        payload_report = check_forwarded_payloads(extra, args.model) if args.check_payloads else None
         if payload_report is not None:
             with open(os.path.join(args.out_dir, "payload_check.json"), "w", encoding="utf-8") as fh:
                 json.dump(payload_report, fh, indent=2)
@@ -300,13 +406,23 @@ def run(args):
                 payload_report["json"]["hashes_equal"]
                 and payload_report["sse"]["hashes_equal"]
             )
+            payload_report["effective_ok"] = all(
+                payload_report["effective"][mode]["ok"] for mode in ("json", "sse")
+            )
             # Re-write after the summary flags. A byte mismatch is evidence, not a
             # reason to drop the smoke: the file records it and the manifest too.
             with open(os.path.join(args.out_dir, "payload_check.json"), "w", encoding="utf-8") as fh:
                 json.dump(payload_report, fh, indent=2)
                 fh.write("\n")
+        if payload_report is not None and not payload_report.get("effective_ok"):
+            raise RuntimeError(
+                "preflight payload mismatch outside the stream-default allowlist: "
+                + json.dumps(payload_report["effective"])
+            )
+        if payload_report is not None and not payload_report.get("replies_equal"):
+            raise RuntimeError("preflight reconstructed replies differ across paths")
         for b, order in enumerate(orders):
-            block = ids.block_id(experiment_id, args.phase, b)
+            block = ids.block_id(experiment_id, args.phase, b, collection)
             case = ids.case_id(experiment_id, "rq1-conc", 0)
             for mode in args.modes:
                 for conc in args.concurrency:
@@ -316,6 +432,7 @@ def run(args):
                             sampler.set_containers(_containers(gateway))
                         cells.append(conc_load.execute_cell({
                             "experiment_id": experiment_id,
+                            "collection_id": collection,
                             "phase": args.phase,
                             "gateway": gateway,
                             "url": TARGETS[gateway],
@@ -328,6 +445,7 @@ def run(args):
                             "timeout": args.timeout,
                             "max_tokens": args.max_tokens,
                             "max_requests": args.max_requests,
+                            "safety_cap": args.safety_cap,
                             "measure_s": args.measure_s,
                             "warmup_s": args.warmup_s,
                             "inflight_url": "http://127.0.0.1:7070/__inflight",
@@ -342,6 +460,11 @@ def run(args):
                             "order_in_block": position,
                         }))
     finally:
+        pressure_stop.set()
+        if pressure_thread.is_alive():
+            pressure_thread.join(timeout=2)
+        req_writer.close()
+        fact_writer.close()
         if sampler is not None:
             sampler.stop()
         if extra:
@@ -365,9 +488,9 @@ def run(args):
     manifest = build_manifest(
         experiment_id, args.phase, REPO,
         image_digests={
-            "backend": _image_id("gateway-comparison-backend-1"),
-            "melis": _image_id("gateway-comparison-melis-1"),
-            "litellm": _image_id("gateway-comparison-litellm-1"),
+            "backend": _image_record("gateway-comparison-backend-1"),
+            "melis": _image_record("gateway-comparison-melis-1"),
+            "litellm": _image_record("gateway-comparison-litellm-1"),
         },
         models={"all_paths": args.model},
         config_files={
@@ -391,7 +514,13 @@ def run(args):
             "phase": "smoke and pilot are exploratory, not confirmatory",
             "memory_rss_bytes": "cgroup v2 Docker stats have no rss field; anon is not substituted",
             "tokens": "SSE chunks are not tokenizer tokens",
-            "melis_image": "started with --no-build; not rebuilt from a dirty worktree",
+            "melis_image": (
+                "built from this checkout before the run"
+                if args.build_melis
+                else "started with --no-build; the image id is not evidence of HEAD"
+            ),
+            "duration": "duration_s is effective wall time including drain, not the configured window",
+            "backend_latency_ms": "0 is the zero-latency mock; 100 is a different scenario and is not pooled",
         },
         extra={
             "orders": [list(order) for order in orders],
@@ -399,7 +528,16 @@ def run(args):
             "cells": cells,
             "backend_latency_ms": args.backend_latency_ms,
             "analysis_id": analysis,
+            "collection_id": collection,
+            "collection_nonce": nonce,
             "feature_profile": "minimal",
+            "order_design": args.order,
+            "compose_files": [DET, *extra],
+            "harness_hashes": {
+                "conc_load": sha256_file(os.path.join(HARNESS, "conc_load.py")),
+                "run_comparative_pilot": sha256_file(os.path.join(HARNESS, "run_comparative_pilot.py")),
+                "mock_openai": sha256_file(os.path.join(ROOT, "backend-deterministic", "mock_openai.py")),
+            },
             "payload_check": None if payload_report is None else {
                 "replies_equal": payload_report.get("replies_equal"),
                 "json_hashes_equal": payload_report["json"]["hashes_equal"],
@@ -436,8 +574,16 @@ def main(argv=None):
     ap.add_argument("--concurrency", type=int, nargs="+", default=[1, 4])
     ap.add_argument("--warmup-s", type=float, default=3)
     ap.add_argument("--measure-s", type=float, default=12)
-    ap.add_argument("--max-requests", type=int, default=2000)
-    ap.add_argument("--max-total-requests", type=int, default=20000)
+    ap.add_argument("--max-requests", type=int, default=2000,
+                    help="Planned cap only when --measure-s is omitted. Duration mode uses --safety-cap.")
+    ap.add_argument("--safety-cap", type=int, default=conc_load.DEFAULT_SAFETY_CAP)
+    ap.add_argument("--max-load-seconds", type=float, default=3600)
+    ap.add_argument("--order", choices=["rotation", "permutations"], default="rotation")
+    ap.add_argument("--permutation-repeats", type=int, default=2)
+    ap.add_argument("--require-clean", action="store_true")
+    ap.add_argument("--build-melis", action="store_true")
+    ap.add_argument("--collection-nonce", default=None)
+    ap.add_argument("--check-host", action="store_true")
     ap.add_argument("--backend-latency-ms", type=int, default=0)
     ap.add_argument("--sample-interval", type=float, default=1.0,
                     help="Requested sample interval. The Docker stats stream emits about 1s; "

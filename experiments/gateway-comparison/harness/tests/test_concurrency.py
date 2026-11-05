@@ -100,13 +100,16 @@ class TestConcurrencyOverlap(unittest.TestCase):
     def test_results_classify_and_count(self):
         srv, base = _start_backend(hold_ms=0)
         try:
-            results, wall = conc_load.run_cell(base, "mock-model", "json", concurrency=4,
-                                               n_requests=20, max_tokens=16, timeout=30)
+            summary = conc_load.run_cell(base, "mock-model", "json", concurrency=4,
+                                          n_requests=20, max_tokens=16, timeout=30)
+            results = summary["results"]
             self.assertEqual(len(results), 20)
-            self.assertTrue(all(r is not None for r in results))
+            self.assertEqual(summary["termination_reason"], "request_cap")
+            self.assertFalse(summary["truncated"])
+            self.assertIsNone(summary["requested_duration_s"])
             oks = sum(1 for r in results if r["status"] == "ok")
             self.assertEqual(oks, 20, "all deterministic requests should be ok")
-            self.assertGreater(wall, 0)
+            self.assertGreater(summary["effective_duration_s"], 0)
             self.assertIsNone(conc_load.execution_backend_calls(20, 10))
             self.assertEqual(conc_load.execution_backend_calls(20, 28), 8)
             self.assertIsNone(conc_load.execution_backend_calls(None, 4))
@@ -138,6 +141,83 @@ class TestConcurrencyOverlap(unittest.TestCase):
                 f"stall — the backend must keep TCP_NODELAY (see setup())",
             )
             print(f"NO-STALL: reused JSON completion median = {done}ms")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_duration_window_is_not_cut_by_a_small_count(self):
+        srv, base = _start_backend(hold_ms=0)
+        try:
+            summary = conc_load.run_cell(
+                base, "mock-model", "json", concurrency=1, n_requests=None,
+                max_tokens=16, timeout=30, deadline_mono=time.perf_counter() + 0.25,
+                safety_cap=100000, requested_duration_s=0.25, collect=False,
+            )
+            self.assertEqual(summary["termination_reason"], "deadline")
+            self.assertFalse(summary["truncated"])
+            self.assertGreater(summary["n"], 40)
+            self.assertGreaterEqual(summary["effective_duration_s"], 0.25)
+            self.assertEqual(summary["requested_duration_s"], 0.25)
+            self.assertNotEqual(summary["effective_duration_s"], summary["requested_duration_s"])
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_safety_cap_marks_the_window_truncated(self):
+        srv, base = _start_backend(hold_ms=0)
+        try:
+            summary = conc_load.run_cell(
+                base, "mock-model", "json", concurrency=1, n_requests=None,
+                max_tokens=16, timeout=30, deadline_mono=time.perf_counter() + 2.0,
+                safety_cap=5, requested_duration_s=2.0, collect=False,
+            )
+            self.assertEqual(summary["n"], 5)
+            self.assertEqual(summary["termination_reason"], "safety_cap")
+            self.assertTrue(summary["truncated"])
+            self.assertLess(summary["effective_duration_s"], summary["requested_duration_s"])
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_inflight_requests_are_drained_after_the_deadline(self):
+        srv, base = _start_backend(hold_ms=300)
+        try:
+            summary = conc_load.run_cell(
+                base, "mock-model", "json", concurrency=2, n_requests=None,
+                max_tokens=16, timeout=30, deadline_mono=time.perf_counter() + 0.05,
+                safety_cap=100, requested_duration_s=0.05, collect=True,
+            )
+            self.assertEqual(summary["termination_reason"], "deadline")
+            self.assertFalse(summary["truncated"])
+            self.assertEqual(summary["n"], summary["admitted"])
+            self.assertGreaterEqual(summary["admitted"], 1)
+            self.assertLessEqual(summary["admitted"], 2)
+            self.assertGreater(summary["effective_duration_s"], summary["requested_duration_s"])
+            self.assertGreater(summary["drained"], 0)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_absent_stream_key_defaults_to_json(self):
+        import json
+        srv, base = _start_backend(hold_ms=0)
+        try:
+            body = json.dumps({
+                "model": "mock-model",
+                "messages": [{"role": "user", "content": "no stream key"}],
+                "temperature": 0, "max_tokens": 16,
+            }).encode()
+            req = urllib.request.Request(
+                base + "/v1/chat/completions", data=body, method="POST",
+            )
+            req.add_header("Content-Type", "application/json")
+            urllib.request.urlopen(req, timeout=5).read()
+            seen = json.loads(urllib.request.urlopen(base + "/__seen", timeout=5).read())
+            counts = json.loads(urllib.request.urlopen(base + "/__count", timeout=5).read())
+            self.assertEqual(seen["seen"][0]["stream"], False)
+            self.assertNotIn("stream", seen["seen"][0]["params"])
+            self.assertEqual(counts["chat"], 1)
+            self.assertEqual(counts["chat_stream"], 0)
         finally:
             srv.shutdown()
             srv.server_close()

@@ -9,6 +9,7 @@ design.
 """
 from __future__ import annotations
 
+import itertools
 import random
 
 
@@ -26,6 +27,35 @@ def balanced_orders(gateways, n_blocks, seed):
         shift = i % width
         orders.append(tuple(base[shift:] + base[:shift]))
     return orders
+
+
+def permutation_orders(gateways, repeats, seed):
+    """Every permutation of ``gateways``, ``repeats`` times, shuffled by seed.
+
+    Twelve blocks and three gateways use repeats=2: each of the six orders
+    appears twice. The seed fixes the sequence. It does not change which
+    orders exist.
+    """
+    if repeats < 1:
+        raise ValueError("repeats must be positive")
+    gates = list(gateways)
+    if len(gates) < 1:
+        raise ValueError("gateways must be non-empty")
+    if len(set(gates)) != len(gates):
+        raise ValueError("gateways must be unique")
+    bag = list(itertools.permutations(gates)) * int(repeats)
+    rng = random.Random(seed)
+    rng.shuffle(bag)
+    return [tuple(order) for order in bag]
+
+
+def permutation_coverage(orders, gateways, repeats):
+    """True when each permutation appears exactly ``repeats`` times."""
+    expected = {tuple(p) for p in itertools.permutations(gateways)}
+    counts = {}
+    for order in orders:
+        counts[order] = counts.get(order, 0) + 1
+    return set(counts) == expected and all(v == repeats for v in counts.values())
 
 
 def positions_balanced(orders):

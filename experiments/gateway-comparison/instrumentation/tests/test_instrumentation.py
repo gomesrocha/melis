@@ -58,7 +58,8 @@ class TestCsvWriter(unittest.TestCase):
             path = os.path.join(d, "requests.csv")
             w = CsvTableWriter("requests", path)
             w.write_row({
-                "experiment_id": "e", "phase": "smoke", "run_id": "r", "block_id": "b",
+                "experiment_id": "e", "collection_id": "col-test", "phase": "smoke",
+                "run_id": "r", "block_id": "b",
                 "pair_id": "p", "case_id": "c", "request_id": "q", "gateway": "direct",
                 "scenario": "s", "backend_profile": "deterministic", "streaming": False,
                 "concurrency": 1, "started_at_utc": "2026-11-05T00:00:00.000Z",
@@ -70,7 +71,8 @@ class TestCsvWriter(unittest.TestCase):
             self.assertEqual(cell, "", "missing latency must be empty, not 0")
             # A genuine zero is preserved as 0.
             w.write_row({
-                "experiment_id": "e", "phase": "smoke", "run_id": "r", "block_id": "b",
+                "experiment_id": "e", "collection_id": "col-test", "phase": "smoke",
+                "run_id": "r", "block_id": "b",
                 "pair_id": "p", "case_id": "c", "request_id": "q2", "gateway": "direct",
                 "scenario": "s", "backend_profile": "deterministic", "streaming": False,
                 "concurrency": 1, "started_at_utc": "2026-11-05T00:00:00.000Z",
@@ -91,7 +93,8 @@ class TestCsvWriter(unittest.TestCase):
             w = CsvTableWriter("requests", os.path.join(d, "requests.csv"))
             with self.assertRaises(SchemaError):
                 w.write_row({
-                    "experiment_id": "e", "phase": "smoke", "run_id": "r", "block_id": "b",
+                    "experiment_id": "e", "collection_id": "col-test", "phase": "smoke",
+                    "run_id": "r", "block_id": "b",
                     "pair_id": "p", "case_id": "c", "request_id": "q", "gateway": "NOPE",
                     "scenario": "s", "backend_profile": "deterministic", "streaming": False,
                     "concurrency": 1, "started_at_utc": "t", "status": "ok",
@@ -103,7 +106,8 @@ class TestCsvWriter(unittest.TestCase):
             path = os.path.join(d, "runs.csv")
             w = CsvTableWriter("runs", path)
             w.write_row({
-                "experiment_id": "e", "phase": "smoke", "run_id": "r", "block_id": "b",
+                "experiment_id": "e", "collection_id": "col-test", "phase": "smoke",
+                "run_id": "r", "block_id": "b",
                 "gateway": "direct", "scenario": "s", "backend_profile": "deterministic",
                 "streaming": False, "concurrency": 1, "n_requests": 1, "n_ok": 1, "n_failed": 0,
             })
@@ -211,7 +215,11 @@ class TestAggregate(unittest.TestCase):
             self.assertIn("feature_profile=minimal", pop)
             self.assertNotIn("concurrency=8", pop)
             self.assertEqual(m[ch.index("evidence_role")], "exploratory")
-            self.assertTrue(m[ch.index("analysis_id")].startswith("agg-1.1.0-"))
+            self.assertTrue(m[ch.index("analysis_id")].startswith("agg-1.2.0-"))
+            third = by_contrast["melis_minus_litellm"]
+            self.assertAlmostEqual(float(third[ch.index("estimate")]),
+                                   EXPECTED["melis_minus_litellm_ms"], places=6)
+            self.assertEqual(len(by_contrast), 3)
 
     def test_does_not_pool_concurrencies(self):
         with tempfile.TemporaryDirectory() as d:
@@ -317,6 +325,50 @@ class TestAggregate(unittest.TestCase):
                     "--runs-out", os.path.join(d, "requests.csv"),  # == raw file
                 ])
 
+    def test_two_collections_with_the_same_seed_do_not_pair(self):
+        exp = ids.experiment_id("rq1", "1.0")
+        self.assertEqual(ids.experiment_id("rq1", "1.0", "1.1.0"), exp)
+        first = ids.collection_id(exp, "nonce-a")
+        second = ids.collection_id(exp, "nonce-b")
+        self.assertEqual(ids.collection_id(exp, "nonce-a"), first)
+        self.assertNotEqual(first, second)
+        rows = []
+        for collection in (first, second):
+            block = ids.block_id(exp, "pilot", 0, collection)
+            for gw, lat in (("direct", 10.0), ("melis", 13.0), ("litellm", 16.0)):
+                run = ids.run_id(exp, "pilot", gw, block, "rq1_fixed_load", False, 1, 0, collection)
+                pair = ids.pair_id(block, "case", "rq1_fixed_load", False, 1, collection)
+                rows.append({
+                    "experiment_id": exp, "collection_id": collection, "phase": "pilot",
+                    "run_id": run, "block_id": block, "pair_id": pair, "gateway": gw,
+                    "scenario": "rq1_fixed_load", "backend_profile": "deterministic",
+                    "streaming": "false", "concurrency": "1", "policy": "none",
+                    "feature_profile": "minimal", "window": "measured", "status": "ok",
+                    "latency_ms": str(lat),
+                })
+        ids_seen = [r["request_id"] for r in []]
+        block_ids = {r["block_id"] for r in rows}
+        run_ids = {r["run_id"] for r in rows}
+        self.assertEqual(len(block_ids), 2)
+        self.assertEqual(len(run_ids), 6)
+        contrasts, excluded = aggregate.rq1_contrasts(rows, exp, seed=1)
+        populations = {r["population"] for r in contrasts}
+        self.assertEqual(len(populations), 2)
+        self.assertTrue(all(r["n"] == 1 for r in contrasts))
+        self.assertEqual(excluded, [])
+        self.assertFalse(ids_seen)
+
+        historical = [{
+            "block_id": "blk-shared", "run_id": "run-shared", "pair_id": "pair-shared",
+            "request_id": "req-shared", "gateway": "direct",
+        }]
+        left = ids.apply_historical_namespace(historical, "pilot-a")
+        right = ids.apply_historical_namespace(historical, "pilot-b")
+        self.assertEqual(historical[0]["block_id"], "blk-shared")
+        self.assertNotEqual(left[0]["block_id"], right[0]["block_id"])
+        self.assertNotEqual(left[0]["collection_id"], right[0]["collection_id"])
+        self.assertTrue(left[0]["pair_id"].endswith("pair-shared"))
+
     def test_aggregate_refuses_to_replace_an_existing_analysis(self):
         with tempfile.TemporaryDirectory() as d:
             generate(d)
@@ -333,8 +385,9 @@ def _write_known_grid(out_dir):
     equal either value. Synthetic only.
     """
     os.makedirs(out_dir, exist_ok=True)
-    exp = ids.experiment_id("synthetic-grid", "1.0", "1.1.0")
-    block = ids.block_id(exp, "smoke", 0)
+    exp = ids.experiment_id("synthetic-grid", "1.0", "1.2.0")
+    collection = ids.collection_id(exp, "grid-fixture")
+    block = ids.block_id(exp, "smoke", 0, collection)
     case = ids.case_id(exp, "probe", 0)
     w = CsvTableWriter("requests", os.path.join(out_dir, "requests.csv"))
     lat = {
@@ -343,11 +396,11 @@ def _write_known_grid(out_dir):
     }
     for conc in (1, 8):
         for gw in ("direct", "melis", "litellm"):
-            pair = ids.pair_id(block, case, "rq1_fixed_load", False, conc)
-            run = ids.run_id(exp, "smoke", gw, block, "rq1_fixed_load", False, conc)
+            pair = ids.pair_id(block, case, "rq1_fixed_load", False, conc, collection)
+            run = ids.run_id(exp, "smoke", gw, block, "rq1_fixed_load", False, conc, 0, collection)
             for i in range(4):
                 w.write_row({
-                    "experiment_id": exp, "phase": "smoke", "run_id": run,
+                    "experiment_id": exp, "collection_id": collection, "phase": "smoke", "run_id": run,
                     "block_id": block, "pair_id": pair, "case_id": case,
                     "request_id": ids.request_id(run, pair, i),
                     "gateway": gw, "scenario": "rq1_fixed_load",

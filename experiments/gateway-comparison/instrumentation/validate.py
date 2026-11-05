@@ -152,6 +152,7 @@ def validate_dir(data_dir: str) -> dict:
     _rq1_population(loaded, report)
     _resource_semantics(loaded, report)
     _comparative_pairing(loaded, report)
+    _truncated_windows(loaded, report)
 
     report["ok"] = len(report["errors"]) == 0
     return report
@@ -238,6 +239,23 @@ def _resource_semantics(loaded, report):
         if rss and any(tok in method for tok in banned):
             report["errors"].append(
                 f"resources:{n}: memory_rss_method {row[i_method]!r} is not an RSS definition"
+            )
+
+
+def _truncated_windows(loaded, report):
+    """A duration window cut by a cap is incomplete. The rows stay in the CSV."""
+    if "execution_facts" not in loaded:
+        return
+    h, rows = loaded["execution_facts"]
+    if "truncated" not in h:
+        return
+    i_flag = h.index("truncated")
+    i_run = h.index("run_id") if "run_id" in h else None
+    for n, row in enumerate(rows, start=2):
+        if row[i_flag] == "true":
+            run = row[i_run] if i_run is not None else ""
+            report["errors"].append(
+                f"truncated: execution_facts:{n}: run {run} ended before the requested window"
             )
 
 
