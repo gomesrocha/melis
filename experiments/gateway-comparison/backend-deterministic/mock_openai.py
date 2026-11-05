@@ -42,6 +42,27 @@ _lock = threading.Lock()
 _MAX_SEEN = 50
 _seen = []  # list of {"path","model","stream","params":{...},"n_messages"}
 
+# In-flight accounting, to VERIFY that concurrency>1 overlaps at the backend.
+# `_inflight` is the current count; `_peak_inflight` is the max observed since the
+# last /__reset. A request can be held open (HOLD_MS) so overlap is observable.
+_inflight = 0
+_peak_inflight = 0
+HOLD_MS = int(os.environ.get("MOCK_HOLD_MS", "0"))
+
+
+def _enter_inflight():
+    global _inflight, _peak_inflight
+    with _lock:
+        _inflight += 1
+        if _inflight > _peak_inflight:
+            _peak_inflight = _inflight
+
+
+def _exit_inflight():
+    global _inflight
+    with _lock:
+        _inflight -= 1
+
 
 def _record_seen(path, req):
     # Capture only the comparison-relevant fields (model + generation params +
@@ -100,6 +121,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/__seen":
             with _lock:
                 return self._json(200, {"seen": list(_seen)})
+        if self.path == "/__inflight":
+            with _lock:
+                return self._json(200, {"inflight": _inflight, "peak_inflight": _peak_inflight})
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
@@ -111,10 +135,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "invalid json"})
 
         if self.path == "/__reset":
+            global _peak_inflight
             with _lock:
                 for k in _counts:
                     _counts[k] = 0
                 _seen.clear()
+                _peak_inflight = _inflight  # keep current, reset the peak
             return self._json(200, {"status": "reset"})
 
         if LATENCY_MS:
@@ -145,33 +171,43 @@ class Handler(BaseHTTPRequestHandler):
             _record_seen(self.path, req)
             content = _deterministic_reply(model, messages)
             stream = bool(req.get("stream", False))
-            if stream:
+            # Enter in-flight accounting and optionally HOLD the request open so
+            # concurrent overlap is observable at the backend. Per-request override
+            # via "hold_ms" in the body; default from MOCK_HOLD_MS.
+            hold_ms = int(req.get("hold_ms", HOLD_MS) or 0)
+            _enter_inflight()
+            try:
+                if hold_ms:
+                    time.sleep(hold_ms / 1000.0)
+                if stream:
+                    with _lock:
+                        _counts["chat_stream"] += 1
+                    return self._sse(model, content)
                 with _lock:
-                    _counts["chat_stream"] += 1
-                return self._sse(model, content)
-            with _lock:
-                _counts["chat"] += 1
-            return self._json(
-                200,
-                {
-                    "id": f"chatcmpl-{_hash(content):08x}",
-                    "object": "chat.completion",
-                    "created": 0,
-                    "model": model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "finish_reason": "stop",
-                            "message": {"role": "assistant", "content": content},
-                        }
-                    ],
-                    "usage": {
-                        "prompt_tokens": len(json.dumps(messages)) // 4,
-                        "completion_tokens": len(content) // 4,
-                        "total_tokens": (len(json.dumps(messages)) + len(content)) // 4,
+                    _counts["chat"] += 1
+                return self._json(
+                    200,
+                    {
+                        "id": f"chatcmpl-{_hash(content):08x}",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": content},
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": len(json.dumps(messages)) // 4,
+                            "completion_tokens": len(content) // 4,
+                            "total_tokens": (len(json.dumps(messages)) + len(content)) // 4,
+                        },
                     },
-                },
-            )
+                )
+            finally:
+                _exit_inflight()
 
         return self._json(404, {"error": "not found"})
 
