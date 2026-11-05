@@ -1,0 +1,36 @@
+# Melis config — DETERMINISTIC profile, MINIMAL MEDIATION.
+# No cache, no compaction, no guardrails. Auth disabled (equivalent on all paths).
+# The mock backend is a single provider; no retries/fallback (one provider only).
+server:
+  host: "0.0.0.0"
+  port: 7071
+
+redis:
+  # Not used in the minimal profile (no cache / no redis circuit breaker backend).
+  cluster_urls: []
+  required_for_readiness: false
+
+auth:
+  enabled: false
+  api_keys: []
+
+observability:
+  enabled: false
+  service_name: "melis-exp"
+
+# Global compactor defaults are irrelevant: routes use strategy "none" (no compaction).
+compactor:
+  token_threshold: 1000000000     # effectively never compacts
+  strategy: "none"
+
+circuit_breaker:
+  backend: "local"
+
+providers:
+  - id: "mockbackend"
+    provider_type: "openai"
+    api_key: "unused"
+    # Overridden by MELIS_* env or left to the compose network; see routes.
+    base_url: "http://backend:7070/v1"
+
+routes_config_path: "/etc/melis/routes.yaml"

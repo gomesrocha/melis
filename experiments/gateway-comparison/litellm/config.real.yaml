@@ -1,0 +1,23 @@
+# LiteLLM proxy — REAL profile (Ollama), MINIMAL MEDIATION.
+# Same minimal mediation as the deterministic profile.
+model_list:
+  - model_name: llama3.2
+    litellm_params:
+      # LiteLLM talks to Ollama's OpenAI-compatible endpoint for parity with the
+      # other two paths (same /v1/chat/completions contract).
+      model: openai/llama3.2
+      api_base: http://host.docker.internal:11434/v1
+      api_key: ollama
+  - model_name: nomic-embed-text
+    litellm_params:
+      model: openai/nomic-embed-text
+      api_base: http://host.docker.internal:11434/v1
+      api_key: ollama
+
+litellm_settings:
+  cache: false
+  num_retries: 0
+  request_timeout: 600
+
+general_settings:
+  telemetry: false

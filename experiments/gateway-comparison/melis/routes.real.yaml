@@ -1,0 +1,12 @@
+# Melis routes — REAL profile (Ollama), MINIMAL MEDIATION.
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "ollama"
+    model: "llama3.2"
+    token_optimization:
+      strategy: "none"
+  - path: "/v1/embeddings"
+    method: "POST"
+    provider: "ollama"
+    model: "nomic-embed-text"

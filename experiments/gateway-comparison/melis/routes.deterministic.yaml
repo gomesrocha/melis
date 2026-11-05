@@ -1,0 +1,15 @@
+# Melis routes — DETERMINISTIC profile, MINIMAL MEDIATION.
+# strategy "none" => no compaction. No semantic_cache, no guardrails blocks.
+# Single provider => no failover. The provider "openai" resolves to the configured
+# provider whose provider_type is "openai" (the mock backend base_url in config).
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    provider: "openai"
+    model: "mock-model"
+    token_optimization:
+      strategy: "none"
+  - path: "/v1/embeddings"
+    method: "POST"
+    provider: "openai"
+    model: "mock-embed"

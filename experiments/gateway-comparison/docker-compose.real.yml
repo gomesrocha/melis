@@ -1,0 +1,49 @@
+# Gateway comparison — REAL profile (Ollama on the host).
+#
+# Three measurable paths to the SAME real backend (host Ollama at 11434):
+#   - direct:  client -> host Ollama 11434 (/v1)   (no container)
+#   - melis:   client -> melis:7071   -> host Ollama
+#   - litellm: client -> litellm:4000 -> host Ollama
+#
+# Ollama runs on the host (not managed here) so all three paths share one backend
+# with identical model and parameters. Containers reach it via host.docker.internal
+# (mapped through extra_hosts on Linux).
+#
+# Run gateways separately (profiles) to avoid resource interference.
+
+services:
+  melis:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      MELIS_SERVER_PORT: "7071"
+    volumes:
+      - ./melis/config.real.yaml:/app/config.yaml:ro
+      - ./melis/routes.real.yaml:/etc/melis/routes.yaml:ro
+    ports:
+      - "127.0.0.1:7071:7071"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles: ["melis"]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "256M"
+
+  litellm:
+    image: ghcr.io/berriai/litellm@sha256:d781cd3d736b1bd34f9964ebc491a9f91fb8fa140f35d4e6b4176c19dd2b306b
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+    volumes:
+      - ./litellm/config.real.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:4000:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles: ["litellm"]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "512M"

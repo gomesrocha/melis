@@ -1,0 +1,26 @@
+# LiteLLM proxy — DETERMINISTIC profile, MINIMAL MEDIATION.
+# Routes "mock-model" to the deterministic OpenAI-compatible mock backend.
+# No caching, no retries, no fallbacks (equivalent to Melis minimal profile).
+model_list:
+  - model_name: mock-model
+    litellm_params:
+      model: openai/mock-model
+      api_base: http://backend:7070/v1
+      api_key: unused
+  - model_name: mock-embed
+    litellm_params:
+      model: openai/mock-embed
+      api_base: http://backend:7070/v1
+      api_key: unused
+
+litellm_settings:
+  # Minimal mediation: no caching layer, no automatic retries.
+  cache: false
+  num_retries: 0
+  request_timeout: 600
+
+# No fallbacks configured (router_settings omitted) => single destination, like
+# Melis minimal profile with one provider.
+general_settings:
+  # No master key / DB; keep the proxy stateless for the overhead comparison.
+  telemetry: false

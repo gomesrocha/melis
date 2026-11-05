@@ -1,0 +1,35 @@
+# Melis config — REAL profile (Ollama), MINIMAL MEDIATION.
+# Same minimal mediation as the deterministic profile: no cache/compaction/
+# guardrails, no retries/fallback (single provider), auth disabled.
+server:
+  host: "0.0.0.0"
+  port: 7071
+
+redis:
+  cluster_urls: []
+  required_for_readiness: false
+
+auth:
+  enabled: false
+  api_keys: []
+
+observability:
+  enabled: false
+  service_name: "melis-exp"
+
+compactor:
+  token_threshold: 1000000000
+  strategy: "none"
+
+circuit_breaker:
+  backend: "local"
+
+providers:
+  - id: "ollama"
+    provider_type: "ollama"
+    api_key: "ollama"
+    # host.docker.internal lets the container reach the host's Ollama; on Linux the
+    # compose file maps it via extra_hosts. For host-run Melis use OLLAMA_BASE_URL.
+    base_url: "http://host.docker.internal:11434"
+
+routes_config_path: "/etc/melis/routes.yaml"
