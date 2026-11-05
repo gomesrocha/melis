@@ -764,6 +764,112 @@ auth:
         );
     }
 
+    // ─── Semantic cache: embeddings outage isolated from the chat path ───────
+
+    /// A stub chat HTTP client that returns a fixed, valid OpenAI-shaped chat
+    /// completion for every non-streaming request, with no network I/O.
+    ///
+    /// Crucially, this client is a *separate* dependency from the embeddings
+    /// provider. It lets a test model "the embeddings service is down" WITHOUT
+    /// also taking down the chat provider — proving that the provider path does
+    /// not depend on the embeddings service. (Downing a single shared Ollama for
+    /// both embeddings and chat would not establish this isolation.)
+    #[derive(Debug, Clone)]
+    struct StubChatClient {
+        body: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::client::LlmHttpClient for StubChatClient {
+        async fn send(
+            &self,
+            _url: &str,
+            _headers: reqwest::header::HeaderMap,
+            _body: bytes::Bytes,
+            _timeout: std::time::Duration,
+        ) -> Result<bytes::Bytes, crate::client::ClientError> {
+            Ok(bytes::Bytes::from(self.body))
+        }
+
+        fn send_stream(
+            &self,
+            _url: &str,
+            _headers: reqwest::header::HeaderMap,
+            _body: bytes::Bytes,
+            _timeout: std::time::Duration,
+        ) -> std::pin::Pin<
+            Box<
+                dyn tokio_stream::Stream<Item = Result<bytes::Bytes, crate::client::ClientError>>
+                    + Send,
+            >,
+        > {
+            let body = self.body;
+            Box::pin(tokio_stream::once(Ok(bytes::Bytes::from(body))))
+        }
+    }
+
+    /// Embeddings service unavailable, chat provider healthy and INDEPENDENT.
+    ///
+    /// Requirement: when the embeddings service is down, the semantic cache must
+    /// degrade as specified (fail-open, `melis_cache_degraded{reason=embeddings}`)
+    /// AND the provider/chat path must remain fully functional, because it does
+    /// not depend on the embeddings service.
+    ///
+    /// Isolation is structural, not timing-based: the embeddings provider
+    /// (`StubEmbeddingProvider { unavailable: true }`) and the chat client
+    /// (`StubChatClient`) are distinct objects. Making embeddings unavailable
+    /// cannot affect the chat client. This is exactly the separation that
+    /// downing one shared Ollama instance would fail to demonstrate.
+    #[tokio::test]
+    async fn test_cache_degrades_on_embeddings_down_provider_path_stays_functional() {
+        let dir = tempfile::tempdir().unwrap();
+        // Reuse the cache-enabled route config (semantic_cache.enabled = true on
+        // /v1/chat/completions) but swap in an independent, healthy chat client.
+        let (mut state, metrics) = build_cache_enabled_app_state(&dir);
+
+        // Independent, healthy chat provider: returns a valid completion with no
+        // dependency whatsoever on the (unavailable) embeddings provider.
+        let completion = r#"{"id":"chatcmpl-isolation","object":"chat.completion","created":1,"model":"llama3.2","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}"#;
+        state.http_client = Arc::new(StubChatClient { body: completion });
+
+        // Sanity: embeddings provider really is the unavailable stub.
+        let app = build_router(state);
+
+        let payload = serde_json::json!({
+            "model": "llama3.2",
+            "messages": [{"role": "user", "content": "summarize document X"}]
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // 1) Cache degraded on the embeddings reason (fail-open), as specified.
+        let degraded = metrics
+            .cache_degraded
+            .with_label_values(&["embeddings"])
+            .get();
+        assert!(
+            degraded >= 1,
+            "cache must fail open with reason=embeddings when embeddings are unavailable"
+        );
+
+        // 2) Provider/chat path stayed functional: 200 with the provider's body.
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "chat path must stay functional when ONLY embeddings are down"
+        );
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["object"], "chat.completion");
+        assert_eq!(json["choices"][0]["message"]["content"], "ok");
+    }
+
     // ─── Test: Readiness state toggle ────────────────────────────────────────
 
     #[tokio::test]
