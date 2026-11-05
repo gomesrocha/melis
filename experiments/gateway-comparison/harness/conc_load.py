@@ -236,6 +236,17 @@ def run(args):
     os.makedirs(args.out_dir, exist_ok=True)
     req_writer = CsvTableWriter("requests", os.path.join(args.out_dir, "requests.csv"))
 
+    # Optional MEASURED resource sampling for the duration of this run. Rows go to
+    # resources.csv keyed by a single run_id covering the whole generation (the
+    # per-cell run_ids are in requests.csv; resources are sampled process-wide).
+    sampler = None
+    if getattr(args, "sample_containers", None):
+        from resource_sampler import ResourceSampler
+        sampler_run_id = ids.run_id(experiment_id, args.phase, args.gateway, "ALL",
+                                    "rq1_fixed_load", False, 0)
+        sampler = ResourceSampler(sampler_run_id, args.out_dir, args.sample_containers,
+                                  interval=args.sample_interval).start()
+
     totals = {"ok": 0, "fail": 0, "n": 0}
     cells_summary = []
     for b in range(args.blocks):
@@ -291,9 +302,11 @@ def run(args):
                     "backend_peak_inflight": peak,
                 })
 
+    resource_samples = sampler.stop() if sampler is not None else 0
     summary = {
         "experiment_id": experiment_id, "phase": args.phase, "gateway": args.gateway,
         "schema_version": SCHEMA_VERSION, "totals": totals, "cells": cells_summary,
+        "resource_samples": resource_samples,
         "note": "CLOSED-LOOP concurrent load; SMOKE/PILOT — not a final result",
     }
     print(json.dumps(summary, indent=2))
@@ -313,6 +326,9 @@ def main(argv=None):
     ap.add_argument("--max-tokens", type=int, default=16)
     ap.add_argument("--timeout", type=float, default=60)
     ap.add_argument("--inflight-url", default=None, help="deterministic backend /__inflight (optional)")
+    ap.add_argument("--sample-containers", nargs="+", default=None,
+                    help="container names to sample MEASURED resources during the run")
+    ap.add_argument("--sample-interval", type=float, default=0.5)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--experiment-name", default="rq1-concurrent")
     ap.add_argument("--phase", default="pilot", choices=["smoke", "pilot"])
