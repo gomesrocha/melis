@@ -28,7 +28,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 
 def _read_version_file() -> Optional[str]:
@@ -102,6 +102,9 @@ POLICIES = (
     "hybrid",
 )
 EVALUATOR_TYPES = ("human", "llm_judge", "automatic")
+WINDOWS = ("warmup", "measured")
+EVIDENCE_ROLES = ("exploratory", "confirmatory")
+COUNT_SCOPES = ("execution",)
 
 # ── requests.csv ────────────────────────────────────────────────────────────
 # One row per LOGICAL request (including failures). Retries do NOT duplicate the
@@ -147,6 +150,10 @@ REQUESTS = (
            doc="Origin of token counts; local estimates are NOT billed tokens."),
     Column("scoring_ms", FLOAT, unit="ms", doc="Semantic scoring time (part of latency_ms)."),
     Column("compaction_ms", FLOAT, unit="ms", doc="Compaction time (part of latency_ms)."),
+    Column("feature_profile", STR,
+           doc="Feature/policy profile of this cell (e.g. minimal). Empty is its own stratum, not 'minimal'."),
+    Column("window", ENUM, enum=WINDOWS,
+           doc="warmup requests are raw but excluded from measured contrasts; empty means measured."),
 )
 
 # ── attempts.csv ──────────────────────────────────────────────────────────────
@@ -197,23 +204,54 @@ RUNS = (
     Column("artifact_commit", STR, doc="Melis candidate commit under test."),
     Column("config_hash", STR, doc="Hash of the effective gateway config."),
     Column("dataset_hash", STR, doc="Hash of the corpus/dataset, when applicable."),
+    Column("feature_profile", STR, doc="Same stratum field as requests.feature_profile."),
+    Column("window", ENUM, enum=WINDOWS),
+    Column("backend_call_count", INT,
+           doc="Execution-level backend counter delta. NOT a sum of per-request counts."),
+    Column("backend_peak_inflight", INT,
+           doc="Peak simultaneous in-flight requests observed at the backend for this execution. Distinct from configured concurrency."),
+    Column("sampler_enabled", BOOL, doc="Whether the resource sampler ran during the measured window."),
 )
 
 # ── resources.csv ─────────────────────────────────────────────────────────────
 # Common time-sampled resource usage. One row per (run, component, sample).
+# Schema 1.1.0 keeps the protocol columns and appends source/method/timing.
+# memory_rss_bytes is RSS only. cgroup/container usage is a different column.
+# Definitions that the source did not provide stay empty (missing != zero).
 RESOURCES = (
     Column("schema_version", STR, required=True),
     Column("run_id", STR, required=True),
-    Column("timestamp_utc", TS_UTC, required=True),
+    Column("timestamp_utc", TS_UTC, required=True,
+           doc="Time of THIS sample. Engine read time when the source provides one."),
     Column("elapsed_s", FLOAT, required=True, unit="s"),
-    Column("component", STR, required=True, doc="gateway|embeddings|redis|backend|other."),
-    Column("cpu_seconds_total", FLOAT, unit="s", doc="Cumulative CPU seconds (counter)."),
-    Column("memory_rss_bytes", INT, unit="bytes"),
-    Column("memory_working_set_bytes", INT, unit="bytes"),
+    Column("component", STR, required=True, doc="gateway|embeddings|redis|backend|host|other."),
+    Column("cpu_seconds_total", FLOAT, unit="s",
+           doc="Cumulative CPU seconds (counter). Never a conversion of a CPU percentage."),
+    Column("memory_rss_bytes", INT, unit="bytes",
+           doc="Resident set size, only when the source has an RSS field. Never cgroup usage."),
+    Column("memory_working_set_bytes", INT, unit="bytes",
+           doc="Kubernetes working set: cgroup usage minus inactive_file, when both exist."),
     Column("network_rx_bytes", INT, unit="bytes"),
     Column("network_tx_bytes", INT, unit="bytes"),
     Column("gpu_utilization_pct", FLOAT, unit="pct"),
     Column("gpu_memory_bytes", INT, unit="bytes"),
+    Column("sample_index", INT, required=True, doc="0-based ordinal within (run_id, component)."),
+    Column("collection_started_at_utc", TS_UTC, doc="Wall time when this sample's read started."),
+    Column("collection_duration_ms", FLOAT, unit="ms", doc="How long this sample's read took."),
+    Column("configured_interval_s", FLOAT, unit="s"),
+    Column("effective_interval_s", FLOAT, unit="s",
+           doc="Seconds since the previous sample of this run and component. Empty on the first."),
+    Column("sample_lag_s", FLOAT, unit="s",
+           doc="effective_interval_s - configured_interval_s. Positive means the loop was late."),
+    Column("source", STR, doc="Common source id for this row, e.g. docker_engine_stats or procfs."),
+    Column("cpu_method", STR, doc="Definition of cpu_seconds_total. Empty when the counter is absent."),
+    Column("memory_cgroup_current_bytes", INT, unit="bytes",
+           doc="cgroup memory.current / Docker memory_stats.usage. Not RSS and not working set."),
+    Column("memory_cgroup_method", STR),
+    Column("memory_working_set_method", STR),
+    Column("memory_rss_method", STR, doc="Empty when RSS was not provided. anon is not a method for this column."),
+    Column("network_method", STR),
+    Column("collection_error", STR, doc="Present when the read failed; metrics then stay empty."),
 )
 
 # ── quality.csv ───────────────────────────────────────────────────────────────
@@ -297,6 +335,43 @@ COMPARISONS = (
     Column("expected", STR, doc="Contract expected value (contract rows)."),
     Column("observed", STR, doc="Contract observed value (contract rows)."),
     Column("pass_fail", ENUM, enum=("pass", "fail"), doc="Contract pass/fail; empty for inferential rows."),
+    Column("analysis_id", STR, required=True,
+           doc="Identity of the analysis code that wrote this derived row (version + source hash)."),
+    Column("evidence_role", ENUM, required=True, enum=EVIDENCE_ROLES,
+           doc="exploratory for smoke/pilot. confirmatory only when a final, pre-registered analysis is explicitly requested."),
+)
+
+# ── execution_facts.csv ───────────────────────────────────────────────────────
+# One row per measured execution. Raw bookkeeping the request log must not
+# repeat: order in the block, warm-up, backend counter delta, observed peak.
+# backend_call_count here is the execution total. It is NOT fanned out to
+# requests.csv when the backend only exposes a process-wide counter.
+EXECUTION_FACTS = (
+    Column("schema_version", STR, required=True),
+    Column("experiment_id", STR, required=True),
+    Column("phase", ENUM, required=True, enum=PHASES),
+    Column("run_id", STR, required=True),
+    Column("block_id", STR, required=True),
+    Column("gateway", ENUM, required=True, enum=GATEWAYS),
+    Column("scenario", STR, required=True),
+    Column("backend_profile", ENUM, required=True, enum=("deterministic", "real")),
+    Column("streaming", BOOL, required=True),
+    Column("concurrency", INT, required=True, doc="Configured closed-loop workers. Not the observed peak."),
+    Column("policy", ENUM, enum=POLICIES),
+    Column("feature_profile", STR),
+    Column("window", ENUM, required=True, enum=WINDOWS),
+    Column("order_in_block", INT, doc="Position of this gateway inside the block (0-based)."),
+    Column("seed", STR),
+    Column("warmup_s", FLOAT, unit="s"),
+    Column("duration_s", FLOAT, unit="s", doc="Measured-window wall time."),
+    Column("backend_call_count", INT,
+           doc="Counter delta for this execution only. Empty when the delta is ambiguous."),
+    Column("backend_peak_inflight", INT,
+           doc="Peak observed after a per-cell reset. Empty when the reset did not succeed."),
+    Column("count_scope", ENUM, enum=COUNT_SCOPES,
+           doc="execution: the count belongs to the run, not to individual requests."),
+    Column("sampler_enabled", BOOL, required=True),
+    Column("sampler_interval_s", FLOAT, unit="s"),
 )
 
 # Registry: logical table name -> (columns, key columns used for duplicate checks).
@@ -304,11 +379,12 @@ SCHEMAS = {
     "requests": (REQUESTS, ("run_id", "request_id")),
     "attempts": (ATTEMPTS, ("run_id", "request_id", "attempt_index")),
     "runs": (RUNS, ("run_id",)),
-    "resources": (RESOURCES, ("run_id", "component", "timestamp_utc")),
+    "resources": (RESOURCES, ("run_id", "component", "sample_index")),
     "quality": (QUALITY, ("run_id", "case_id", "policy", "generation_rep", "answer_id", "evaluator_id")),
     "resilience_events": (RESILIENCE_EVENTS, ("run_id", "episode_id", "relative_ms", "event_type")),
     "safety_cases": (SAFETY_CASES, ("run_id", "case_id")),
     "comparisons": (COMPARISONS, ("experiment_id", "question", "outcome", "contrast", "population")),
+    "execution_facts": (EXECUTION_FACTS, ("run_id", "window")),
 }
 
 

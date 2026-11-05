@@ -30,11 +30,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import os
 import random
 import statistics
 from collections import defaultdict
 from typing import Optional
+
+# Bump when the contrast definition changes, even if the file hash also changes.
+ANALYSIS_REVISION = "1.1.0"
 
 from csv_writer import CsvTableWriter
 
@@ -64,8 +68,14 @@ def _percentile(sorted_vals, q):
     return sorted_vals[rank - 1]
 
 
-def summarize_runs(requests):
-    """Derive one runs.csv row per run_id from nested request rows."""
+def summarize_runs(requests, facts_by_run=None):
+    """Derive one runs.csv row per run_id from nested request rows.
+
+    Execution-level facts (duration, order, backend counter, observed peak)
+    come only from execution_facts.csv. They are not reconstructed by summing
+    per-request fields.
+    """
+    facts_by_run = facts_by_run or {}
     by_run = defaultdict(list)
     for r in requests:
         by_run[r["run_id"]].append(r)
@@ -75,12 +85,14 @@ def summarize_runs(requests):
         oks = [r for r in reqs if r["status"] == "ok"]
         ok_lat = sorted(_f(r["latency_ms"]) for r in oks if _f(r["latency_ms"]) is not None)
         sample = reqs[0]
-        duration = _f(sample.get("duration_s")) if sample.get("duration_s") else None
+        fact = facts_by_run.get(run_id, {})
+        duration = _f(fact.get("duration_s")) if fact else None
         n_ok = len(oks)
         n_req = len(reqs)
         # Useful throughput uses the measured window if present; otherwise empty
         # (we do NOT invent a denominator).
         throughput = (n_ok / duration) if (duration and duration > 0) else None
+        window = fact.get("window") or sample.get("window") or None
         row = {
             "experiment_id": sample["experiment_id"],
             "phase": sample["phase"],
@@ -89,12 +101,12 @@ def summarize_runs(requests):
             "gateway": sample["gateway"],
             "scenario": sample["scenario"],
             "backend_profile": sample["backend_profile"],
-            "streaming": sample["streaming"] == "true",
+            "streaming": sample["streaming"] == "true" or sample["streaming"] is True,
             "concurrency": int(sample["concurrency"]),
             "policy": sample.get("policy") or None,
-            "seed": sample.get("seed") or None,
-            "order_in_block": None,
-            "warmup_s": None,
+            "seed": fact.get("seed") or sample.get("seed") or None,
+            "order_in_block": int(fact["order_in_block"]) if fact.get("order_in_block") not in (None, "") else None,
+            "warmup_s": _f(fact.get("warmup_s")) if fact.get("warmup_s") not in (None, "") else None,
             "duration_s": duration,
             "n_requests": n_req,
             "n_ok": n_ok,
@@ -108,26 +120,99 @@ def summarize_runs(requests):
             "artifact_commit": sample.get("artifact_commit") or None,
             "config_hash": None,
             "dataset_hash": None,
+            "feature_profile": sample.get("feature_profile") or None,
+            "window": window if window else None,
+            "backend_call_count": int(fact["backend_call_count"]) if fact.get("backend_call_count") not in (None, "") else None,
+            "backend_peak_inflight": int(fact["backend_peak_inflight"]) if fact.get("backend_peak_inflight") not in (None, "") else None,
+            "sampler_enabled": fact.get("sampler_enabled") if fact.get("sampler_enabled") not in (None, "") else None,
         }
         out.append(row)
     return out
 
 
-def _block_medians_by_gateway(requests):
-    """For RQ1-style contrasts: median latency per (block, gateway) — the block
-    is the independent unit; requests within it are nested observations."""
+# Factors that change the treatment. A contrast never pools across these.
+STRATUM_FIELDS = (
+    "phase",
+    "backend_profile",
+    "streaming",
+    "concurrency",
+    "policy",
+    "feature_profile",
+    "scenario",
+)
+
+REQUIRED_GATEWAYS = ("direct", "melis", "litellm")
+
+
+def analysis_id() -> str:
+    """Identity of this analysis code: revision plus a hash of this file."""
+    path = os.path.abspath(__file__)
+    with open(path, "rb") as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()[:12]
+    return f"agg-{ANALYSIS_REVISION}-{digest}"
+
+
+def _measured(row) -> bool:
+    window = (row.get("window") or "").strip()
+    return window in ("", "measured")
+
+
+def stratum_key(row) -> tuple:
+    return tuple((row.get(name) or "").strip() for name in STRATUM_FIELDS)
+
+
+def stratum_population(key: tuple) -> str:
+    parts = [f"{name}={value}" for name, value in zip(STRATUM_FIELDS, key)]
+    parts.append("window=measured")
+    return "|".join(parts)
+
+
+def _block_medians(rows):
+    """Median latency per (block, gateway). Requests inside a block are nested."""
     acc = defaultdict(lambda: defaultdict(list))
-    for r in requests:
-        if r["status"] != "ok":
+    for r in rows:
+        if not _measured(r) or r.get("status") != "ok":
             continue
-        lat = _f(r["latency_ms"])
+        lat = _f(r.get("latency_ms"))
         if lat is None:
             continue
         acc[r["block_id"]][r["gateway"]].append(lat)
-    block_med = {}
+    out = {}
     for block_id, by_gw in acc.items():
-        block_med[block_id] = {gw: statistics.median(v) for gw, v in by_gw.items() if v}
-    return block_med
+        out[block_id] = {gw: statistics.median(v) for gw, v in by_gw.items() if v}
+    return out
+
+
+def pairing_report(requests, required=REQUIRED_GATEWAYS):
+    """Blocks that do not contain every required gateway are incomplete.
+
+    Warm-up rows and non-ok bookkeeping are ignored. Concurrency, streaming,
+    backend profile, policy and feature profile are part of the stratum, so
+    c=1 is never paired with c=8.
+    """
+    by_stratum = defaultdict(lambda: defaultdict(set))
+    for r in requests:
+        if not _measured(r):
+            continue
+        if r.get("scenario") == "rq1_warmup":
+            continue
+        by_stratum[stratum_key(r)][r["block_id"]].add(r["gateway"])
+    incomplete = []
+    complete = []
+    for key, blocks in by_stratum.items():
+        for block_id, gateways in blocks.items():
+            missing = [gw for gw in required if gw not in gateways]
+            entry = {
+                "population": stratum_population(key),
+                "block_id": block_id,
+                "gateways": sorted(gateways),
+                "missing": missing,
+            }
+            if missing:
+                incomplete.append(entry)
+            else:
+                complete.append(entry)
+    return {"complete": complete, "incomplete": incomplete}
 
 
 def _bootstrap_ci(diffs, seed, iters=2000, alpha=0.05):
@@ -146,72 +231,119 @@ def _bootstrap_ci(diffs, seed, iters=2000, alpha=0.05):
     return (round(lo, 4), round(hi, 4))
 
 
-def rq1_contrasts(requests, experiment_id, phase, seed):
-    """Paired latency contrasts between gateways, blocks as independent units.
+def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory"):
+    """Paired latency contrasts, one population per stratum.
 
-    Produces descriptive estimates with bootstrap CIs. No p-values: the
-    pre-registered inferential test (Friedman/Holm, etc.) runs separately.
+    A block contributes only when direct, Melis and LiteLLM are all present
+    in that stratum. Incomplete blocks are omitted here and listed by
+    `pairing_report`. Smoke and pilot rows are exploratory. This function
+    does not emit a confirmatory role unless the caller asks for it, and it
+    never pools c=1 with c=8.
     """
-    block_med = _block_medians_by_gateway(requests)
-    rows = []
-    gateways = ["melis", "litellm"]  # contrasts vs direct baseline
-    for gw in gateways:
-        diffs = []
-        for block_id, meds in block_med.items():
-            if gw in meds and "direct" in meds:
-                diffs.append(meds[gw] - meds["direct"])  # ms, paired per block
-        if not diffs:
+    grouped = defaultdict(list)
+    for r in requests:
+        if not _measured(r):
             continue
-        est = round(statistics.fmean(diffs), 4)
-        lo, hi = _bootstrap_ci(diffs, seed)
-        rows.append({
-            "experiment_id": experiment_id,
-            "phase": phase,
-            "question": "RQ1",
-            "outcome": "median_latency_overhead",
-            "contrast": f"{gw}_minus_direct",
-            "population": "ok_requests_by_block_median",
-            "independent_units": "block",
-            "n": len(diffs),
-            "estimate": est,
-            "unit": "ms",
-            "effect_size": est,
-            "ci_lower": lo,
-            "ci_upper": hi,
-            "method": "paired_block_median_bootstrap_percentile",
-            "seed": str(seed),
-            "p_raw": None,         # not fabricated — inferential step is separate
-            "p_adjusted": None,
-            "margin": None,
-            "decision": None,
-            "expected": None,
-            "observed": None,
-            "pass_fail": None,
-        })
+        if (r.get("scenario") or "") == "rq1_warmup":
+            continue
+        grouped[stratum_key(r)].append(r)
+
+    rows = []
+    aid = analysis_id()
+    for key, group in grouped.items():
+        phase = key[0]
+        report = pairing_report(group)
+        complete_ids = {entry["block_id"] for entry in report["complete"]}
+        if not complete_ids:
+            continue
+        kept = [r for r in group if r["block_id"] in complete_ids]
+        block_med = _block_medians(kept)
+        population = stratum_population(key)
+        role = evidence_role if phase == "final" else "exploratory"
+        for gw in ("melis", "litellm"):
+            diffs = []
+            for block_id, meds in block_med.items():
+                if gw in meds and "direct" in meds and "litellm" in meds and "melis" in meds:
+                    diffs.append(meds[gw] - meds["direct"])
+            if not diffs:
+                continue
+            est = round(statistics.fmean(diffs), 4)
+            lo, hi = _bootstrap_ci(diffs, seed)
+            rows.append({
+                "experiment_id": experiment_id,
+                "phase": phase,
+                "question": "RQ1",
+                "outcome": "median_latency_overhead",
+                "contrast": f"{gw}_minus_direct",
+                "population": population,
+                "independent_units": "block",
+                "n": len(diffs),
+                "estimate": est,
+                "unit": "ms",
+                "effect_size": est,
+                "ci_lower": lo,
+                "ci_upper": hi,
+                "method": "paired_block_median_bootstrap_percentile",
+                "seed": str(seed),
+                "p_raw": None,
+                "p_adjusted": None,
+                "margin": None,
+                "decision": None,
+                "expected": None,
+                "observed": None,
+                "pass_fail": None,
+                "analysis_id": aid,
+                "evidence_role": role,
+            })
     return rows
 
 
-def build(data_dir, runs_out, comparisons_out, experiment_id, phase, seed):
+def _facts_by_run(data_dir):
+    fh, fr = _read(os.path.join(data_dir, "execution_facts.csv"))
+    facts = _dict_rows(fh, fr)
+    # Measured-window fact wins when both windows exist for a run id.
+    out = {}
+    for fact in facts:
+        run_id = fact.get("run_id")
+        if not run_id:
+            continue
+        if fact.get("window") == "warmup" and run_id in out:
+            continue
+        out[run_id] = fact
+    return out
+
+
+def build(data_dir, runs_out, comparisons_out, experiment_id, phase, seed,
+          evidence_role="exploratory"):
     rh, rr = _read(os.path.join(data_dir, "requests.csv"))
     requests = _dict_rows(rh, rr)
+    if phase:
+        requests = [r for r in requests if r.get("phase") == phase]
 
-    runs_rows = summarize_runs(requests)
+    runs_rows = summarize_runs(requests, _facts_by_run(data_dir))
     if runs_out:
         w = CsvTableWriter("runs", runs_out)
         w.write_rows(runs_rows)
 
     comparisons_rows = []
-    # Infer experiment_id/phase from data if not supplied.
     if requests:
         experiment_id = experiment_id or requests[0]["experiment_id"]
-        phase = phase or requests[0]["phase"]
-    if experiment_id and phase:
-        comparisons_rows.extend(rq1_contrasts(requests, experiment_id, phase, seed))
+        comparisons_rows.extend(
+            rq1_contrasts(requests, experiment_id, seed, evidence_role=evidence_role)
+        )
     if comparisons_out and comparisons_rows:
         w = CsvTableWriter("comparisons", comparisons_out)
         w.write_rows(comparisons_rows)
 
-    return {"runs": len(runs_rows), "comparisons": len(comparisons_rows)}
+    report = pairing_report(requests)
+    return {
+        "runs": len(runs_rows),
+        "comparisons": len(comparisons_rows),
+        "analysis_id": analysis_id(),
+        "complete_blocks": len(report["complete"]),
+        "incomplete_blocks": len(report["incomplete"]),
+        "pairing": report,
+    }
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -222,15 +354,41 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--experiment-id", default=None)
     ap.add_argument("--phase", default=None)
     ap.add_argument("--seed", type=int, default=20261105)
+    ap.add_argument("--evidence-role", default="exploratory",
+                    choices=["exploratory", "confirmatory"],
+                    help="confirmatory is refused unless phase=final is also set")
+    ap.add_argument("--pairing-report", default=None,
+                    help="Write the pairing report JSON here (new file).")
     args = ap.parse_args(argv)
 
-    for out in (args.runs_out, args.comparisons_out):
-        if out and os.path.abspath(out) == os.path.abspath(os.path.join(args.data_dir, "requests.csv")):
-            raise SystemExit("refusing to overwrite raw requests.csv")
+    protected = {
+        os.path.abspath(os.path.join(args.data_dir, name))
+        for name in ("requests.csv", "resources.csv", "attempts.csv",
+                     "quality.csv", "resilience_events.csv", "safety_cases.csv",
+                     "execution_facts.csv")
+    }
+    for out in (args.runs_out, args.comparisons_out, args.pairing_report):
+        if not out:
+            continue
+        if os.path.abspath(out) in protected:
+            raise SystemExit(f"refusing to overwrite raw data: {out}")
+        if os.path.exists(out):
+            raise SystemExit(f"refusing to overwrite existing derived file: {out}")
+
+    evidence = args.evidence_role
+    if evidence == "confirmatory" and args.phase != "final":
+        raise SystemExit("confirmatory evidence_role requires --phase final")
 
     counts = build(args.data_dir, args.runs_out, args.comparisons_out,
-                   args.experiment_id, args.phase, args.seed)
-    print(counts)
+                   args.experiment_id, args.phase, args.seed, evidence_role=evidence)
+    if args.pairing_report:
+        import json
+        with open(args.pairing_report, "w", encoding="utf-8") as fh:
+            json.dump({"analysis_id": counts["analysis_id"], "pairing": counts["pairing"]},
+                      fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    printable = {k: v for k, v in counts.items() if k != "pairing"}
+    print(printable)
     return 0
 
 

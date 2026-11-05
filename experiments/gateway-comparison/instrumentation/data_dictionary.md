@@ -1,6 +1,6 @@
 # Data dictionary — gateway-comparison raw CSVs
 
-Schema version: **1.0.0** (see `SCHEMA_VERSION`; every row carries
+Schema version: **1.1.0** (see `SCHEMA_VERSION`; every row carries
 `schema_version`). Authoritative column definitions live in `schemas.py`; this
 document is the human-readable companion and the protocol→schema traceability.
 
@@ -95,10 +95,57 @@ empty.
 
 ### `resources.csv` — time-sampled resource usage
 
-One row per `(run, component, sample)`. Components: `gateway`, `embeddings`,
-`redis`, `backend`, `other`. Sampling interval and source are recorded in the
-manifest's `measurement_origin`. Unavailable metrics stay empty. Peak RAM / mean
-CPU are derived downstream with documented denominators.
+One row per `(run_id, component, sample_index)`. Components: `gateway`,
+`embeddings`, `redis`, `backend`, `host`, `other`. Unavailable metrics stay
+empty. Peak RAM / mean CPU are derived downstream with documented denominators.
+
+Schema 1.1.0 separates three memory definitions. They are not interchangeable
+and must not be compared across gateways inside one column:
+
+| Column | Definition | When empty |
+|---|---|---|
+| `memory_cgroup_current_bytes` | Docker Engine `memory_stats.usage`, which is cgroup `memory.current` (includes cache) | stats read failed |
+| `memory_working_set_bytes` | Kubernetes working set: `usage - inactive_file` | `inactive_file` absent |
+| `memory_rss_bytes` | `memory_stats.stats.rss` only | the engine has no `rss` field. cgroup v2 does not; `anon` is not written here |
+
+`cpu_seconds_total` is the Docker counter `cpu_stats.cpu_usage.total_usage`
+converted from nanoseconds to seconds (`cpu_method`). A CPU percentage is not
+converted into this counter. The same Engine API is used for every container,
+including images without a shell. Host CPU, when sampled, uses `/proc/stat`
+non-idle jiffies (`source=procfs`) and does not fill the memory columns.
+
+Each row records `source`, the method string for each measure that was
+actually present, `collection_started_at_utc`, `collection_duration_ms`,
+`configured_interval_s`, `effective_interval_s` and `sample_lag_s`.
+`timestamp_utc` is the engine `read` time of that container, not one clock
+reading stamped onto every container in the batch. The first sample of a
+`(run, component)` leaves the effective interval and lag empty.
+
+Container samples come from a Docker Engine stats **stream** (one Unix-socket
+connection per container, not `docker exec`). The daemon emits about one
+object per second. A configured interval shorter than that is not claimed;
+`effective_interval_s` and `sample_lag_s` record the cadence that actually
+happened. `collection_duration_ms` is empty for streamed samples because the
+one-second wait is the engine period, already recorded as the effective
+interval, not a separate per-read cost.
+
+### `execution_facts.csv` — one row per execution window
+
+Raw cell bookkeeping that must not be copied onto every request: order in the
+block, warm-up duration, measured duration, configured concurrency,
+`backend_peak_inflight` (observed after a per-cell reset) and
+`backend_call_count`. The call count is an execution-level counter delta
+(`count_scope=execution`). A delta that goes backwards is left empty. It is
+not divided into per-request counts. `requests.backend_call_count` stays empty
+unless a request-scoped observation exists.
+
+### Analysis identity
+
+`comparisons.analysis_id` is `agg-<revision>-<sha256 prefix of aggregate.py>`.
+`evidence_role` is `exploratory` for smoke and pilot. A confirmatory label
+requires phase `final` and an explicit flag. Pilot intervals, including a
+three-block pilot, are not confirmatory evidence. Derived files are written to
+new paths; an existing `comparisons.csv` is not replaced.
 
 ### `quality.csv` — one row per evaluation
 
@@ -138,10 +185,22 @@ pairing preserved):
 | "throughput útil" | `useful_throughput_rps` | unit suffix made explicit (`_rps`) |
 | "mediana, p95, p99" (runs) | `latency_median_ms`, `latency_p95_ms`, `latency_p99_ms` | unit suffix `_ms` added |
 | "tempo até primeiro evento de conteúdo" | `first_content_ms` | named measure, distinct from `ttfb_ms` |
-| "origem das medidas" | manifest `measurement_origin` + `token_count_source` | split across manifest (per-metric origin) and per-row token origin |
+| "origem das medidas" | `source`, `*_method` columns, manifest `measurement_origin` | per-metric method on the row; manifest repeats the human-readable definition |
+| memory RSS vs cgroup usage | `memory_rss_bytes` and `memory_cgroup_current_bytes` | protocol listed RSS; 1.1.0 adds the cgroup column instead of overloading RSS |
+| warm-up vs measured window | `window` | appended so warm-up rows stay raw without entering the measured contrast |
+| feature profile | `feature_profile` | stratifies minimal mediation from cache/compaction/guardrails |
+| analysis code | `analysis_id`, `evidence_role` | appended on derived `comparisons.csv` |
+| execution-level backend count | `execution_facts.backend_call_count` | not fanned out to `requests.backend_call_count` |
 | "destinos pseudonimizados" | `destination_id`, `identity_pseudonym` | pseudonyms only; no secrets |
 | contract tests "esperado/observado/pass-fail" | `comparisons.expected/observed/pass_fail`, `safety_cases.pass_fail` | p-values intentionally empty |
-| "chamadas ao backend" | `backend_call_count` (per request) + aggregation | deterministic backend only |
+| "chamadas ao backend" | `requests.backend_call_count` when request-scoped; otherwise `execution_facts.backend_call_count` | a process-wide counter is not split across concurrent requests |
+
+## Schema history
+
+| Version | Change |
+|---|---|
+| 1.0.0 | Initial protocol columns. Historical smoke/pilot files stay at this version and are not rewritten. |
+| 1.1.0 | Separate cgroup memory, working set and RSS; per-sample timing and method; stratum fields; execution facts; analysis id. |
 
 Any future change to a column, unit, type, or enum **bumps `SCHEMA_VERSION`**
 and is recorded here and in the git history. Data written under an older schema

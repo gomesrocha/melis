@@ -189,19 +189,21 @@ Ollama with the dummy `ollama` key.
   the authoritative check that a cache hit makes no provider call, by count.
 - **Warm-up, repetitions, concurrency levels, sample size, and statistics are NOT
   fixed here** — to be defined in the protocol, not chosen to favor a gateway.
-- **Streaming parity**: the deterministic backend emits one SSE chunk per token
-  segment; a real provider chunks differently. Compare JSON and SSE separately.
+- **Streaming parity**: the deterministic backend splits the reply on hyphens
+  and sends those pieces as SSE frames. That is framing, not a tokenizer token.
+  A real provider chunks differently. Compare JSON and SSE separately.
 
 ## Pilot (RQ1, deterministic) — reproduce
 
-`harness/run_pilot_rq1.py` drives one gateway at a time and writes
-schema-compliant `requests.csv`/`attempts.csv` (`phase=pilot`) that validate
-against schema 1.0.0. It is **pilot only**; its data never enters the final set
-and is kept local (see `data/.gitignore`).
+`harness/run_pilot_rq1.py` is the earlier sequential driver. Its `data/pilot/`
+output is schema 1.0.0, historical, and not confirmatory. Comparative cells
+use `harness/run_comparative_pilot.py`: each block contains direct, Melis and
+LiteLLM in a seeded rotation, with warm-up separated from the measured window.
 
-Estimate the workload before running an extended grid. The deterministic RQ1
-pilot used here is small: 5 blocks x {json,sse} x 3 paths x 30 nested requests
-= 900 requests, ~20 s of request work plus gateway start/stop.
+Estimate the workload before running an extended grid. The historical
+sequential driver below sent 5 blocks × {json, sse} × 3 paths × 30 nested
+requests = 900 requests, one gateway after another. That order is not the
+comparative design. Use the balanced runner for new pilots.
 
 ```bash
 # backend up; then ONE gateway at a time:
@@ -221,11 +223,23 @@ python3 instrumentation/aggregate.py --data-dir data/pilot \
 python3 instrumentation/validate.py --data-dir data/pilot --report data/pilot/validation_report.json
 ```
 
-**Known pilot limitations** (to resolve before the final collection):
+Comparative pilot (new directory each run; does not rewrite `data/pilot/`):
 
-- The runner is **closed-loop and sequential**; `concurrency` is recorded as a
-  factor but a true concurrent load needs a parallel sender. Do not read the
-  pilot's `concurrency` column as concurrent throughput.
+```bash
+python3 harness/run_comparative_pilot.py --dry-estimate \
+    --blocks 1 --modes json sse --concurrency 1 4 \
+    --warmup-s 3 --measure-s 12 --backend-latency-ms 100
+python3 harness/run_comparative_pilot.py \
+    --out-dir data/pilot-balanced-<id> --phase pilot \
+    --blocks 1 --modes json sse --concurrency 1 4 \
+    --warmup-s 3 --measure-s 12 --backend-latency-ms 100 --seed 20261105
+```
+
+**Known limitations of the historical sequential pilot** (schema 1.0.0):
+
+- That runner recorded `concurrency` while sending requests one at a time.
+  `harness/conc_load.py` is a real closed loop; configured worker count and
+  the backend's observed peak are different columns.
 - The deterministic backend removes model/network variance, so pilot latencies
   are **mediation overhead under this exact setup**, not inference performance,
   and the tiny between-block variance does **not** by itself size the final

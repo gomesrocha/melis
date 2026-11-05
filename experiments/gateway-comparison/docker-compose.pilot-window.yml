@@ -1,0 +1,13 @@
+# Optional override for a comparative pilot window.
+#
+# The deterministic backend defaults to zero artificial latency, which finishes
+# too quickly to sample resources. This file holds each mock request for 100 ms
+# so a measured window of several seconds contains a real load, without changing
+# the gateway configs. Apply it only together with docker-compose.deterministic.yml.
+# It does not add cache, compaction, or guardrails.
+
+services:
+  backend:
+    environment:
+      MOCK_PORT: "7070"
+      MOCK_LATENCY_MS: "100"

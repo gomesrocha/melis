@@ -189,8 +189,14 @@ class Conn:
             self._c = None
 
 
-def run_cell(base_url, model, mode, concurrency, n_requests, max_tokens, timeout):
-    """Run one closed-loop cell with `concurrency` workers; return list of result dicts."""
+def run_cell(base_url, model, mode, concurrency, n_requests, max_tokens, timeout,
+             deadline_mono=None):
+    """Run one closed-loop cell with `concurrency` workers; return list of result dicts.
+
+    `n_requests` is a cap. When `deadline_mono` is set, workers also stop once
+    that monotonic deadline is reached. In-flight requests are still recorded.
+    Configured concurrency is the worker count, not the observed backend peak.
+    """
     stream = mode == "sse"
     path = urlparse(base_url).path.rstrip("/") + "/v1/chat/completions"
     if path == "/v1/chat/completions":
@@ -203,6 +209,8 @@ def run_cell(base_url, model, mode, concurrency, n_requests, max_tokens, timeout
         conn = Conn(base_url, timeout)
         try:
             while True:
+                if deadline_mono is not None and time.perf_counter() >= deadline_mono:
+                    return
                 with lock:
                     i = next_idx["i"]
                     if i >= n_requests:
@@ -228,86 +236,300 @@ def run_cell(base_url, model, mode, concurrency, n_requests, max_tokens, timeout
     for t in threads:
         t.join()
     wall = time.perf_counter() - t0
-    return results, wall
+    finished = [r for r in results if r is not None]
+    return finished, wall
+
+
+def execution_backend_calls(before_total, after_total):
+    """Execution-level counter delta.
+
+    A decrease means the counter was reset or the two reads are not the same
+    series. That is ambiguous, so the result is missing rather than a guessed
+    per-request count.
+    """
+    if before_total is None or after_total is None:
+        return None
+    if after_total < before_total:
+        return None
+    return int(after_total - before_total)
+
+
+def _count_total(count_url):
+    payload = _get_json(count_url)
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return int(payload.get("chat", 0)) + int(payload.get("chat_stream", 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def reset_backend(inflight_url):
+    reset = inflight_url.replace("/__inflight", "/__reset")
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(reset, data=b"{}", method="POST"), timeout=5,
+        ).read()
+        return True
+    except Exception:
+        return False
+
+
+def read_peak(inflight_url):
+    payload = _get_json(inflight_url)
+    if not isinstance(payload, dict) or "peak_inflight" not in payload:
+        return None
+    try:
+        return int(payload["peak_inflight"])
+    except (TypeError, ValueError):
+        return None
+
+
+class IdRegistry:
+    """Rejects id collisions inside one output directory."""
+
+    def __init__(self):
+        self.request_ids = set()
+        self.run_ids = set()
+
+    def claim_run(self, run_id):
+        if run_id in self.run_ids:
+            raise RuntimeError(f"duplicate run_id {run_id}")
+        self.run_ids.add(run_id)
+
+    def claim_request(self, request_id):
+        if request_id in self.request_ids:
+            raise RuntimeError(f"duplicate request_id {request_id}")
+        self.request_ids.add(request_id)
+
+
+def execute_cell(cell):
+    """Run one gateway cell and append raw rows.
+
+    `cell` is a dict. Warm-up, when requested, is a separate run id and is not
+    part of the measured window. Backend call counts are recorded on
+    execution_facts only. Per-request backend_call_count stays empty.
+    """
+    mode = cell["mode"]
+    stream = mode == "sse"
+    conc = cell["concurrency"]
+    block = cell["block_id"]
+    case = cell["case_id"]
+    scenario = cell.get("scenario", "rq1_fixed_load")
+    pair = ids.pair_id(block, case, scenario, stream, conc)
+    attempt = int(cell.get("attempt", 0))
+    measured_run = ids.run_id(
+        cell["experiment_id"], cell["phase"], cell["gateway"], block,
+        scenario, stream, conc, attempt,
+    )
+    registry = cell["registry"]
+    registry.claim_run(measured_run)
+    req_writer = cell["req_writer"]
+    fact_writer = cell["fact_writer"]
+    feature = cell.get("feature_profile", "minimal")
+    policy = cell.get("policy", "none")
+    timeout = cell["timeout"]
+    max_tokens = cell["max_tokens"]
+    cap = cell["max_requests"]
+    inflight = cell.get("inflight_url")
+    count_url = cell.get("count_url")
+    sampler = cell.get("sampler")
+
+    warmup_s = float(cell.get("warmup_s") or 0)
+    if warmup_s > 0:
+        warm_run = ids.run_id(
+            cell["experiment_id"], cell["phase"], cell["gateway"], block,
+            "rq1_warmup", stream, conc, attempt + 1,
+        )
+        registry.claim_run(warm_run)
+        warm_pair = ids.pair_id(block, case, "rq1_warmup", stream, conc)
+        tw = time.perf_counter()
+        warm, warm_wall = run_cell(
+            cell["url"], cell["model"], mode, conc, cap, max_tokens, timeout,
+            deadline_mono=tw + warmup_s,
+        )
+        _write_requests(
+            req_writer, registry, warm, cell, warm_run, block, warm_pair, case,
+            "rq1_warmup", stream, conc, feature, policy, "warmup",
+        )
+        fact_writer.write_row(_fact_row(
+            cell, warm_run, block, "rq1_warmup", stream, conc, feature, policy,
+            "warmup", warmup_s=None, duration_s=round(warm_wall, 3),
+            backend_call_count=None, peak=None, reset_ok=False,
+        ))
+
+    reset_ok = reset_backend(inflight) if inflight else False
+    before = _count_total(count_url) if count_url else None
+    if sampler is not None:
+        sampler.set_run(measured_run)
+    t0 = time.perf_counter()
+    deadline = (t0 + float(cell["measure_s"])) if cell.get("measure_s") else None
+    try:
+        results, wall = run_cell(
+            cell["url"], cell["model"], mode, conc, cap, max_tokens, timeout,
+            deadline_mono=deadline,
+        )
+    finally:
+        if sampler is not None:
+            sampler.clear_run()
+    after = _count_total(count_url) if count_url else None
+    peak = read_peak(inflight) if reset_ok else None
+    calls = execution_backend_calls(before, after)
+    _write_requests(
+        req_writer, registry, results, cell, measured_run, block, pair, case,
+        scenario, stream, conc, feature, policy, "measured",
+    )
+    fact_writer.write_row(_fact_row(
+        cell, measured_run, block, scenario, stream, conc, feature, policy,
+        "measured", warmup_s=warmup_s, duration_s=round(wall, 3),
+        backend_call_count=calls, peak=peak, reset_ok=reset_ok,
+    ))
+    oks = sum(1 for r in results if r["status"] == "ok")
+    return {
+        "run_id": measured_run,
+        "gateway": cell["gateway"],
+        "mode": mode,
+        "concurrency": conc,
+        "ok": oks,
+        "n": len(results),
+        "wall_s": round(wall, 3),
+        "backend_peak_inflight": peak,
+        "backend_call_count": calls,
+        "order_in_block": cell.get("order_in_block"),
+    }
+
+
+def _write_requests(writer, registry, results, cell, run_id, block, pair, case,
+                    scenario, stream, conc, feature, policy, window):
+    for r in results:
+        request_id = ids.request_id(run_id, pair, r["i"])
+        registry.claim_request(request_id)
+        writer.write_row({
+            "experiment_id": cell["experiment_id"],
+            "phase": cell["phase"],
+            "run_id": run_id,
+            "block_id": block,
+            "pair_id": pair,
+            "case_id": case,
+            "request_id": request_id,
+            "gateway": cell["gateway"],
+            "scenario": scenario,
+            "backend_profile": cell["backend_profile"],
+            "streaming": stream,
+            "concurrency": conc,
+            "policy": policy,
+            "feature_profile": feature,
+            "window": window,
+            "started_at_utc": r["started_at"],
+            "latency_ms": round(r["latency_ms"], 3),
+            "ttfb_ms": round(r["ttfb_ms"], 3) if r.get("ttfb_ms") is not None else None,
+            "first_content_ms": round(r["first_content_ms"], 3) if r.get("first_content_ms") is not None else None,
+            "status": r["status"],
+            "http_status": r.get("http_status"),
+            "error_class": r.get("error_class"),
+            "timeout": r["timeout"],
+            "completion_valid": r["completion_valid"],
+            "requested_model": cell["model"],
+            "effective_model": cell["model"],
+        })
+
+
+def _fact_row(cell, run_id, block, scenario, stream, conc, feature, policy, window,
+              warmup_s, duration_s, backend_call_count, peak, reset_ok):
+    sampler = cell.get("sampler")
+    return {
+        "experiment_id": cell["experiment_id"],
+        "phase": cell["phase"],
+        "run_id": run_id,
+        "block_id": block,
+        "gateway": cell["gateway"],
+        "scenario": scenario,
+        "backend_profile": cell["backend_profile"],
+        "streaming": stream,
+        "concurrency": conc,
+        "policy": policy,
+        "feature_profile": feature,
+        "window": window,
+        "order_in_block": cell.get("order_in_block"),
+        "seed": cell.get("seed"),
+        "warmup_s": warmup_s,
+        "duration_s": duration_s,
+        "backend_call_count": backend_call_count,
+        "backend_peak_inflight": peak if reset_ok else None,
+        "count_scope": "execution" if backend_call_count is not None else None,
+        "sampler_enabled": sampler is not None and window == "measured",
+        "sampler_interval_s": getattr(sampler, "interval", None) if sampler and window == "measured" else None,
+    }
 
 
 def run(args):
+    """Single-gateway driver.
+
+    This runs every block of ONE gateway before any other gateway. It is a
+    smoke/debug path, not the comparative block design. Comparative pilots use
+    `run_comparative_pilot.py`, which interleaves the three paths inside a block.
+    """
+    if os.path.exists(args.out_dir) and os.listdir(args.out_dir):
+        raise SystemExit(f"refusing to write into non-empty directory {args.out_dir}")
     experiment_id = ids.experiment_id(args.experiment_name, "1.0", SCHEMA_VERSION)
     os.makedirs(args.out_dir, exist_ok=True)
     req_writer = CsvTableWriter("requests", os.path.join(args.out_dir, "requests.csv"))
-
-    # Optional MEASURED resource sampling for the duration of this run. Rows go to
-    # resources.csv keyed by a single run_id covering the whole generation (the
-    # per-cell run_ids are in requests.csv; resources are sampled process-wide).
+    fact_writer = CsvTableWriter("execution_facts", os.path.join(args.out_dir, "execution_facts.csv"))
     sampler = None
     if getattr(args, "sample_containers", None):
         from resource_sampler import ResourceSampler
-        sampler_run_id = ids.run_id(experiment_id, args.phase, args.gateway, "ALL",
-                                    "rq1_fixed_load", False, 0)
-        sampler = ResourceSampler(sampler_run_id, args.out_dir, args.sample_containers,
-                                  interval=args.sample_interval).start()
-
-    totals = {"ok": 0, "fail": 0, "n": 0}
+        sampler = ResourceSampler(
+            args.out_dir, args.sample_containers, interval=args.sample_interval,
+        ).start()
+    registry = IdRegistry()
     cells_summary = []
-    for b in range(args.blocks):
-        block = ids.block_id(experiment_id, args.phase, b)
-        case = ids.case_id(experiment_id, "rq1-conc", 0)
-        for mode in args.modes:
-            stream = mode == "sse"
-            for conc in args.concurrency:
-                pair = ids.pair_id(block, case, "rq1_fixed_load", stream, conc)
-                run_id = ids.run_id(experiment_id, args.phase, args.gateway, block,
-                                    "rq1_fixed_load", stream, conc)
-                # Reset backend inflight peak for this cell if available.
-                if args.inflight_url:
-                    try:
-                        urllib.request.urlopen(urllib.request.Request(
-                            args.inflight_url.replace("/__inflight", "/__reset"),
-                            data=b"{}", method="POST"), timeout=5).read()
-                    except Exception:
-                        pass
-                results, wall = run_cell(args.url, args.model, mode, conc,
-                                         args.reqs_per_cell, args.max_tokens, args.timeout)
-                peak = None
-                if args.inflight_url:
-                    j = _get_json(args.inflight_url)
-                    peak = j.get("peak_inflight") if isinstance(j, dict) else None
-                for r in results:
-                    if r is None:
-                        continue
-                    request_id = ids.request_id(run_id, pair, r["i"])
-                    req_writer.write_row({
-                        "experiment_id": experiment_id, "phase": args.phase, "run_id": run_id,
-                        "block_id": block, "pair_id": pair, "case_id": case,
-                        "request_id": request_id, "gateway": args.gateway,
-                        "scenario": "rq1_fixed_load", "backend_profile": args.backend_profile,
-                        "streaming": stream, "concurrency": conc,
-                        "started_at_utc": r["started_at"],
-                        "latency_ms": round(r["latency_ms"], 3),
-                        "ttfb_ms": round(r["ttfb_ms"], 3) if r.get("ttfb_ms") is not None else None,
-                        "first_content_ms": round(r["first_content_ms"], 3) if r.get("first_content_ms") is not None else None,
-                        "status": r["status"], "http_status": r.get("http_status"),
-                        "error_class": r.get("error_class"), "timeout": r["timeout"],
-                        "completion_valid": r["completion_valid"],
-                        "requested_model": args.model, "effective_model": args.model,
-                        "token_count_source": "gateway_estimate",
+    count_url = None
+    if args.inflight_url:
+        count_url = args.inflight_url.replace("/__inflight", "/__count")
+    try:
+        for b in range(args.blocks):
+            block = ids.block_id(experiment_id, args.phase, b)
+            case = ids.case_id(experiment_id, "rq1-conc", 0)
+            for mode in args.modes:
+                for conc in args.concurrency:
+                    summary = execute_cell({
+                        "experiment_id": experiment_id,
+                        "phase": args.phase,
+                        "gateway": args.gateway,
+                        "url": args.url,
+                        "model": args.model,
+                        "backend_profile": args.backend_profile,
+                        "mode": mode,
+                        "concurrency": conc,
+                        "block_id": block,
+                        "case_id": case,
+                        "timeout": args.timeout,
+                        "max_tokens": args.max_tokens,
+                        "max_requests": args.reqs_per_cell,
+                        "measure_s": getattr(args, "measure_s", None),
+                        "warmup_s": getattr(args, "warmup_s", 0) or 0,
+                        "inflight_url": args.inflight_url,
+                        "count_url": count_url,
+                        "sampler": sampler,
+                        "registry": registry,
+                        "req_writer": req_writer,
+                        "fact_writer": fact_writer,
+                        "feature_profile": "minimal",
+                        "policy": "none",
+                        "seed": str(getattr(args, "seed", "")),
+                        "order_in_block": 0,
                     })
-                    totals["n"] += 1
-                    totals["ok" if r["status"] == "ok" else "fail"] += 1
-                oks = sum(1 for r in results if r and r["status"] == "ok")
-                cells_summary.append({
-                    "block": b, "mode": mode, "concurrency": conc,
-                    "requests": args.reqs_per_cell, "ok": oks, "wall_s": round(wall, 3),
-                    "achieved_rps": round(oks / wall, 2) if wall > 0 else None,
-                    "backend_peak_inflight": peak,
-                })
-
-    resource_samples = sampler.stop() if sampler is not None else 0
+                    cells_summary.append(summary)
+    finally:
+        resource_samples = sampler.stop() if sampler is not None else 0
     summary = {
-        "experiment_id": experiment_id, "phase": args.phase, "gateway": args.gateway,
-        "schema_version": SCHEMA_VERSION, "totals": totals, "cells": cells_summary,
+        "experiment_id": experiment_id,
+        "phase": args.phase,
+        "gateway": args.gateway,
+        "schema_version": SCHEMA_VERSION,
+        "cells": cells_summary,
         "resource_samples": resource_samples,
-        "note": "CLOSED-LOOP concurrent load; SMOKE/PILOT — not a final result",
+        "note": "SINGLE-GATEWAY closed loop. Not a comparative block and not a final result.",
     }
     print(json.dumps(summary, indent=2))
     return summary
@@ -329,6 +551,10 @@ def main(argv=None):
     ap.add_argument("--sample-containers", nargs="+", default=None,
                     help="container names to sample MEASURED resources during the run")
     ap.add_argument("--sample-interval", type=float, default=0.5)
+    ap.add_argument("--measure-s", type=float, default=None,
+                    help="Measured-window seconds. With --reqs-per-cell, whichever limit comes first.")
+    ap.add_argument("--warmup-s", type=float, default=0)
+    ap.add_argument("--seed", default="0")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--experiment-name", default="rq1-concurrent")
     ap.add_argument("--phase", default="pilot", choices=["smoke", "pilot"])

@@ -66,16 +66,21 @@ def _exit_inflight():
 
 
 def _record_seen(path, req):
-    # Capture only the comparison-relevant fields (model + generation params +
-    # whether streaming + message count). Never store full message content here.
+    # Capture comparison-relevant fields plus a canonical hash and length.
+    # The hash compares forwarded payloads without storing message content.
     params = {k: req.get(k) for k in ("temperature", "max_tokens", "top_p", "stream")
               if k in req}
+    canonical = json.dumps(req, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    encoded = canonical.encode("utf-8")
     entry = {
         "path": path,
         "model": req.get("model"),
         "stream": bool(req.get("stream", False)),
         "params": params,
         "n_messages": len(req.get("messages", []) or []),
+        "keys": sorted(req.keys()),
+        "body_sha256": hashlib.sha256(encoded).hexdigest(),
+        "body_len": len(encoded),
     }
     with _lock:
         _seen.append(entry)
@@ -235,7 +240,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
-        # One token per word, then [DONE].
+        # One SSE content chunk per hyphen-separated piece, then [DONE].
+        # These chunks are framing, not observed tokenizer tokens.
         for i, tok in enumerate(content.split("-")):
             chunk = {
                 "id": f"chatcmpl-{_hash(content):08x}",

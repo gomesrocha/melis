@@ -6,7 +6,12 @@ server:
   port: 7071
 
 redis:
-  cluster_urls: []
+  # Validation rejects an empty list and then silently loads built-in defaults,
+  # which do not point at the host Ollama. This loopback URL is not used by the
+  # minimal profile (no cache; circuit breaker is local). Readiness does not
+  # depend on it.
+  cluster_urls:
+    - "redis://127.0.0.1:6379"
   required_for_readiness: false
 
 auth:
@@ -18,7 +23,9 @@ observability:
   service_name: "melis-exp"
 
 compactor:
-  token_threshold: 1000000000
+  # strategy "none" disables compaction. The threshold must still be inside
+  # the validator's 512–128000 range or Melis refuses to start.
+  token_threshold: 128000
   strategy: "none"
 
 circuit_breaker:

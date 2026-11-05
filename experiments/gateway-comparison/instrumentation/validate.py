@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import json
 import os
 from collections import Counter, defaultdict
@@ -119,6 +120,15 @@ def validate_dir(data_dir: str) -> dict:
     loaded = {}
     for table in table_names():
         path = os.path.join(data_dir, f"{table}.csv")
+        if table == "comparisons" and not os.path.exists(path):
+            alts = sorted(glob.glob(os.path.join(data_dir, "comparisons.*.csv")))
+            if len(alts) == 1:
+                path = alts[0]
+            elif len(alts) > 1:
+                report["errors"].append(
+                    f"comparisons: multiple derived files {alts}; refusing to pick one"
+                )
+                continue
         if not os.path.exists(path):
             report["tables"][table] = {"present": False, "rows": 0}
             continue
@@ -137,9 +147,128 @@ def validate_dir(data_dir: str) -> dict:
 
     _referential_checks(loaded, report)
     _requests_runs_consistency(loaded, report)
+    _global_request_ids(loaded, report)
+    _phase_directory(data_dir, loaded, report)
+    _rq1_population(loaded, report)
+    _resource_semantics(loaded, report)
+    _comparative_pairing(loaded, report)
 
     report["ok"] = len(report["errors"]) == 0
     return report
+
+
+def expected_phase(data_dir: str):
+    """Phase implied by a directory name. `examples` and other names imply none."""
+    base = os.path.basename(os.path.abspath(data_dir.rstrip(os.sep)))
+    for phase in ("final", "pilot", "smoke"):
+        if base == phase or base.startswith(phase + "-") or base.startswith(phase + "_"):
+            return phase
+    return None
+
+
+def _global_request_ids(loaded, report):
+    if "requests" not in loaded:
+        return
+    h, rows = loaded["requests"]
+    seen = Counter(_col(h, rows, "request_id"))
+    for rid, n in seen.items():
+        if rid and n > 1:
+            report["errors"].append(f"requests: request_id {rid!r} duplicated {n} times")
+
+
+def _phase_directory(data_dir, loaded, report):
+    expected = expected_phase(data_dir)
+    if expected is None:
+        return
+    for table in ("requests", "runs", "comparisons", "execution_facts"):
+        if table not in loaded:
+            continue
+        h, rows = loaded[table]
+        if "phase" not in h:
+            continue
+        foreign = sorted({p for p in _col(h, rows, "phase") if p and p != expected})
+        if foreign:
+            report["errors"].append(
+                f"{table}: phase {foreign} does not belong in {expected!r} directory "
+                f"{os.path.basename(os.path.abspath(data_dir))!r}"
+            )
+
+
+def _rq1_population(loaded, report):
+    if "comparisons" not in loaded:
+        return
+    h, rows = loaded["comparisons"]
+    if "question" not in h or "population" not in h:
+        return
+    iq, ip = h.index("question"), h.index("population")
+    ie = h.index("evidence_role") if "evidence_role" in h else None
+    iphase = h.index("phase") if "phase" in h else None
+    for n, row in enumerate(rows, start=2):
+        if row[iq] != "RQ1":
+            continue
+        pop = row[ip]
+        for piece in ("concurrency=", "streaming=", "backend_profile=", "phase="):
+            if piece not in pop:
+                report["errors"].append(
+                    f"comparisons:{n}: RQ1 population missing {piece.rstrip('=')} stratum ({pop!r})"
+                )
+        if ie is not None and iphase is not None:
+            if row[iphase] != "final" and row[ie] == "confirmatory":
+                report["errors"].append(
+                    f"comparisons:{n}: phase {row[iphase]!r} cannot be evidence_role=confirmatory"
+                )
+
+
+def _resource_semantics(loaded, report):
+    if "resources" not in loaded:
+        return
+    h, rows = loaded["resources"]
+    if "memory_rss_bytes" not in h:
+        return
+    i_rss = h.index("memory_rss_bytes")
+    i_method = h.index("memory_rss_method") if "memory_rss_method" in h else None
+    banned = ("anon", "memory.current", "memusage", "memory_stats.usage")
+    for n, row in enumerate(rows, start=2):
+        rss = row[i_rss]
+        method = row[i_method].lower() if i_method is not None else ""
+        if rss and not method:
+            report["errors"].append(
+                f"resources:{n}: memory_rss_bytes is set without memory_rss_method"
+            )
+        if rss and any(tok in method for tok in banned):
+            report["errors"].append(
+                f"resources:{n}: memory_rss_method {row[i_method]!r} is not an RSS definition"
+            )
+
+
+def _comparative_pairing(loaded, report):
+    """When all three gateways appear, every measured block must include all three.
+
+    A single-gateway smoke file is not a comparative set and is not failed here.
+    """
+    if "requests" not in loaded:
+        return
+    h, rows = loaded["requests"]
+    if "gateway" not in h:
+        return
+    gateways = set(_col(h, rows, "gateway"))
+    required = {"direct", "melis", "litellm"}
+    if not required.issubset(gateways):
+        return
+    records = _dict_rows_local(h, rows)
+    # Local import avoids a cycle if aggregate ever imports validate.
+    from aggregate import pairing_report
+    report_p = pairing_report(records)
+    for entry in report_p["incomplete"]:
+        report["errors"].append(
+            "pairing: incomplete block "
+            f"{entry['block_id']} in {entry['population']} "
+            f"has {entry['gateways']}, missing {entry['missing']}"
+        )
+
+
+def _dict_rows_local(header_row, data_rows):
+    return [dict(zip(header_row, r)) for r in data_rows]
 
 
 def _col(h, rows, name):

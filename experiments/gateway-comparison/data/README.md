@@ -15,8 +15,11 @@ Rules (from `../PROTOCOL.md`):
   never promoted into the confirmatory set.
 - The example CSVs under `examples/` are **synthetic** and exist only to
   exercise the instrumentation scripts. They are **not** experimental evidence.
-- Raw data is never overwritten when generating summaries; `runs.csv` and
-  `comparisons.csv` are derived into the same phase directory by `aggregate.py`.
+- Raw data is never overwritten when generating summaries. `aggregate.py`
+  writes derived tables only to new paths (`comparisons.<analysis_id>.csv`).
+  It refuses to replace an existing derived file or any raw CSV.
+- Schema 1.0.0 files in `pilot/` and `pilot-conc/` are historical. They are not
+  confirmatory and are not rewritten to 1.1.0.
 - Each phase directory that holds real data also holds its `manifest.json` and a
   `validation_report.json`.
 

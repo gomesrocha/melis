@@ -28,8 +28,9 @@ sys.path.insert(0, INSTR)
 
 from csv_writer import CsvTableWriter  # noqa: E402
 import ids  # noqa: E402
+from schemas import SCHEMA_VERSION  # noqa: E402
 
-EXPERIMENT = ids.experiment_id("synthetic-known", "1.0", "1.0.0")
+EXPERIMENT = ids.experiment_id("synthetic-known", "1.0", SCHEMA_VERSION)
 PHASE = "smoke"
 LAT = {"direct": 10.0, "melis": 13.0, "litellm": 16.0}
 
@@ -54,6 +55,7 @@ def generate(out_dir: str):
                     "block_id": block, "pair_id": pair, "case_id": case, "request_id": rid,
                     "gateway": gw, "scenario": "rq1_fixed_load",
                     "backend_profile": "deterministic", "streaming": False, "concurrency": 1,
+                    "policy": "none", "feature_profile": "minimal", "window": "measured",
                     "started_at_utc": "2026-11-05T00:00:00.000Z",
                     "latency_ms": LAT[gw], "status": "ok",
                     "http_status": 200, "timeout": False, "completion_valid": True,
@@ -74,6 +76,7 @@ def generate(out_dir: str):
                 "block_id": block, "pair_id": pair, "case_id": case, "request_id": rid,
                 "gateway": gw, "scenario": "rq1_fixed_load",
                 "backend_profile": "deterministic", "streaming": False, "concurrency": 1,
+                "policy": "none", "feature_profile": "minimal", "window": "measured",
                 "started_at_utc": "2026-11-05T00:00:00.000Z",
                 # latency_ms intentionally EMPTY (missing != zero) on a timeout.
                 "latency_ms": None, "status": "timeout",

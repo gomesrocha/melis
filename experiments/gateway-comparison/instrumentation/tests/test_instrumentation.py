@@ -203,6 +203,108 @@ class TestAggregate(unittest.TestCase):
             ll = by_contrast["litellm_minus_direct"]
             self.assertAlmostEqual(float(ll[ch.index("estimate")]),
                                    EXPECTED["litellm_minus_direct_ms"], places=6)
+            pop = m[ch.index("population")]
+            self.assertIn("concurrency=1", pop)
+            self.assertIn("streaming=false", pop)
+            self.assertIn("backend_profile=deterministic", pop)
+            self.assertIn("policy=none", pop)
+            self.assertIn("feature_profile=minimal", pop)
+            self.assertNotIn("concurrency=8", pop)
+            self.assertEqual(m[ch.index("evidence_role")], "exploratory")
+            self.assertTrue(m[ch.index("analysis_id")].startswith("agg-1.1.0-"))
+
+    def test_does_not_pool_concurrencies(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_known_grid(d)
+            aggregate.build(
+                d, None, os.path.join(d, "comparisons.csv"), None, None, seed=1,
+            )
+            ch, crows = read_csv(os.path.join(d, "comparisons.csv"))
+            pops = {r[ch.index("population")] for r in crows}
+            self.assertTrue(any("concurrency=1" in p for p in pops))
+            self.assertTrue(any("concurrency=8" in p for p in pops))
+            by_key = {
+                (r[ch.index("contrast")], "8" if "concurrency=8" in r[ch.index("population")] else "1"): r
+                for r in crows
+            }
+            c1 = by_key[("melis_minus_direct", "1")]
+            c8 = by_key[("melis_minus_direct", "8")]
+            self.assertAlmostEqual(float(c1[ch.index("estimate")]), 3.0, places=6)
+            self.assertAlmostEqual(float(c8[ch.index("estimate")]), 9.0, places=6)
+            self.assertEqual(c1[ch.index("n")], "1")
+            self.assertEqual(c8[ch.index("n")], "1")
+
+    def test_incomplete_pairing_is_excluded(self):
+        with tempfile.TemporaryDirectory() as d:
+            generate(d)
+            # Drop litellm from block index 0 only. The other two blocks stay paired.
+            path = os.path.join(d, "requests.csv")
+            h, rows = read_csv(path)
+            igw, iblock = h.index("gateway"), h.index("block_id")
+            # block ids: keep rows that are not (litellm AND the first block).
+            first_block = sorted({r[iblock] for r in rows})[0]
+            kept = [r for r in rows if not (r[igw] == "litellm" and r[iblock] == first_block)]
+            with open(path, "w", newline="", encoding="utf-8") as fh:
+                wr = csv.writer(fh)
+                wr.writerow(h)
+                wr.writerows(kept)
+            report = aggregate.pairing_report(aggregate._dict_rows(h, kept))
+            self.assertEqual(len(report["incomplete"]), 1)
+            self.assertEqual(len(report["complete"]), 2)
+            aggregate.build(
+                d, None, os.path.join(d, "comparisons.kept.csv"), None, None, seed=1,
+            )
+            ch, crows = read_csv(os.path.join(d, "comparisons.kept.csv"))
+            melis = [r for r in crows if r[ch.index("contrast")] == "melis_minus_direct"]
+            self.assertEqual(len(melis), 1)
+            self.assertEqual(melis[0][ch.index("n")], "2")
+            v = validate.validate_dir(d)
+            self.assertFalse(v["ok"])
+            self.assertTrue(any(e.startswith("pairing:") for e in v["errors"]), v["errors"])
+
+    def test_duplicate_request_id_across_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            generate(d)
+            path = os.path.join(d, "requests.csv")
+            h, rows = read_csv(path)
+            rows.append(list(rows[0]))
+            # Same request_id, different run, still a duplicated id.
+            rows[-1][h.index("run_id")] = "run-other"
+            with open(path, "w", newline="", encoding="utf-8") as fh:
+                wr = csv.writer(fh)
+                wr.writerow(h)
+                wr.writerows(rows)
+            report = validate.validate_dir(d)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any("duplicated" in e for e in report["errors"]), report["errors"])
+
+    def test_smoke_rows_rejected_in_final_directory(self):
+        with tempfile.TemporaryDirectory() as parent:
+            d = os.path.join(parent, "final")
+            generate(d)
+            report = validate.validate_dir(d)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any("does not belong in 'final'" in e for e in report["errors"]),
+                            report["errors"])
+
+    def test_warmup_does_not_enter_the_contrast(self):
+        with tempfile.TemporaryDirectory() as d:
+            generate(d)
+            path = os.path.join(d, "requests.csv")
+            h, rows = read_csv(path)
+            extra = list(rows[0])
+            extra[h.index("request_id")] = "req-warmup-only"
+            extra[h.index("window")] = "warmup"
+            extra[h.index("latency_ms")] = "100000.0"
+            extra[h.index("gateway")] = "direct"
+            with open(path, "a", newline="", encoding="utf-8") as fh:
+                csv.writer(fh).writerow(extra)
+            aggregate.build(
+                d, None, os.path.join(d, "comparisons.csv"), None, None, seed=1,
+            )
+            ch, crows = read_csv(os.path.join(d, "comparisons.csv"))
+            m = [r for r in crows if r[ch.index("contrast")] == "melis_minus_direct"][0]
+            self.assertAlmostEqual(float(m[ch.index("estimate")]), 3.0, places=6)
 
     def test_aggregate_refuses_to_overwrite_raw(self):
         with tempfile.TemporaryDirectory() as d:
@@ -214,6 +316,47 @@ class TestAggregate(unittest.TestCase):
                     "--data-dir", d,
                     "--runs-out", os.path.join(d, "requests.csv"),  # == raw file
                 ])
+
+    def test_aggregate_refuses_to_replace_an_existing_analysis(self):
+        with tempfile.TemporaryDirectory() as d:
+            generate(d)
+            out = os.path.join(d, "comparisons.v1.csv")
+            aggregate.main(["--data-dir", d, "--comparisons-out", out, "--seed", "1"])
+            with self.assertRaises(SystemExit):
+                aggregate.main(["--data-dir", d, "--comparisons-out", out, "--seed", "1"])
+
+
+def _write_known_grid(out_dir):
+    """One block, two concurrencies, three gateways, fixed latencies.
+
+    c=1 overhead is +3 ms. c=8 overhead is +9 ms. Pooling them would not
+    equal either value. Synthetic only.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    exp = ids.experiment_id("synthetic-grid", "1.0", "1.1.0")
+    block = ids.block_id(exp, "smoke", 0)
+    case = ids.case_id(exp, "probe", 0)
+    w = CsvTableWriter("requests", os.path.join(out_dir, "requests.csv"))
+    lat = {
+        (1, "direct"): 10.0, (1, "melis"): 13.0, (1, "litellm"): 16.0,
+        (8, "direct"): 20.0, (8, "melis"): 29.0, (8, "litellm"): 40.0,
+    }
+    for conc in (1, 8):
+        for gw in ("direct", "melis", "litellm"):
+            pair = ids.pair_id(block, case, "rq1_fixed_load", False, conc)
+            run = ids.run_id(exp, "smoke", gw, block, "rq1_fixed_load", False, conc)
+            for i in range(4):
+                w.write_row({
+                    "experiment_id": exp, "phase": "smoke", "run_id": run,
+                    "block_id": block, "pair_id": pair, "case_id": case,
+                    "request_id": ids.request_id(run, pair, i),
+                    "gateway": gw, "scenario": "rq1_fixed_load",
+                    "backend_profile": "deterministic", "streaming": False,
+                    "concurrency": conc, "policy": "none", "feature_profile": "minimal",
+                    "window": "measured", "started_at_utc": "2026-11-05T00:00:00.000Z",
+                    "latency_ms": lat[(conc, gw)], "status": "ok", "http_status": 200,
+                    "timeout": False, "completion_valid": True,
+                })
 
 
 if __name__ == "__main__":

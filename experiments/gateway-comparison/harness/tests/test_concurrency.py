@@ -84,7 +84,15 @@ class TestConcurrencyOverlap(unittest.TestCase):
             peak8 = _peak(base)
             self.assertGreater(peak8, 1, f"c=8 must overlap at the backend (peak={peak8})")
             self.assertLessEqual(peak8, 8, f"peak cannot exceed worker count (peak={peak8})")
-            print(f"OVERLAP: peak_inflight c=1 -> {peak1}, c=8 -> {peak8}")
+            # The peak belongs to the cell that just ran. After reset, c=1 must
+            # not inherit the c=8 peak. Configured concurrency and observed peak
+            # stay different measures: this does not require peak8 == 8.
+            _reset(base)
+            conc_load.run_cell(base, "mock-model", "json", concurrency=1,
+                               n_requests=3, max_tokens=16, timeout=30)
+            peak_after = _peak(base)
+            self.assertEqual(peak_after, 1, f"reset must attribute the next cell (peak={peak_after})")
+            print(f"OVERLAP: peak_inflight c=1 -> {peak1}, c=8 -> {peak8}, after reset c=1 -> {peak_after}")
         finally:
             srv.shutdown()
             srv.server_close()
@@ -99,6 +107,9 @@ class TestConcurrencyOverlap(unittest.TestCase):
             oks = sum(1 for r in results if r["status"] == "ok")
             self.assertEqual(oks, 20, "all deterministic requests should be ok")
             self.assertGreater(wall, 0)
+            self.assertIsNone(conc_load.execution_backend_calls(20, 10))
+            self.assertEqual(conc_load.execution_backend_calls(20, 28), 8)
+            self.assertIsNone(conc_load.execution_backend_calls(None, 4))
         finally:
             srv.shutdown()
             srv.server_close()

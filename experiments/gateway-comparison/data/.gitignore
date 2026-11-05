@@ -1,22 +1,29 @@
-# Keep the phase directory structure and synthetic examples; exclude real data.
-#
-# Real raw data (pilot/final), logs, manifests tied to real runs, and large
-# result blobs stay LOCAL and are not pushed. Synthetic example CSVs under
-# examples/ are explicitly allowed (they test the scripts, not evidence).
+# Keep the directory structure, READMEs, and the SYNTHETIC examples; exclude all
+# real raw data. Real smoke/pilot/final data (and any pilot* / smoke* variant
+# dirs), logs, run manifests, and large result blobs stay LOCAL and are not pushed.
+# Synthetic example CSVs under examples/ are explicitly allowed (they test the
+# scripts, not evidence).
 
-# Ignore everything by default inside phase dirs...
+# Ignore everything under data/ by default...
+*
+
+# ...but keep these versioned items:
+!.gitignore
+!README.md
+!smoke/
+!pilot/
+!final/
+!examples/
+!examples/**
+# keep phase-dir placeholders but nothing else inside them
 smoke/*
 pilot/*
 final/*
-
-# ...but keep the directories and their READMEs/placeholders.
 !smoke/.gitkeep
 !pilot/.gitkeep
 !final/.gitkeep
 
-# Raw/large artifacts never pushed, wherever they appear here.
+# Never push raw/large artifacts, wherever they appear here.
 *.jsonl
 *.log
 *.ndjson
-
-# The synthetic examples directory IS versioned (handled outside this ignore).

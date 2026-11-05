@@ -1,6 +1,6 @@
 {
-  "data_dir": "/home/fabio/organizacao/repository/melis-exp/experiments/gateway-comparison/data/examples",
-  "schema_version": "1.0.0",
+  "data_dir": "experiments/gateway-comparison/data/examples",
+  "schema_version": "1.1.0",
   "tables": {
     "requests": {
       "present": true,
@@ -33,6 +33,10 @@
     "comparisons": {
       "present": true,
       "rows": 2
+    },
+    "execution_facts": {
+      "present": false,
+      "rows": 0
     }
   },
   "errors": [],
