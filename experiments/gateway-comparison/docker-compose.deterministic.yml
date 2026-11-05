@@ -52,7 +52,7 @@ services:
           memory: "256M"
 
   litellm:
-    image: ghcr.io/berriai/litellm@sha256:d781cd3d736b1bd34f9964ebc491a9f91fb8fa140f35d4e6b4176c19dd2b306b
+    image: ghcr.io/berriai/litellm@sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76
     command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
     volumes:
       - ./litellm/config.deterministic.yaml:/app/config.yaml:ro
@@ -65,4 +65,4 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: "512M"
+          memory: "2G"   # LiteLLM v1.83.10 OOMs under 512M; raised + documented (does not favor Melis)

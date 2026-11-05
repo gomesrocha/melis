@@ -20,7 +20,7 @@ any gateway win.
 
 | Component | Reference |
 |-----------|-----------|
-| LiteLLM | `ghcr.io/berriai/litellm@sha256:d781cd3d736b1bd34f9964ebc491a9f91fb8fa140f35d4e6b4176c19dd2b306b` (tag `main-v1.65.0-stable`) |
+| LiteLLM | `ghcr.io/berriai/litellm@sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76` (tag `main-v1.83.10-stable`) — see "LiteLLM pin verification" below |
 | Deterministic backend | `python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30` (tag `python:3.12-slim`, runs stdlib-only `mock_openai.py`) |
 | Redis (cache paths only) | `redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499` (tag `redis:7-alpine`) |
 
@@ -92,6 +92,38 @@ must not be mixed into the basic-overhead comparison.
   Melis-only configs, not claimed as "absent" in LiteLLM merely because off by
   default. Document any LiteLLM plugin/enterprise requirement and edition/license
   restrictions when scoping those comparisons.
+
+### LiteLLM pin verification (version / date / origin / justification)
+
+Verified **2026-11-05** before any pilot or result, per protocol
+("conferir o pin antes da coleta; decidir a versão antes dos resultados, não
+após observar quem vence").
+
+- **Selected pin**: `ghcr.io/berriai/litellm:main-v1.83.10-stable`
+  → digest `sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76`
+  (resolved and pulled locally; digest confirmed).
+- **Origin**: official `ghcr.io/berriai/litellm` registry; `*-stable` release line.
+- **Why changed from the previous pin**: the earlier pin
+  `main-v1.65.0-stable` (digest `…d781cd3d…`) is **stale** as of the verification
+  date — LiteLLM's current stable line is v1.83.x (dev builds at ~v1.109.x), and
+  LiteLLM now actively supports only the four most recent stable minor lines, so
+  v1.65.0 is outside the active-support window. Presenting v1.65.0 as the current
+  state would be inaccurate. The previous digest still resolves and is recorded
+  here for history; it is not used.
+- **Why v1.83.10-stable specifically**: it is the vendor-recommended stable
+  release that fixes CVE-2026-42208 (a SQL-injection in the proxy API-key path
+  affecting v1.81.16–v1.83.6). It is a current, actively-supported stable chosen
+  for recency and security, **not** for any performance characteristic — the
+  version was fixed before running comparisons, and not selected by observing
+  which gateway wins.
+- **Reproduce**: `scripts/pin_images.sh` re-resolves the digest from the tag; if
+  the vendor retags, update the compose files and record the new digest here with
+  a new manifest. Do not silently mix results across LiteLLM versions.
+
+> Decision flagged for the user: this block updates the LiteLLM pin to a current
+> stable **before** any results. If you prefer a different stable line (e.g. the
+> latest v1.x-stable at collection time), say so before the final run; the pin
+> must be frozen in the final manifest either way.
 
 ## Instrumentation (independent of gateway internals)
 

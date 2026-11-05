@@ -36,7 +36,7 @@ cat > "$META" <<JSON
   "melis_commit": "$(git -C ../.. rev-parse HEAD)",
   "melis_dirty": $(if [[ -n "$(git -C ../.. status --porcelain)" ]]; then echo true; else echo false; fi),
   "profile": "$PROFILE",
-  "litellm_image": "ghcr.io/berriai/litellm@sha256:d781cd3d736b1bd34f9964ebc491a9f91fb8fa140f35d4e6b4176c19dd2b306b",
+  "litellm_image": "ghcr.io/berriai/litellm@sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76",
   "backend_image": "python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30",
   "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

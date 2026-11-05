@@ -6,8 +6,11 @@ server:
   port: 7071
 
 redis:
-  # Not used in the minimal profile (no cache / no redis circuit breaker backend).
-  cluster_urls: []
+  # Not used in the minimal profile (circuit_breaker backend is "local"; no cache).
+  # A URL is required by config validation; this loopback is never dialed for a
+  # request (only a harmless background reachability retry logs a warning).
+  cluster_urls:
+    - "redis://127.0.0.1:6379"
   required_for_readiness: false
 
 auth:
@@ -18,9 +21,11 @@ observability:
   enabled: false
   service_name: "melis-exp"
 
-# Global compactor defaults are irrelevant: routes use strategy "none" (no compaction).
+# Global compactor defaults are irrelevant: routes use strategy "none" (no
+# compaction). token_threshold must be in [512, 128000]; set to the max so it
+# never triggers, and strategy "none" disables compaction regardless.
 compactor:
-  token_threshold: 1000000000     # effectively never compacts
+  token_threshold: 128000
   strategy: "none"
 
 circuit_breaker:

@@ -4,7 +4,7 @@
 # final runs and update the compose files if a digest changed.
 set -euo pipefail
 for ref in \
-  "ghcr.io/berriai/litellm:main-v1.65.0-stable" \
+  "ghcr.io/berriai/litellm:main-v1.83.10-stable" \
   "python:3.12-slim" \
   "redis:7-alpine"; do
   echo "== $ref =="

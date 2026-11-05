@@ -35,6 +35,31 @@ EMBED_DIM = int(os.environ.get("MOCK_EMBED_DIM", "8"))
 _counts = {"chat": 0, "chat_stream": 0, "embeddings": 0}
 _lock = threading.Lock()
 
+# Last-received chat payloads (bounded), to VERIFY that each gateway forwards an
+# equivalent payload/parameters. This is measurement-harness bookkeeping, not part
+# of the system under test. Only chat requests are recorded; secrets are never sent
+# to this mock (dummy keys only), and Authorization headers are NOT stored.
+_MAX_SEEN = 50
+_seen = []  # list of {"path","model","stream","params":{...},"n_messages"}
+
+
+def _record_seen(path, req):
+    # Capture only the comparison-relevant fields (model + generation params +
+    # whether streaming + message count). Never store full message content here.
+    params = {k: req.get(k) for k in ("temperature", "max_tokens", "top_p", "stream")
+              if k in req}
+    entry = {
+        "path": path,
+        "model": req.get("model"),
+        "stream": bool(req.get("stream", False)),
+        "params": params,
+        "n_messages": len(req.get("messages", []) or []),
+    }
+    with _lock:
+        _seen.append(entry)
+        if len(_seen) > _MAX_SEEN:
+            del _seen[0:len(_seen) - _MAX_SEEN]
+
 
 def _hash(s: str) -> int:
     return int(hashlib.sha256(s.encode("utf-8")).hexdigest()[:8], 16)
@@ -72,6 +97,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/__count":
             with _lock:
                 return self._json(200, dict(_counts))
+        if self.path == "/__seen":
+            with _lock:
+                return self._json(200, {"seen": list(_seen)})
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
@@ -86,6 +114,7 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 for k in _counts:
                     _counts[k] = 0
+                _seen.clear()
             return self._json(200, {"status": "reset"})
 
         if LATENCY_MS:
@@ -113,6 +142,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/chat/completions":
             model = req.get("model", "mock-model")
             messages = req.get("messages", [])
+            _record_seen(self.path, req)
             content = _deterministic_reply(model, messages)
             stream = bool(req.get("stream", False))
             if stream:
