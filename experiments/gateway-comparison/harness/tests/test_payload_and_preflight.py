@@ -67,10 +67,12 @@ class TestHostPressure(unittest.TestCase):
         self.assertEqual(host_pressure.inadequate(quiet), "")
 
     def test_swap_activity_or_low_memory_refuses(self):
-        moving = {"mem_available_bytes": 8 * 1024 ** 3, "pswpin": 3, "pswpout": 0}
+        moving = {"mem_available_bytes": 8 * 1024 ** 3, "pswpin": 5000, "pswpout": 0}
         low = {"mem_available_bytes": 1024, "pswpin": 0, "pswpout": 0}
+        minor = {"mem_available_bytes": 13 * 1024 ** 3, "pswpin": 7, "pswpout": 0}
         self.assertIn("swap activity", host_pressure.inadequate(moving))
         self.assertIn("MemAvailable", host_pressure.inadequate(low))
+        self.assertEqual(host_pressure.inadequate(minor), "")
 
 
 if __name__ == "__main__":

@@ -62,18 +62,26 @@ def pressure_delta(before: dict, after: dict) -> dict:
     }
 
 
+# A handful of pages on a host whose swap is already full is not thrashing.
+# 1024 pages is 4 MiB during the sample. Below that, with memory still
+# available, the run records the counters and continues.
+RELEVANT_SWAP_PAGES = 1024
+
+
 def inadequate(delta: dict, min_available_bytes: int = 4 * 1024 ** 3) -> str:
     """Return a reason to refuse a long pilot, or an empty string.
 
-    Swap that is merely full, with no pages moving and memory still available,
-    is recorded but does not by itself refuse the run.
+    Swap that is merely full is not thrashing. A few pages moving while
+    several gigabytes stay available is recorded, not a refusal. Low
+    available memory refuses on its own. Large swap movement refuses too.
     """
     available = delta.get("mem_available_bytes")
     if available is None:
         return "MemAvailable unreadable"
     if available < min_available_bytes:
         return f"MemAvailable {available} bytes is below {min_available_bytes}"
-    if (delta.get("pswpin") or 0) > 0 or (delta.get("pswpout") or 0) > 0:
+    moved = (delta.get("pswpin") or 0) + (delta.get("pswpout") or 0)
+    if moved >= RELEVANT_SWAP_PAGES:
         return (
             f"swap activity during the sample (in={delta.get('pswpin')}, "
             f"out={delta.get('pswpout')})"
