@@ -103,6 +103,34 @@ class TestConcurrencyOverlap(unittest.TestCase):
             srv.shutdown()
             srv.server_close()
 
+    def test_backend_does_not_stall_json_on_reused_keepalive(self):
+        """Regression guard for the JSON/SSE asymmetry artifact.
+
+        The mock backend writes JSON headers then body as separate writes; without
+        TCP_NODELAY on the server connection, Nagle holds the small body segment on
+        a REUSED keep-alive connection until the client's delayed-ACK (~40ms),
+        inflating JSON completion time. The backend's setup() sets TCP_NODELAY to
+        prevent this. Here we drive several JSON requests on ONE reused connection
+        via the raw-socket probe and assert the median completion is well under the
+        ~40ms delayed-ACK floor. This catches a regression that drops NODELAY.
+        """
+        import json_sse_probe as probe
+        srv, base = _start_backend(hold_ms=0)
+        try:
+            agg = probe.run(base, "mock-model", n=15, mode="json", nodelay=False, reuse=True)
+            done = agg["t_done_med"]
+            self.assertIsNotNone(done)
+            # Delayed-ACK stalls are ~40ms; a healthy reused JSON path is a few ms.
+            self.assertLess(
+                done, 20.0,
+                f"JSON reused-keepalive completion {done}ms suggests a Nagle/delayed-ACK "
+                f"stall — the backend must keep TCP_NODELAY (see setup())",
+            )
+            print(f"NO-STALL: reused JSON completion median = {done}ms")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

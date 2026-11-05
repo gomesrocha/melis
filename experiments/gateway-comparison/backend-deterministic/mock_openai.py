@@ -23,6 +23,7 @@ Env:
 import hashlib
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -100,6 +101,20 @@ def _embedding(text: str):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        # Disable Nagle on the server connection. A keep-alive JSON response sends
+        # headers (flushed by end_headers()) then the body as a SEPARATE write; on
+        # a reused connection Nagle holds that small body segment until the client's
+        # delayed-ACK (~40ms), inflating JSON COMPLETION time on reused connections
+        # ONLY. This is a backend-framing artifact of this mock, not a property of
+        # Melis/LiteLLM (which merely keep-alive to this backend). TCP_NODELAY makes
+        # the backend emit the body promptly. See harness/json_sse_probe.py.
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
 
     def log_message(self, *args):  # silence default logging
         pass
