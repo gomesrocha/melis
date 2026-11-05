@@ -2263,6 +2263,107 @@ routes:
         let route = resolver.resolve_route("/v1/chat/agent", "POST").unwrap();
         assert_eq!(route.provider.as_deref(), Some("openai"));
     }
+
+    /// Diagnostic for the hot-reload inotify question: does dropping a
+    /// `RouteConfigManager` RELEASE its inotify watcher, or is the instance
+    /// leaked for the process lifetime?
+    ///
+    /// Counts this process's inotify instances (via /proc/self/fd) before, while
+    /// holding N managers, and after dropping them. It does NOT raise any OS
+    /// limit and makes no assertion that would fail under ambient saturation
+    /// (it early-returns if there isn't headroom to even create the managers).
+    ///
+    /// Finding it documents: `RouteConfigManager::new` spawns a detached task that
+    /// owns the `notify` watcher (and the channel sender), so `rx.recv()` never
+    /// observes a sender-drop while the task lives, and dropping the manager's
+    /// `JoinHandle` does not abort the task. Hence each real-watcher manager holds
+    /// one inotify instance until the PROCESS exits. With only the two hot-reload
+    /// tests using a real watcher this is ~2 instances — not the saturation cause
+    /// (ambient usage is), but a genuine non-release to note for test-infra.
+    ///
+    /// Opt-in: set MELIS_INOTIFY_DIAG=1.
+    #[tokio::test]
+    #[ignore = "diagnostic; set MELIS_INOTIFY_DIAG=1"]
+    async fn diag_watcher_release_on_drop() {
+        if std::env::var("MELIS_INOTIFY_DIAG").as_deref() != Ok("1") {
+            eprintln!("INOTIFY-DIAG: MELIS_INOTIFY_DIAG != 1; skipping");
+            return;
+        }
+        fn inotify_instances() -> usize {
+            // Count fds of this process that point at an inotify anon inode.
+            let mut n = 0;
+            if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+                for e in entries.flatten() {
+                    if let Ok(target) = std::fs::read_link(e.path()) {
+                        if target.to_string_lossy().contains("inotify") {
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            n
+        }
+        let ambient = std::fs::read_to_string("/proc/sys/fs/inotify/max_user_instances")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "n/a".into());
+        let base = inotify_instances();
+        eprintln!("INOTIFY-DIAG: max_user_instances={ambient} process_instances_base={base}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("routes.yaml");
+        std::fs::write(&config_path, sample_yaml()).unwrap();
+
+        // Need headroom to create 3 watchers. If ambient usage leaves too little,
+        // declare BLOCKED instead of crashing (creation panics on OS limit).
+        let in_use_global = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("find /proc/*/fd -lname 'anon_inode:inotify' 2>/dev/null | wc -l")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(usize::MAX);
+        let limit = ambient.parse::<usize>().unwrap_or(0);
+        eprintln!("INOTIFY-DIAG: global inotify in_use={in_use_global} / limit={limit}");
+        if limit == 0 || in_use_global + 5 >= limit {
+            eprintln!(
+                "INOTIFY-DIAG: BLOCKED — insufficient inotify headroom (in_use={in_use_global}, \
+                 limit={limit}). Re-run on a host with headroom; not raising the limit."
+            );
+            return;
+        }
+
+        // Create and then drop 3 managers; measure instances held while alive and
+        // after drop.
+        let during;
+        {
+            let m1 = RouteConfigManager::new(config_path.clone());
+            let m2 = RouteConfigManager::new(config_path.clone());
+            let m3 = RouteConfigManager::new(config_path.clone());
+            during = inotify_instances();
+            eprintln!("INOTIFY-DIAG: instances while holding 3 managers = {during}");
+            drop(m1);
+            drop(m2);
+            drop(m3);
+        }
+        // Give any abort a chance (there is none today) to settle.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let after = inotify_instances();
+        eprintln!(
+            "INOTIFY-DIAG: instances after dropping all managers = {after} (base was {base})"
+        );
+        eprintln!(
+            "INOTIFY-DIAG: delta_during={} delta_after={} => {}",
+            during as i64 - base as i64,
+            after as i64 - base as i64,
+            if after > base {
+                "WATCHERS NOT RELEASED on drop (detached task keeps the inotify instance for the process lifetime)"
+            } else {
+                "watchers released on drop"
+            }
+        );
+    }
 }
 
 // ─── Property-Based Tests (proptest) ──────────────────────────────────────────

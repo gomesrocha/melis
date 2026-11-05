@@ -1952,4 +1952,111 @@ mod redis_it {
         );
         cleanup(&direct, &p).await;
     }
+
+    // ── Diagnostic: classify SAFETY vs PROGRESS for the concurrent probe race ──
+    //
+    // The two `single_probe_concurrent_*` tests use `race()`, which PANICS on any
+    // `DenyUnverified`. Under host overload a Redis command can exceed the 1s
+    // `command_timeout_secs`, so `admit` returns `DenyUnverified` — a CONSERVATIVE
+    // deny, not a probe. That is a PROGRESS/liveness shortfall (no probe could be
+    // verified in time), NOT a SAFETY violation (it never admits an extra probe).
+    //
+    // This diagnostic runs the same burst-at-half-open scenario but COUNTS each
+    // admission class instead of panicking, records Redis health/latency and host
+    // load, and asserts ONLY the safety property (<=1 probe admitted). It does NOT
+    // change any timeout. It never treats a lack of progress as success: it fails
+    // loudly only if safety is violated, and otherwise REPORTS whether progress
+    // was achieved so the environment can be judged separately.
+    //
+    // Opt-in: needs a live Redis at 127.0.0.1:6379 AND MELIS_CB_DIAG=1.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "diagnostic; set MELIS_CB_DIAG=1 and provide live Redis at 127.0.0.1:6379"]
+    async fn diag_single_probe_concurrency_classified() {
+        if std::env::var("MELIS_CB_DIAG").as_deref() != Ok("1") {
+            eprintln!("CB-DIAG: MELIS_CB_DIAG != 1; skipping");
+            return;
+        }
+        let load1 = std::fs::read_to_string("/proc/loadavg")
+            .ok()
+            .and_then(|s| s.split_whitespace().next().map(str::to_string))
+            .unwrap_or_else(|| "n/a".into());
+        let sr = shared(REDIS).await;
+        // Measure a single Redis round-trip latency for context (not a gate).
+        let t = std::time::Instant::now();
+        let healthy = sr.is_healthy().await;
+        let ping_ms = t.elapsed().as_secs_f64() * 1000.0;
+        eprintln!(
+            "CB-DIAG: host load1={load1} redis_healthy={healthy} redis_ping_ms={ping_ms:.1} \
+             command_timeout_secs=1 (unchanged)"
+        );
+
+        let p = pid("diag");
+        let setup = breaker(&sr, cfg(2, 150), &metrics());
+        open_then_expire(&setup, &p, 2).await;
+
+        // Long local cache so a cached grant can't mask multiple probes.
+        let cb = breaker(&sr, cfg(2, 5_000), &metrics());
+        let lease = Duration::from_secs(5);
+
+        // Burst at the instant half-open starts. Classify every outcome.
+        let n = 32usize;
+        let mut tasks = Vec::new();
+        for _ in 0..n {
+            let cb = cb.clone();
+            let p = p.clone();
+            tasks.push(tokio::spawn(async move {
+                let t0 = std::time::Instant::now();
+                let a = cb.admit(&p, lease).await;
+                (a, t0.elapsed().as_secs_f64() * 1000.0)
+            }));
+        }
+        let (mut probes, mut allows, mut denies, mut unverified) = (0usize, 0, 0, 0);
+        let mut max_admit_ms = 0.0f64;
+        for t in tasks {
+            let (a, ms) = t.await.unwrap();
+            max_admit_ms = max_admit_ms.max(ms);
+            match a {
+                Admission::Probe(_) => probes += 1,
+                Admission::Allow => allows += 1,
+                Admission::Deny => denies += 1,
+                Admission::DenyUnverified => unverified += 1,
+            }
+        }
+        cleanup(&sr, &p).await;
+
+        eprintln!(
+            "CB-DIAG: n={n} probes={probes} allows={allows} denies={denies} \
+             deny_unverified={unverified} max_admit_ms={max_admit_ms:.1}"
+        );
+        eprintln!(
+            "CB-DIAG: provider-reaching admissions (probe+allow) = {}",
+            probes + allows
+        );
+
+        // SAFETY (exclusivity): at most ONE probe may be admitted, regardless of
+        // timeouts. A conservative DenyUnverified is SAFE and allowed here.
+        assert!(
+            probes <= 1,
+            "SAFETY VIOLATION: {probes} probes admitted (must be <= 1)"
+        );
+        // A cached 'available' must never let plain Allows through during half-open.
+        assert_eq!(
+            allows, 0,
+            "SAFETY: no Allow may slip through at half-open start (got {allows})"
+        );
+
+        // PROGRESS (liveness) is reported, NOT asserted here: under a healthy,
+        // unloaded host we expect exactly one probe; under overload we may see
+        // deny_unverified instead. The caller judges progress against the logged
+        // Redis latency and host load — we never treat 'no progress' as success.
+        if probes == 1 {
+            eprintln!("CB-DIAG: PROGRESS ok (exactly one probe ran). SAFETY ok.");
+        } else {
+            eprintln!(
+                "CB-DIAG: NO PROGRESS this run (0 probes; {unverified} deny_unverified). \
+                 SAFETY still ok. Likely environment: Redis command exceeded the 1s timeout \
+                 under load — re-run on an adequate host."
+            );
+        }
+    }
 }
