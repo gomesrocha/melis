@@ -3070,6 +3070,10 @@ mod cache_real_services_smoke {
         chat_model: String,
         ttl_secs: u64,
         scope: String,
+        /// When set, the EMBEDDINGS provider is built against this (dead) URL while
+        /// the chat provider keeps using the real `ollama_url` — isolating an
+        /// embeddings outage from the chat path.
+        embed_down_url: Option<String>,
     }
 
     impl Harness {
@@ -3099,6 +3103,7 @@ mod cache_real_services_smoke {
                 chat_model: env_or("MELIS_SMOKE_CHAT_MODEL", "llama3.2"),
                 ttl_secs,
                 scope: scope.to_string(),
+                embed_down_url: None,
             })
         }
 
@@ -3140,7 +3145,23 @@ mod cache_real_services_smoke {
                 outbound_guardrail: Arc::new(crate::semantic_cache::NoopOutboundGuardrail),
                 guardrails,
                 embeddings: Arc::new(crate::embeddings::OllamaEmbeddingProvider::new(
-                    providers,
+                    // Embeddings provider uses its OWN provider list. When
+                    // `embed_down_url` is set, it points at a dead endpoint so the
+                    // embeddings service is unavailable WITHOUT affecting the chat
+                    // provider above (which keeps the real `ollama_url`).
+                    match &self.embed_down_url {
+                        Some(dead) => providers
+                            .iter()
+                            .cloned()
+                            .map(|mut p| {
+                                if p.provider_type == "ollama" {
+                                    p.base_url = dead.clone();
+                                }
+                                p
+                            })
+                            .collect(),
+                        None => providers,
+                    },
                     Arc::new(ReqwestLlmClient::new()),
                 )),
             }
@@ -3319,6 +3340,7 @@ mod cache_real_services_smoke {
             chat_model: env_or("MELIS_SMOKE_CHAT_MODEL", "llama3.2"),
             ttl_secs: 3600,
             scope: "per_identity".to_string(),
+            embed_down_url: None,
         };
         let convo = format!(
             "smoke degrade probe {}",
@@ -3340,5 +3362,57 @@ mod cache_real_services_smoke {
             "with Redis down the cache degrades (fail-open): every request hits the provider"
         );
         eprintln!("SMOKE cache: degradation (Redis down) OK");
+    }
+
+    /// Degradation when the EMBEDDINGS service is unavailable, ISOLATED from the
+    /// chat provider. Redis is real and healthy; the chat provider is the real
+    /// Ollama; only the embeddings backend is pointed at a dead port. This proves
+    /// the requirement that a cache that cannot embed fails open AND the chat path
+    /// keeps working BECAUSE it does not depend on the embeddings service — which
+    /// downing the single shared Ollama (used by both) could not establish.
+    ///
+    /// Provider-call avoidance is not claimed here (there is nothing to reuse when
+    /// embeddings are down); we assert fail-open success + that every request
+    /// reaches the provider (no spurious hit from a cache that never stored).
+    #[tokio::test]
+    #[ignore = "opt-in real-services smoke test; set MELIS_CACHE_SMOKE=1"]
+    async fn cache_real_services_degrades_when_embeddings_down() {
+        if !enabled() {
+            return;
+        }
+        // Real, healthy Redis + real chat provider; embeddings pointed at a dead port.
+        let mut h = match Harness::connect(3600, "per_identity").await {
+            Some(h) => h,
+            None => return,
+        };
+        // Redirect ONLY embeddings to a dead endpoint, leaving chat on real Ollama.
+        let dead_embed_url = "http://127.0.0.1:59995".to_string();
+        h.embed_down_url = Some(dead_embed_url);
+
+        let convo = format!(
+            "smoke embeddings-down probe {}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        h.cleanup(&convo).await;
+
+        // Two identical requests: embeddings down => no embedding => cache can neither
+        // look up nor store => both are provider calls (fail-open), chat still works.
+        assert_eq!(
+            h.chat("sk-alice", &convo).await,
+            StatusCode::OK,
+            "chat must stay functional when ONLY embeddings are down (fail-open)"
+        );
+        assert_eq!(h.chat("sk-alice", &convo).await, StatusCode::OK);
+        assert_eq!(
+            h.calls(),
+            2,
+            "embeddings down: cache degrades (no embed => no hit/store); every request \
+             reaches the real chat provider, which does not depend on embeddings"
+        );
+        h.cleanup(&convo).await;
+        eprintln!("SMOKE cache: degradation (embeddings down, isolated from chat) OK");
     }
 }
