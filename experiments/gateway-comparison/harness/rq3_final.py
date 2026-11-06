@@ -13,6 +13,7 @@ import os
 import random
 import subprocess
 import sys
+import tempfile
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -95,8 +96,11 @@ def confirm_runtime(protocol):
         ("gwcomp-rq3-litellm", "/app/config.yaml", "litellm_config"),
     )
     for container, path, key in mounted:
-        payload = subprocess.check_output(["docker", "exec", container, "cat", path])
-        digest = hashlib.sha256(payload).hexdigest()
+        fd, tmp = tempfile.mkstemp()
+        os.close(fd)
+        subprocess.check_call(["docker", "cp", f"{container}:{path}", tmp], stdout=subprocess.DEVNULL)
+        digest = hashlib.sha256(open(tmp, "rb").read()).hexdigest()
+        os.remove(tmp)
         if digest != protocol["frozen_sha256"][key]:
             raise SystemExit(f"refusing: {container}:{path} is not the frozen file")
     for port in (17170, 17172):
