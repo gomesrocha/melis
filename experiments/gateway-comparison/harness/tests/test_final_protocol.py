@@ -27,6 +27,7 @@ import aggregate  # noqa: E402
 import block_rules  # noqa: E402
 import conc_load  # noqa: E402
 import final_protocol  # noqa: E402
+import precision  # noqa: E402
 import ids  # noqa: E402
 import run_comparative_pilot  # noqa: E402
 from csv_writer import CsvTableWriter  # noqa: E402
@@ -35,6 +36,7 @@ from validate import validate_dir  # noqa: E402
 
 PROTOCOL = os.path.join(ROOT, "protocol", "rq1-final-candidate.json")
 AMENDMENT = os.path.join(ROOT, "protocol", "rq1-final-amendment-1.1.0.json")
+AUTHORIZED = os.path.join(ROOT, "protocol", "rq1-final-authorized-1.2.0.json")
 GIB = 1024 ** 3
 GATES = ["direct", "melis", "litellm"]
 
@@ -147,11 +149,21 @@ class TestProtocolFile(unittest.TestCase):
 
     def test_amendment_withdraws_the_load_threshold_and_keeps_the_old_file(self):
         amended, digest = final_protocol.load(AMENDMENT)
-        final_protocol.validate_for_start(amended)
+        final_protocol.validate_amendment(amended)
+        with self.assertRaises(final_protocol.ProtocolError):
+            final_protocol.validate_for_start(amended)
         self.assertEqual(amended, final_protocol.amended_document())
         with open(AMENDMENT + ".sha256", encoding="utf-8") as fh:
             self.assertEqual(digest, fh.read().split()[0])
         self.assertEqual(amended["amends_sha256"], final_protocol.PRESERVED_SHA256)
+        self.assertFalse(amended["execution_authorized"])
+        authorized, authorized_digest = final_protocol.load(AUTHORIZED)
+        final_protocol.validate_for_start(authorized)
+        self.assertEqual(authorized, final_protocol.authorized_document())
+        self.assertTrue(authorized["execution_authorized"])
+        self.assertEqual(authorized["authorizes_sha256"], final_protocol.AMENDMENT_SHA256)
+        with open(AUTHORIZED + ".sha256", encoding="utf-8") as fh:
+            self.assertEqual(authorized_digest, fh.read().split()[0])
         self.assertNotIn("max_load1", amended["admission"])
         self.assertEqual(amended["admission"]["load1_role"], "diagnostic")
         self.assertFalse(amended["execution_authorized"])
@@ -510,14 +522,14 @@ class TestImageAndDryRun(unittest.TestCase):
         self.assertFalse(same_inputs["image_labeled_with_harness_commit"])
 
     def test_dry_run_prints_the_plan_and_starts_nothing(self):
-        with open(AMENDMENT + ".sha256", encoding="utf-8") as fh:
+        with open(AUTHORIZED + ".sha256", encoding="utf-8") as fh:
             digest = fh.read().split()[0]
         out = os.path.join(tempfile.gettempdir(), "melis-final-dry-run-should-not-exist")
         if os.path.exists(out):
             os.rmdir(out)
         argv = [
             "--dry-run", "--phase", "final",
-            "--protocol", AMENDMENT, "--protocol-sha256", digest,
+            "--protocol", AUTHORIZED, "--protocol-sha256", digest,
             "--out-dir", out,
             "--blocks", "18", "--modes", "json", "--concurrency", "1",
             "--warmup-s", "20", "--measure-s", "60", "--backend-latency-ms", "0",
@@ -542,12 +554,19 @@ class TestImageAndDryRun(unittest.TestCase):
         self.assertFalse(estimate["load_started"])
         self.assertFalse(estimate["admission_ran"])
         self.assertFalse(estimate["image_checked_this_process"])
-        self.assertFalse(estimate["execution_authorized_by_protocol"])
+        self.assertTrue(estimate["execution_authorized_by_protocol"])
+        self.assertTrue(estimate["confirmatory_claim"])
 
         bad = list(argv)
         bad[bad.index("18")] = "12"
         with self.assertRaises(SystemExit):
             run_comparative_pilot.main(bad)
+
+    def test_holm_keeps_order_and_the_t_tail_matches_the_beta(self):
+        adjusted = precision.holm([0.04, 0.01, 0.03])
+        self.assertEqual(adjusted, [0.06, 0.03, 0.06])
+        self.assertAlmostEqual(precision.two_sided_t_p(0.0, 17), 1.0)
+        self.assertLess(precision.two_sided_t_p(2.11, 17), 0.05)
 
     def test_safety_stop_admits_no_request(self):
         stop = threading.Event()

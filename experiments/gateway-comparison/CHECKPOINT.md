@@ -355,6 +355,12 @@ protocolo 1.0.0 preservado
 é esta máquina em ambiente compartilhado. A observação de load1 de
 2026-11-05 permanece; a recusa automática por `load1 < 2` não.
 
+A versão autorizada, `protocol/rq1-final-authorized-1.2.0.json`, SHA-256
+`93f7a11a3d2d55668e2c461d21a418644998a80c776e68b2eba76a688d5335d0`, liga-se
+à emenda por `authorizes_sha256` e registra `execution_authorized: true`.
+O candidato 1.0.0 e a emenda 1.1.0 permanecem com `execution_authorized`
+falso. Só a versão autorizada pode iniciar a fase final.
+
 Amostra inicial de 60,12 s, em 2026-11-06, com a coleta parada e serviços
 alheios ligados. Não autoriza a execução e não serve para uma partida
 posterior. Admitida pelos critérios que restam: MemAvailable mínima 21,11 GiB;
@@ -397,8 +403,8 @@ cd experiments/gateway-comparison
 PYTHONDONTWRITEBYTECODE=1 python3 harness/run_comparative_pilot.py \
   --out-dir data/rq1-final-20261106 \
   --phase final \
-  --protocol protocol/rq1-final-amendment-1.1.0.json \
-  --protocol-sha256 953e5bfee33803b883f163ba6696e34ec7de6ab7064d72c3666ebcbf329985b0 \
+  --protocol protocol/rq1-final-authorized-1.2.0.json \
+  --protocol-sha256 93f7a11a3d2d55668e2c461d21a418644998a80c776e68b2eba76a688d5335d0 \
   --confirm-operational-start \
   --blocks 18 \
   --modes json \

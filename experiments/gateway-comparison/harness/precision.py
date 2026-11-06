@@ -56,6 +56,27 @@ def _betai(a: float, b: float, x: float) -> float:
     return 1.0 - front * _betacf(b, a, 1.0 - x)
 
 
+def two_sided_t_p(statistic: float, df: int) -> float:
+    """Two-sided p-value for a Student t statistic. Uses the same beta cdf as ``t_ppf``."""
+    if df < 1:
+        raise ValueError("df must be positive")
+    x = df / (df + statistic * statistic)
+    return _betai(df / 2.0, 0.5, x)
+
+
+def holm(p_values: list[float]) -> list[float]:
+    """Holm adjusted p-values, in the original order, capped at 1."""
+    count = len(p_values)
+    order = sorted(range(count), key=lambda index: p_values[index])
+    adjusted = [0.0] * count
+    running = 0.0
+    for rank, index in enumerate(order):
+        value = min(1.0, (count - rank) * p_values[index])
+        running = max(running, value)
+        adjusted[index] = running
+    return adjusted
+
+
 def t_ppf(probability: float, df: int) -> float:
     """Lower-tail quantile of Student's t. `probability` is the cdf, e.g. 0.975."""
     if df < 1:

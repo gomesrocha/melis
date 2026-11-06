@@ -18,7 +18,9 @@ import provenance
 
 PROTOCOL_VERSION = "1.0.0"
 AMENDMENT_VERSION = "1.1.0"
+AUTHORIZED_VERSION = "1.2.0"
 PRESERVED_SHA256 = "d566da7ab4804d2313a6ca63deae17b2244841ecc57eddd1628b0861f638184e"
+AMENDMENT_SHA256 = "953e5bfee33803b883f163ba6696e34ec7de6ab7064d72c3666ebcbf329985b0"
 GiB = 1024 ** 3
 IMAGE_ID = "sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb"
 IMAGE_BUILD_COMMIT = "7b1c4a8734c301344615adc8c213b2dc7a2fb085"
@@ -270,11 +272,11 @@ def amended_document() -> dict:
     return document
 
 
-def validate_for_start(document: dict) -> None:
-    """The only protocol a final start may use. It does not authorize the run."""
+def validate_amendment(document: dict) -> None:
+    """The shared-host amendment. It is not, by itself, permission to start."""
     _common(document)
     if document["protocol_version"] != AMENDMENT_VERSION:
-        raise ProtocolError("phase final requires amendment 1.1.0; 1.0.0 is preserved and is not the start protocol")
+        raise ProtocolError("amendment version mismatch")
     if document.get("amends_sha256") != PRESERVED_SHA256:
         raise ProtocolError("amendment must name the preserved protocol hash")
     if document.get("amendment", {}).get("scenario") != "this machine in a shared environment":
@@ -291,6 +293,71 @@ def validate_for_start(document: dict) -> None:
         raise ProtocolError("unfavorable latency must not exclude a block")
     if document["historical_host_refusal_not_an_admission"].get("automatic_refusal_withdrawn") is not True:
         raise ProtocolError("the load1 refusal must be withdrawn by the amendment")
+
+
+def authorized_document() -> dict:
+    """Conversation authorization for this amendment only. RQ2 stays out."""
+    document = amended_document()
+    document["protocol_version"] = AUTHORIZED_VERSION
+    document["role"] = "authorized"
+    document["execution_authorized"] = True
+    document["confirmatory_claim"] = True
+    document["authorizes_sha256"] = AMENDMENT_SHA256
+    document["authorization"] = {
+        "source": "conversation",
+        "scope": "rq1 confirmatory collection on this shared machine under amendment 1.1.0",
+        "rq2": False,
+    }
+    procedure = json.loads(json.dumps(TEST_PROCEDURE))
+    procedure["status"] = "predefined_execute_after_collection"
+    procedure["not_computed_in_this_revision"] = False
+    document["test_procedure"] = procedure
+    return document
+
+
+def validate_for_start(document: dict) -> None:
+    """A final start requires the authorized protocol, not the amendment alone."""
+    if document.get("protocol_version") != AUTHORIZED_VERSION or document.get("role") != "authorized":
+        raise ProtocolError("phase final starts only from the authorized protocol")
+    if document.get("execution_authorized") is not True:
+        raise ProtocolError("authorized protocol must record execution_authorized true")
+    if document.get("confirmatory_claim") is not True:
+        raise ProtocolError("authorized protocol must record the confirmatory claim")
+    if document.get("authorizes_sha256") != AMENDMENT_SHA256:
+        raise ProtocolError("authorized protocol must name the amendment hash")
+    if document.get("authorization", {}).get("rq2") is not False:
+        raise ProtocolError("this authorization does not include RQ2")
+    if "max_load1" in document.get("admission", {}):
+        raise ProtocolError("load1 must not be an admission threshold")
+    if document.get("admission") != ADMISSION:
+        raise ProtocolError("admission criteria differ from the shared-host amendment")
+    if document.get("monitor") != MONITOR:
+        raise ProtocolError("monitor limits differ from the shared-host amendment")
+    if document["monitor"].get("load_average_excludes_block") is not False:
+        raise ProtocolError("high load must not exclude a block")
+    if document["monitor"].get("latency_excludes_block") is not False:
+        raise ProtocolError("unfavorable latency must not exclude a block")
+    if document.get("orders") != expected_orders():
+        raise ProtocolError("protocol block order differs from the seeded permutations")
+    if document.get("blocks") != 18 or document.get("seed") != 20261105:
+        raise ProtocolError("authorized design is N=18 and seed 20261105")
+    if document.get("modes") != ["json"] or document.get("concurrency") != [1]:
+        raise ProtocolError("authorized cell is JSON at concurrency 1")
+    if document.get("warmup_s") != 20 or document.get("measure_s") != 60:
+        raise ProtocolError("authorized windows are 20 s and 60 s")
+    if document.get("backend_latency_ms") != 0 or document.get("feature_profile") != "minimal":
+        raise ProtocolError("authorized backend is zero latency and the minimal profile")
+    if document.get("melis_image_id") != IMAGE_ID:
+        raise ProtocolError("authorized image id differs from the recorded local id")
+    procedure = document.get("test_procedure") or {}
+    if procedure.get("status") != "predefined_execute_after_collection":
+        raise ProtocolError("the predefined test is executed after the collection")
+    if procedure.get("multiplicity") != "holm" or procedure.get("family_alpha") != 0.05:
+        raise ProtocolError("Holm and family alpha 0.05 stay as predefined")
+    if procedure.get("family") != list(CONTRASTS):
+        raise ProtocolError("the three contrasts stay the family")
+    if document.get("amends_sha256") != PRESERVED_SHA256:
+        raise ProtocolError("authorization stays tied to the preserved candidate")
 
 
 def argument_mismatches(document: dict, args) -> list[str]:
@@ -342,8 +409,8 @@ def plan_fields(document: dict, digest: str) -> dict:
         "image_checked_this_process": False,
         "admission_ran": False,
         "load_started": False,
-        "execution_authorized_by_protocol": False,
-        "confirmatory_claim": False,
+        "execution_authorized_by_protocol": document.get("execution_authorized") is True,
+        "confirmatory_claim": document.get("confirmatory_claim") is True,
         "note": (
             "Configured load is cells times the 20 s warmup and 60 s measure. "
             "Switch overhead is extrapolated from the variance pilot and is "

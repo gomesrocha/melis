@@ -284,7 +284,7 @@ def load_block_decisions(data_dir):
 
 
 def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory",
-                  facts=None, decisions=None):
+                  facts=None, decisions=None, diff_sink=None):
     """Mean, across blocks, of differences of per-execution completion medians.
 
     A block contributes to the estimate only when direct, Melis and LiteLLM
@@ -363,6 +363,13 @@ def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory",
             usable.append((block_id, meds))
         for contrast, left, right in RQ1_CONTRASTS:
             diffs = [meds[left] - meds[right] for _, meds in usable]
+            if diff_sink is not None and diffs:
+                diff_sink.append({
+                    "contrast": contrast,
+                    "population": population,
+                    "block_ids": [block_id for block_id, _ in usable],
+                    "diffs_ms": diffs,
+                })
             if not diffs:
                 continue
             est = round(statistics.fmean(diffs), 4)

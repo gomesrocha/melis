@@ -672,8 +672,12 @@ def run(args):
     comparisons = os.path.join(args.out_dir, f"comparisons.{analysis}.csv")
     runs = os.path.join(args.out_dir, f"runs.{analysis}.csv")
     pairing = os.path.join(args.out_dir, f"pairing.{analysis}.json")
+    evidence = "exploratory"
+    if protocol is not None and protocol.get("execution_authorized") is True and protocol.get("confirmatory_claim") is True:
+        evidence = "confirmatory"
     built = aggregate.build(
         args.out_dir, runs, comparisons, experiment_id, args.phase, args.seed,
+        evidence_role=evidence,
     )
     with open(pairing, "w", encoding="utf-8") as fh:
         json.dump({"analysis_id": analysis, "pairing": built["pairing"]}, fh, indent=2)

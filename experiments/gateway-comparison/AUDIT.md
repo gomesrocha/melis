@@ -37,6 +37,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_provenance.py test_final_prot
 O protocolo 1.0.0 preservado está em `protocol/rq1-final-candidate.json`.
 A emenda de host compartilhado está em `protocol/rq1-final-amendment-1.1.0.json`,
 SHA-256 `953e5bfee33803b883f163ba6696e34ec7de6ab7064d72c3666ebcbf329985b0`.
+A versão autorizada está em `protocol/rq1-final-authorized-1.2.0.json`,
+SHA-256 `93f7a11a3d2d55668e2c461d21a418644998a80c776e68b2eba76a688d5335d0`,
+com `authorizes_sha256` igual ao hash da emenda e `execution_authorized` verdadeiro.
 O hash
 desse arquivo é a identidade; o sidecar `.sha256` só a reproduz. `--dry-run`
 imprime 54 células e 4320 s de carga, com o overhead de troca à parte, e

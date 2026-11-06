@@ -1,0 +1,232 @@
+{
+  "admission": {
+    "cpu_record_required": true,
+    "duration_s": 60.0,
+    "load1_role": "diagnostic",
+    "max_swap_pages": 256,
+    "min_disk_free_bytes": 21474836480,
+    "min_mem_available_bytes": 8589934592,
+    "min_reading_mem_available_bytes": 6442450944,
+    "scenario": "shared_host",
+    "volumes_required": [
+      "csv",
+      "docker"
+    ]
+  },
+  "amendment": {
+    "blocks_not_excluded_for": [
+      "high_load",
+      "unfavorable_latency"
+    ],
+    "id": "shared-host-load-diagnostic",
+    "load_average": "diagnostic_only",
+    "safety_unchanged": [
+      "memory",
+      "disk"
+    ],
+    "scenario": "this machine in a shared environment",
+    "withdrawn": [
+      "admission.max_load1 as an automatic host refusal"
+    ]
+  },
+  "amends_sha256": "d566da7ab4804d2313a6ca63deae17b2244841ecc57eddd1628b0861f638184e",
+  "authorization": {
+    "rq2": false,
+    "scope": "rq1 confirmatory collection on this shared machine under amendment 1.1.0",
+    "source": "conversation"
+  },
+  "authorizes_sha256": "953e5bfee33803b883f163ba6696e34ec7de6ab7064d72c3666ebcbf329985b0",
+  "backend_latency_ms": 0,
+  "blocks": 18,
+  "collection_directory_policy": "new directory and new collection_id; do not rename a pilot or reuse its rows as confirmatory evidence",
+  "concurrency": [
+    1
+  ],
+  "confirmatory_claim": true,
+  "contrasts": [
+    "melis_minus_direct",
+    "litellm_minus_direct",
+    "melis_minus_litellm"
+  ],
+  "estimator": "mean_of_paired_block_median_differences",
+  "execution_authorized": true,
+  "experiment_name": "rq1-comparative",
+  "feature_profile": "minimal",
+  "gateways": [
+    "direct",
+    "melis",
+    "litellm"
+  ],
+  "harness_commit_policy": "The execution checkout must be clean. If HEAD differs from image_build_commit, Dockerfile, Cargo.toml, Cargo.lock and src must be identical to that commit. The image is not relabeled with HEAD.",
+  "historical_host_refusal_not_an_admission": {
+    "automatic_refusal_withdrawn": true,
+    "load1_max": 11.33,
+    "load1_min": 10.46,
+    "observation_preserved": true,
+    "reason": "load1",
+    "reusable": false,
+    "sample_end": "2026-11-05T22:15:56Z",
+    "sample_start": "2026-11-05T22:14:56Z",
+    "stands": false,
+    "threshold": 2.0
+  },
+  "image_build_commit": "7b1c4a8734c301344615adc8c213b2dc7a2fb085",
+  "image_id_is_not_a_registry_digest": true,
+  "measure_s": 60,
+  "melis_image_id": "sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb",
+  "model": "mock-model",
+  "modes": [
+    "json"
+  ],
+  "monitor": {
+    "attribution_gateway_share": 0.5,
+    "environmental": {
+      "max_swap_pages_per_interval": 1024,
+      "min_disk_free_bytes": 10737418240,
+      "min_mem_available_bytes": 6442450944
+    },
+    "grave": {
+      "max_swap_pages_per_interval": 65536,
+      "min_disk_free_bytes": 1073741824,
+      "min_mem_available_bytes": 1073741824
+    },
+    "interval_s": 30.0,
+    "latency_excludes_block": false,
+    "load_average_excludes_block": false
+  },
+  "operational_confirmation": {
+    "flag": "--confirm-operational-start",
+    "is_conversation_authorization": false,
+    "required_for_dry_run": false,
+    "required_to_start_load": true
+  },
+  "order": "permutations",
+  "orders": [
+    [
+      "litellm",
+      "melis",
+      "direct"
+    ],
+    [
+      "melis",
+      "litellm",
+      "direct"
+    ],
+    [
+      "direct",
+      "melis",
+      "litellm"
+    ],
+    [
+      "direct",
+      "melis",
+      "litellm"
+    ],
+    [
+      "direct",
+      "litellm",
+      "melis"
+    ],
+    [
+      "melis",
+      "direct",
+      "litellm"
+    ],
+    [
+      "direct",
+      "litellm",
+      "melis"
+    ],
+    [
+      "direct",
+      "litellm",
+      "melis"
+    ],
+    [
+      "litellm",
+      "melis",
+      "direct"
+    ],
+    [
+      "litellm",
+      "direct",
+      "melis"
+    ],
+    [
+      "melis",
+      "direct",
+      "litellm"
+    ],
+    [
+      "melis",
+      "direct",
+      "litellm"
+    ],
+    [
+      "litellm",
+      "direct",
+      "melis"
+    ],
+    [
+      "melis",
+      "litellm",
+      "direct"
+    ],
+    [
+      "direct",
+      "melis",
+      "litellm"
+    ],
+    [
+      "melis",
+      "litellm",
+      "direct"
+    ],
+    [
+      "litellm",
+      "melis",
+      "direct"
+    ],
+    [
+      "litellm",
+      "direct",
+      "melis"
+    ]
+  ],
+  "permutation_repeats": 3,
+  "phase": "final",
+  "precision_target_ms": 0.5,
+  "precision_target_role": "candidate_planning_half_width",
+  "protocol_version": "1.2.0",
+  "repeat": {
+    "does_not_increase_n": true,
+    "max_full_permutation_repeats": 1,
+    "on_failed_readmission": "stop_incomplete",
+    "on_second_violation": "stop_incomplete",
+    "repeat_one_path": false,
+    "requires_new_admission": true,
+    "unit": "full_permutation"
+  },
+  "role": "authorized",
+  "seed": 20261105,
+  "test_procedure": {
+    "assumptions": [
+      "block_differences_are_independent",
+      "block_differences_are_drawn_from_a_normal_distribution",
+      "the_unit_is_the_planned_block_not_the_request"
+    ],
+    "family": [
+      "melis_minus_direct",
+      "litellm_minus_direct",
+      "melis_minus_litellm"
+    ],
+    "family_alpha": 0.05,
+    "intervals": "marginal_student_t_95",
+    "intervals_are_not_simultaneous": true,
+    "multiplicity": "holm",
+    "not_computed_in_this_revision": false,
+    "status": "predefined_execute_after_collection",
+    "tests": "two_sided_student_t_of_block_differences_against_zero"
+  },
+  "warmup_s": 20
+}
