@@ -47,7 +47,8 @@ def verify_design(protocol):
         raise SystemExit("refusing: protocol does not authorize execution")
     if protocol.get("episodes_per_scenario") != FINAL_EPISODES:
         raise SystemExit("refusing: episode count is not the authorized 20")
-    if protocol.get("gateway_order") != gateway_orders():
+    expected = [list(order) for order in gateway_orders()]
+    if protocol.get("gateway_order") != expected:
         raise SystemExit("refusing: gateway order differs from the seeded sequence")
     if protocol.get("deadline_ms") != pilot.DEADLINE_MS:
         raise SystemExit("refusing: deadline differs from the piloted 2500 ms")
