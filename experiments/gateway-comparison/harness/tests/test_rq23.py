@@ -76,6 +76,21 @@ class RubricTests(unittest.TestCase):
         self.assertEqual(proposal["planned_case_count"], 48)
         overlap = set(dev["families"]) & set(proposal["families"])
         self.assertEqual(overlap, set())
+        with open(os.path.join(ROOT, "quality", "eval_cases.json"), encoding="utf-8") as fh:
+            evaluation = json.load(fh)
+        self.assertEqual(len(evaluation["cases"]), 48)
+        self.assertEqual(len(evaluation["families"]), 8)
+        self.assertEqual(set(evaluation["families"]) & set(dev["families"]), set())
+        dev_lines = {m["content"] for case in dev["cases"] for m in case["messages"]}
+        for case in evaluation["cases"]:
+            text = "\n".join(m["content"] for m in case["messages"]).casefold()
+            question = case["messages"][-1]["content"].casefold()
+            for message in case["messages"]:
+                self.assertNotIn(message["content"], dev_lines)
+            for fact in case["critical_facts"]:
+                self.assertTrue(any(item.casefold() in text for item in fact["equivalents"]))
+                for item in fact["equivalents"]:
+                    self.assertNotIn(item.casefold(), question)
 
 
 class FaultTests(unittest.TestCase):
@@ -99,7 +114,9 @@ class FaultTests(unittest.TestCase):
             self.assertEqual(second.status, 200)
             calls = json.loads(self._get(base, "/__calls"))["calls"]
             self.assertEqual([call["status"] for call in calls], [429, 200])
+            self.assertTrue(all(call["observed_at_utc"].endswith("Z") for call in calls))
             self._post(base, "/__reset", {})
+            self.assertEqual(json.loads(self._get(base, "/__calls"))["calls"], [])
             quiet = self._post(base, "/v1/chat/completions", {"model": "mock-model", "messages": []})
             self.assertEqual(quiet.status, 200)
         finally:
@@ -120,6 +137,64 @@ class FaultTests(unittest.TestCase):
     def _get(self, base, path):
         with urllib.request.urlopen(base + path, timeout=5) as resp:
             return resp.read().decode()
+
+
+class FinalDesignTests(unittest.TestCase):
+    def test_order_is_balanced_and_direct_is_not_in_the_pair(self):
+        import rq3_final
+        import rq3_gateway_pilot as pilot
+
+        orders = rq3_final.gateway_orders()
+        self.assertEqual(len(orders), 20)
+        self.assertEqual(sum(order[0] == "melis" for order in orders), 10)
+        self.assertEqual(sum(order[0] == "litellm" for order in orders), 10)
+        self.assertTrue(all(set(order) == {"melis", "litellm"} for order in orders))
+        self.assertEqual(pilot.DEADLINE_MS, 2500)
+        self.assertEqual(rq3_final.gateway_orders(), rq3_final.gateway_orders(seed=20261106))
+
+    def test_episode_and_attempt_rows_match_the_schema(self):
+        import tempfile
+        sys.path.insert(0, os.path.join(ROOT, "instrumentation"))
+        from csv_writer import CsvTableWriter  # noqa: E402
+
+        with tempfile.TemporaryDirectory() as directory:
+            episodes = CsvTableWriter("episodes", os.path.join(directory, "episodes.csv"))
+            episodes.write_row({
+                "schema_version": "1.3.0",
+                "collection_id": "col-test",
+                "episode_id": "ep-1",
+                "gateway": "melis",
+                "scenario": "healthy",
+                "phase": "final",
+                "seed": "20261106",
+                "order_in_pair": 0,
+                "deadline_ms": 2500,
+                "success_within_deadline": True,
+                "success_after_deadline": False,
+                "failed": False,
+                "recovery_observed": None,
+                "recovery_censored": False,
+                "recovery_ms": None,
+                "backend_call_count": 1,
+                "attempt_count_scope": "per_attempt",
+            })
+            episodes.close()
+            attempts = CsvTableWriter("attempts", os.path.join(directory, "attempts.csv"))
+            attempts.write_row({
+                "schema_version": "1.3.0",
+                "collection_id": "col-test",
+                "run_id": "run-1",
+                "request_id": "req-1",
+                "attempt_index": 0,
+                "destination_id": "primary",
+                "started_at_utc": "2026-11-06T18:00:00.000000Z",
+                "latency_ms": None,
+                "status": "ok",
+                "http_status": 200,
+                "is_probe": False,
+                "is_fallback": False,
+            })
+            attempts.close()
 
 
 if __name__ == "__main__":

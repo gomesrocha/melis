@@ -1,0 +1,153 @@
+{
+  "name": "rq3-final-authorized",
+  "execution_authorized": true,
+  "collection_id": "col-rq3-final-20261106",
+  "phase": "final",
+  "directory": "data/rq3-final-20261106",
+  "pilot_directory": "data/rq3-gateway-pilot-20261106",
+  "pilot_episodes_per_scenario": 5,
+  "pilot_is_not_part_of_n": true,
+  "incomplete_first_pilot_attempt": "The first gateway pass stopped when the readiness check missed the listen line, including two Melis episodes with zero backend calls. That attempt is not in the saved pilot and is not in this collection.",
+  "harness_commit": "PENDING",
+  "seed": 20261106,
+  "episodes_per_scenario": 20,
+  "gateway_episodes_total": 240,
+  "direct_control_episodes_total": 120,
+  "direct_is_excluded_from_paired_n": true,
+  "deadline_ms": 2500,
+  "direct_http_timeout_ms": 2500,
+  "direct_has_fallback": false,
+  "direct_destination_timeout_s": null,
+  "destination_timeout_s": 1,
+  "same_destination_retry": false,
+  "fallback_count": 1,
+  "primary_outcome": "success_within_logical_request_deadline",
+  "primary_role": "descriptive",
+  "secondary": [
+    "failure_or_timeout",
+    "latency_ms",
+    "backend_call_count",
+    "destination",
+    "recovery_probe"
+  ],
+  "paired_contrasts": [
+    "success_within_deadline melis minus litellm",
+    "backend_call_count melis minus litellm"
+  ],
+  "unit": "logical_request_episode",
+  "analysis_method": "Mean of the 20 paired episode differences within a scenario. No test and no interval. Agreement of every pair is a count, not evidence of equivalence and not a population guarantee.",
+  "recovery": "A later probe that returns 200 shows recovery observed on that probe. It does not identify the recovery instant and it is not sustained-recovery evidence. recovery_ms stays empty. The probe uses a 1 second client timeout. recovery_censored is true when that probe is not 200, and for the delay scenario when the logical request itself is not within the deadline.",
+  "reset": "Backend rules are replaced before every episode. Each gateway container is restarted before its episode. That limits the claim to independent failover episodes.",
+  "circuit_breaker_defaults_unchanged": {
+    "failure_threshold_percent": 50,
+    "window_s": 60,
+    "min_requests_in_window": 5,
+    "open_ttl_s": 30,
+    "backend": "local"
+  },
+  "images": {
+    "melis_id": "sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb",
+    "melis_repo_digests": [],
+    "melis_build_commit": null,
+    "litellm_id": "sha256:7924ee4aa63fc9d831e39056f838dea2c7623b86aff42426362bf023adf1127f",
+    "litellm_repo_digest": "sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76"
+  },
+  "gateway_order": [
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "melis",
+      "litellm"
+    ],
+    [
+      "melis",
+      "litellm"
+    ],
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "melis",
+      "litellm"
+    ],
+    [
+      "melis",
+      "litellm"
+    ],
+    [
+      "litellm",
+      "melis"
+    ],
+    [
+      "melis",
+      "litellm"
+    ],
+    [
+      "melis",
+      "litellm"
+    ],
+    [
+      "melis",
+      "litellm"
+    ],
+    [
+      "melis",
+      "litellm"
+    ],
+    [
+      "melis",
+      "litellm"
+    ],
+    [
+      "melis",
+      "litellm"
+    ]
+  ],
+  "frozen_files": {
+    "harness": "harness/rq3_final.py",
+    "pilot_harness": "harness/rq3_gateway_pilot.py",
+    "mock": "backend-deterministic/mock_openai.py",
+    "melis_config": "melis/config.rq3-pilot.yaml",
+    "melis_routes": "melis/routes.rq3-pilot.yaml",
+    "litellm_config": "litellm/config.rq3-pilot.yaml"
+  },
+  "frozen_sha256": {
+    "harness": "42a9ea6366d00632aae098513827c743b349aa23bdc5d3380de620629a9fccd9",
+    "pilot_harness": "74ff634cc2704c0586b30f3e2a7e268ee0f2f97ea35fe820ebd01b64ec8f525e",
+    "mock": "d5f91542294d94bb2b8056457b893b79a5747bf81262e15bcaf86770335f5ea5",
+    "melis_config": "5d2393666a0b566722ee63e56650d062486de5486439e308bdaeff09562d7db3",
+    "melis_routes": "1a10d4ee651965a7481e5296843db2e729c644637d7fb6c962296acbcba821e6",
+    "litellm_config": "133d94a8aff51f0b5801ed375470e28eeb69bfeaf111793a5a1102b607c9254d"
+  }
+}

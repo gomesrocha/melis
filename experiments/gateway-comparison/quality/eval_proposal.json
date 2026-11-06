@@ -25,5 +25,6 @@
     "license": null,
     "license_note": "No license is granted here and none is attributed to the repository owner. The text stays unlicensed repository material until that owner chooses one."
   },
-  "cases": []
+  "cases": [],
+  "written_cases": "quality/eval_cases.json"
 }

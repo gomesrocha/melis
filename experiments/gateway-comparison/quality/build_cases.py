@@ -75,11 +75,10 @@ def _case(family, position, pressure, fact_lines, question, critical, other, anc
     return case
 
 
-def _build(family, position, pressure, lines, question, critical, other, anchors, protected=None, tool_name=None, inventions=None):
-    fillers = [
-        f"Anotacao lateral {i}: nada aqui responde a pergunta."
-        for i in range(1, 13 if pressure == "tight" else 3)
-    ]
+def _build(family, position, pressure, lines, question, critical, other, anchors, protected=None, tool_name=None, inventions=None, filler_stem=None):
+    stem = filler_stem or "Anotacao lateral {i}: nada aqui responde a pergunta."
+    count = 12 if pressure == "tight" else 2
+    fillers = [stem.format(i=i) for i in range(1, count + 1)]
     return {
         "case_id": f"{family}-{position}-{pressure}",
         "generation_family": family,
@@ -219,6 +218,173 @@ DEV_SPECS = [
 ]
 
 
+EVAL_GRID = (
+    ("start", "tight"),
+    ("middle", "tight"),
+    ("end", "tight"),
+    ("distributed", "tight"),
+    ("middle", "loose"),
+    ("end", "loose"),
+)
+
+# Each family has its own sentences. None of these lines is a development sentence.
+EVAL_FAMILIES = [
+    {
+        "family": "shelf-code",
+        "filler": "Etiqueta solta {i}: este adesivo nao indica o lugar.",
+        "lines": [
+            "A prateleira marcada no inventario e a B7.",
+            "O corredor desse inventario e o leste.",
+            "A etiqueta antiga citava a prateleira B1, mas foi rasurada.",
+        ],
+        "question": "Onde o inventario manda guardar a caixa, deixando de lado o adesivo rasurado?",
+        "critical": [_fact("shelf", ["prateleira marcada no inventario e a B7", "B7"], ["prateleira B1"])],
+        "other": [_fact("aisle", ["corredor desse inventario e o leste", "leste"], ["corredor oeste"])],
+        "anchors": ["inventario", "caixa"],
+    },
+    {
+        "family": "clinic-room",
+        "filler": "Recado de corredor {i}: este papel nao marca a reserva.",
+        "lines": [
+            "A sala de curativo reservada hoje e a de numero 12.",
+            "O turno dessa reserva e o vespertino.",
+            "A sala 4 aparece no mapa, porem nao entra na reserva de hoje.",
+        ],
+        "question": "Qual numero ficou na reserva de curativo de hoje?",
+        "critical": [_fact("room", ["numero 12", "sala de curativo reservada hoje e a de numero 12"], ["sala 4"])],
+        "other": [_fact("shift", ["turno dessa reserva e o vespertino", "vespertino"], ["noturno"])],
+        "anchors": ["reserva", "curativo"],
+    },
+    {
+        "family": "orchard-crate",
+        "filler": "Folha de caderno {i}: esta linha nao descreve a caixa da feira.",
+        "lines": [
+            "A caixa que segue para a feira e a de macas.",
+            "A quantidade contada nessa caixa e 30.",
+            "As peras ficam na caixa ao lado e nao vao para a feira.",
+        ],
+        "question": "O que segue para a feira e quantas unidades foram contadas?",
+        "critical": [_fact("fruit", ["caixa que segue para a feira e a de macas", "macas"], ["peras"])],
+        "other": [_fact("count", ["quantidade contada nessa caixa e 30", "30"], ["40"])],
+        "anchors": ["feira", "unidades"],
+    },
+    {
+        "family": "ferry-time",
+        "filler": "Aviso de deck {i}: este aviso nao marca o horario pedido.",
+        "lines": [
+            "A balsa da manha parte as 06h10.",
+            "A rampa dessa partida e a rampa norte.",
+            "A balsa da tarde parte as 16h40 e nao marca a partida da manha.",
+        ],
+        "question": "Quando parte a travessia da manha?",
+        "critical": [_fact("departure", ["parte as 06h10", "06h10"], ["16h40"])],
+        "other": [_fact("ramp", ["rampa dessa partida e a rampa norte", "rampa norte"], ["rampa sul"])],
+        "anchors": ["travessia", "manha"],
+    },
+    {
+        "family": "kiln-batch",
+        "filler": "Bilhete de forno {i}: este bilhete nao libera fornada.",
+        "lines": [
+            "A fornada liberada para sair e a segunda.",
+            "O operador dessa fornada assina com o nome Lina.",
+            "A primeira fornada ficou retida e nao pode sair.",
+        ],
+        "question": "Qual fornada pode deixar o forno?",
+        "critical": [_fact("batch", ["fornada liberada para sair e a segunda", "segunda"], ["primeira fornada"])],
+        "other": [_fact("operator", ["operador dessa fornada assina com o nome Lina", "Lina"], ["Rita"])],
+        "anchors": ["fornada", "forno"],
+    },
+    {
+        "family": "archive-box",
+        "filler": "Ficha avulsa {i}: esta ficha nao guarda o codigo.",
+        "lines": [
+            "A caixa do arquivo morto leva o codigo AZ-4.",
+            "Essa caixa fica na estante inferior.",
+            "A caixa AZ-9 foi descartada e nao esta no arquivo morto.",
+        ],
+        "question": "Qual codigo identifica a caixa guardada no arquivo morto?",
+        "critical": [_fact("code", ["codigo AZ-4", "AZ-4"], ["AZ-9"])],
+        "other": [_fact("shelf", ["estante inferior"], ["estante superior"])],
+        "anchors": ["codigo", "arquivo"],
+        "protected": "Mantenha a resposta em uma unica linha.",
+    },
+    {
+        "family": "pump-valve",
+        "filler": "Nota de valvula {i}: esta nota nao traz a leitura.",
+        "lines": [
+            "Antes de fechar o registro, use a ferramenta ler_pressao.",
+            "A pressao anotada no visor e 3 bar.",
+            "O visor ao lado, que nao vale, marcava 5 bar.",
+        ],
+        "question": "O que o visor valido mostrou na leitura?",
+        "critical": [_fact("pressure", ["pressao anotada no visor e 3 bar", "3 bar"], ["5 bar"])],
+        "other": [_fact("tool", ["ler_pressao"], ["ler_vazao"])],
+        "anchors": ["visor", "leitura"],
+        "tool_name": "ler_pressao",
+    },
+    {
+        "family": "trail-marker",
+        "filler": "Placa caiada {i}: esta placa nao aponta o abrigo.",
+        "lines": [
+            "O marco que indica a trilha certa e o marco verde.",
+            "A distancia desse marco ate o abrigo e de 2 quilometros.",
+            "O marco vermelho aponta para o desvio e nao para a trilha certa.",
+        ],
+        "question": "Qual cor guia quem procura o abrigo?",
+        "critical": [_fact("marker", ["marco que indica a trilha certa e o marco verde", "marco verde"], ["marco vermelho"])],
+        "other": [_fact("distance", ["2 quilometros"], ["5 quilometros"])],
+        "anchors": ["cor", "abrigo"],
+    },
+]
+
+
+def _eval_cases():
+    cases = []
+    for family in EVAL_FAMILIES:
+        for position, pressure in EVAL_GRID:
+            cases.append(_build(
+                family["family"], position, pressure, family["lines"], family["question"],
+                family["critical"], family["other"], family["anchors"],
+                protected=family.get("protected"), tool_name=family.get("tool_name"),
+                filler_stem=family["filler"],
+            ))
+    return cases
+
+
+def _assert_labels(cases, require_long_form=False):
+    for case in cases:
+        text = "\n".join(m["content"] for m in case["messages"]).casefold()
+        question = case["messages"][-1]["content"].casefold()
+        for fact in case["critical_facts"] + case["other_facts"]:
+            if not any(item.casefold() in text for item in fact["equivalents"]):
+                raise SystemExit(f"label is not in the source text: {case['case_id']} {fact['id']}")
+            if require_long_form:
+                long_forms = [item for item in fact["equivalents"] if len(item) >= 8]
+                if not any(item.casefold() in text for item in long_forms):
+                    raise SystemExit(f"label has no long form in the source: {case['case_id']} {fact['id']}")
+        if require_long_form:
+            for fact in case["critical_facts"]:
+                for item in fact["equivalents"]:
+                    if item.casefold() in question:
+                        raise SystemExit(f"question repeats a critical equivalent: {case['case_id']} {item}")
+        if case.get("protected_instruction") and case["protected_instruction"].casefold() not in text:
+            raise SystemExit(f"protected instruction missing from source: {case['case_id']}")
+        if case.get("tool_name") and case["tool_name"].casefold() not in text:
+            raise SystemExit(f"tool name missing from source: {case['case_id']}")
+
+
+def _assert_split(dev, evaluation):
+    dev_families = {case["generation_family"] for case in dev}
+    eval_families = {case["generation_family"] for case in evaluation}
+    if dev_families & eval_families:
+        raise SystemExit(f"family overlap: {sorted(dev_families & eval_families)}")
+    dev_lines = {m["content"].casefold() for case in dev for m in case["messages"]}
+    for case in evaluation:
+        for message in case["messages"]:
+            if message["content"].casefold() in dev_lines:
+                raise SystemExit(f"evaluation reuses a development sentence: {case['case_id']}")
+
+
 def _from_spec(spec, protected=None, tool_name=None):
     family, position, pressure, lines, question, critical, other, anchors = spec
     if family == "banner-rule":
@@ -230,13 +396,14 @@ def _from_spec(spec, protected=None, tool_name=None):
 
 def main():
     dev = [_from_spec(spec) for spec in DEV_SPECS]
+    evaluation = _eval_cases()
     if len(dev) != 24:
         raise SystemExit(f"development set must have 24 cases, has {len(dev)}")
-    for case in dev:
-        text = "\n".join(m["content"] for m in case["messages"]).casefold()
-        for fact in case["critical_facts"] + case["other_facts"]:
-            if not any(item.casefold() in text for item in fact["equivalents"]):
-                raise SystemExit(f"label is not in the source text: {case['case_id']} {fact['id']}")
+    if len(evaluation) != 48:
+        raise SystemExit(f"evaluation set must have 48 cases, has {len(evaluation)}")
+    _assert_labels(dev)
+    _assert_labels(evaluation, require_long_form=True)
+    _assert_split(dev, evaluation)
     families = {case["generation_family"] for case in dev}
     doc = {
         "role": "development",
@@ -277,11 +444,32 @@ def main():
         "families": eval_families,
         "rights": RIGHTS,
         "cases": [],
+        "written_cases": "quality/eval_cases.json",
     }
+    evaluation_doc = {
+        "role": "evaluation",
+        "frozen_for_execution": True,
+        "not_development": True,
+        "seed": SEED,
+        "generation_reps": 1,
+        "generation_reps_do_not_multiply_n": True,
+        "independent_unit": "generation_family",
+        "family_count": len(eval_families),
+        "cases_per_family": 6,
+        "grid": [list(item) for item in EVAL_GRID],
+        "grid_note": "The six cells are start/middle/end/distributed at tight pressure, plus middle and end at loose pressure. start-loose and distributed-loose are not in this grid.",
+        "dependence": proposal["dependence"],
+        "rights": RIGHTS,
+        "families": eval_families,
+        "cases": evaluation,
+    }
+    with open(os.path.join(HERE, "eval_cases.json"), "w", encoding="utf-8") as fh:
+        json.dump(evaluation_doc, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
     with open(os.path.join(HERE, "eval_proposal.json"), "w", encoding="utf-8") as fh:
         json.dump(proposal, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
-    print(f"dev {len(dev)} families {len(families)} eval_families {len(eval_families)}")
+    print(f"dev {len(dev)} families {len(families)} eval {len(evaluation)} eval_families {len(eval_families)}")
 
 
 if __name__ == "__main__":

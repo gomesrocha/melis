@@ -1,0 +1,27 @@
+# Pinned image ghcr.io/berriai/litellm v1.83.10 config for the RQ3 pilot.
+# num_retries 0 means no same-destination retry. fallbacks names the second model.
+# request_timeout is seconds, aligned with Melis timeout_secs: 1.
+model_list:
+  - model_name: mock-primary
+    litellm_params:
+      model: openai/mock-model
+      api_base: http://host.docker.internal:17170/v1
+      api_key: unused
+      timeout: 1
+  - model_name: mock-fallback
+    litellm_params:
+      model: openai/mock-model
+      api_base: http://host.docker.internal:17172/v1
+      api_key: unused
+      timeout: 1
+
+litellm_settings:
+  cache: false
+  num_retries: 0
+  request_timeout: 1
+  fallbacks:
+    - mock-primary:
+        - mock-fallback
+
+general_settings:
+  telemetry: false

@@ -27,6 +27,7 @@ import socket
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("MOCK_PORT", "7070"))
@@ -70,6 +71,7 @@ def _match_fault(destination: str):
             "n": seen,
             "destination": destination,
             "status": 200 if chosen is None else int(chosen["status"]),
+            "observed_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         })
         if chosen is not None:
             _counts["chat"] += 1

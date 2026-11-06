@@ -1,0 +1,39 @@
+# RQ3 pilot. Two OpenAI-compatible destinations. No cache and no compaction.
+# timeout_secs is the existing provider field, in whole seconds.
+server:
+  host: "0.0.0.0"
+  port: 7071
+
+redis:
+  cluster_urls:
+    - "redis://127.0.0.1:6379"
+  required_for_readiness: false
+
+auth:
+  enabled: false
+  api_keys: []
+
+observability:
+  enabled: false
+  service_name: "melis-rq3-pilot"
+
+compactor:
+  token_threshold: 128000
+  strategy: "none"
+
+circuit_breaker:
+  backend: "local"
+
+providers:
+  - id: "primary"
+    provider_type: "openai"
+    api_key: "unused"
+    base_url: "http://host.docker.internal:17170/v1"
+    timeout_secs: 1
+  - id: "fallback"
+    provider_type: "openai"
+    api_key: "unused"
+    base_url: "http://host.docker.internal:17172/v1"
+    timeout_secs: 1
+
+routes_config_path: "/etc/melis/routes.yaml"

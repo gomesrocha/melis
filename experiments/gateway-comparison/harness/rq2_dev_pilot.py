@@ -32,17 +32,21 @@ sys.path.insert(0, HERE)
 import quality_checks  # noqa: E402
 from csv_writer import CsvTableWriter  # noqa: E402
 
-CASES = os.path.join(ROOT, "quality", "dev_cases.json")
+CASES = os.environ.get("RQ2_CASES", os.path.join(ROOT, "quality", "dev_cases.json"))
 OUT = os.environ.get("RQ2_OUT", os.path.join(ROOT, "data", "rq2-pilot-dev-20261106"))
 PROXY_LOG = os.environ.get(
     "PROXY_LOG", os.path.join(ROOT, "data", "rq2-pilot-dev-20261106", "forwarded.jsonl")
 )
 COLLECTION = os.environ.get("RQ2_COLLECTION", "col-rq2-dev-pilot-20261106")
-EXPERIMENT = "exp-rq2-dev-pilot"
+EXPERIMENT = os.environ.get("RQ2_EXPERIMENT", "exp-rq2-dev-pilot")
+PHASE = os.environ.get("RQ2_PHASE", "pilot")
+RUN_PREFIX = os.environ.get("RQ2_RUN_PREFIX", "run-rq2-dev")
+
+
 def _run(arm):
     # Policy none is both the direct reference and the Melis control, so the
     # run id, not the policy name, separates those two arms.
-    return f"run-rq2-dev-{arm}"
+    return f"{RUN_PREFIX}-{arm}"
 SEED = 20261106
 MAX_TOKENS = 64
 ARMS = (
@@ -106,10 +110,24 @@ def _order(index):
 def main():
     os.makedirs(OUT, exist_ok=True)
     doc = json.load(open(CASES, encoding="utf-8"))
-    if doc.get("role") != "development" or not doc.get("not_evaluation"):
-        raise SystemExit("refusing to run: file is not the development set")
-    if doc.get("generation_reps_pilot") != 1:
-        raise SystemExit("refusing to run: generation_reps_pilot is not frozen at 1")
+    if os.environ.get("RQ2_PROTOCOL"):
+        protocol = json.load(open(os.environ["RQ2_PROTOCOL"], encoding="utf-8"))
+        if protocol.get("execution_authorized") is not True:
+            raise SystemExit("refusing to run: protocol does not authorize execution")
+        if protocol.get("approved_option") != "tradeoff_estimation":
+            raise SystemExit("refusing to run: option is not the approved trade-off estimate")
+        digest = hashlib.sha256(open(CASES, "rb").read()).hexdigest()
+        if digest != protocol.get("cases_sha256"):
+            raise SystemExit("refusing to run: case file hash differs from the frozen protocol")
+        if doc.get("role") != "evaluation" or not doc.get("frozen_for_execution"):
+            raise SystemExit("refusing to run: cases are not the frozen evaluation set")
+        if doc.get("generation_reps") != 1:
+            raise SystemExit("refusing to run: generation_reps is not frozen at 1")
+    else:
+        if doc.get("role") != "development" or not doc.get("not_evaluation"):
+            raise SystemExit("refusing to run: file is not the development set")
+        if doc.get("generation_reps_pilot") != 1:
+            raise SystemExit("refusing to run: generation_reps_pilot is not frozen at 1")
     cases = doc["cases"]
     requests = CsvTableWriter("requests", os.path.join(OUT, "requests.csv"))
     quality = CsvTableWriter("quality", os.path.join(OUT, "quality.csv"))
@@ -129,7 +147,7 @@ def main():
             requests.write_row({
                 "experiment_id": EXPERIMENT,
                 "collection_id": COLLECTION,
-                "phase": "pilot",
+                "phase": PHASE,
                 "run_id": _run(arm),
                 "block_id": case["generation_family"],
                 "pair_id": case["case_id"],
@@ -233,7 +251,7 @@ def main():
             controls.append({"case_id": case["case_id"], "fact_id": item["fact_id"], "score": got, "must_score": 0})
     summary = {
         "collection_id": COLLECTION,
-        "phase": "pilot",
+        "phase": PHASE,
         "not_final": True,
         "generation_reps": 1,
         "seed": SEED,

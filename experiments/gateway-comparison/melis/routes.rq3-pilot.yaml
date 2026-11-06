@@ -1,0 +1,23 @@
+# Weight 0 uses the existing balancer: the positive-weight destination is chosen
+# while it remains available, and the remaining destination is used after it is
+# excluded. This file does not add a product feature.
+custom_providers:
+  - name: "primary"
+    base_url: "http://host.docker.internal:17170/v1"
+    api_format: "openai_compatible"
+  - name: "fallback"
+    base_url: "http://host.docker.internal:17172/v1"
+    api_format: "openai_compatible"
+
+routes:
+  - path: "/v1/chat/completions"
+    method: "POST"
+    providers:
+      - name: "primary"
+        weight: 1
+        model: "mock-model"
+      - name: "fallback"
+        weight: 0
+        model: "mock-model"
+    token_optimization:
+      strategy: "none"

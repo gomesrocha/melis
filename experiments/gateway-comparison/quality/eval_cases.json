@@ -1,0 +1,4368 @@
+{
+  "role": "evaluation",
+  "frozen_for_execution": true,
+  "not_development": true,
+  "seed": 20261106,
+  "generation_reps": 1,
+  "generation_reps_do_not_multiply_n": true,
+  "independent_unit": "generation_family",
+  "family_count": 8,
+  "cases_per_family": 6,
+  "grid": [
+    [
+      "start",
+      "tight"
+    ],
+    [
+      "middle",
+      "tight"
+    ],
+    [
+      "end",
+      "tight"
+    ],
+    [
+      "distributed",
+      "tight"
+    ],
+    [
+      "middle",
+      "loose"
+    ],
+    [
+      "end",
+      "loose"
+    ]
+  ],
+  "grid_note": "The six cells are start/middle/end/distributed at tight pressure, plus middle and end at loose pressure. start-loose and distributed-loose are not in this grid.",
+  "dependence": "Cases that share a generation family are dependent. Resampling for a formal interval draws families, not rows. 48 rows are not 48 independent replications.",
+  "rights": {
+    "authorship": "Original sentences written for this experiment.",
+    "copied_from_external_corpus": false,
+    "private_data": false,
+    "license": null,
+    "license_note": "No license is granted here and none is attributed to the repository owner. The text stays unlicensed repository material until that owner chooses one."
+  },
+  "families": [
+    "shelf-code",
+    "clinic-room",
+    "orchard-crate",
+    "ferry-time",
+    "kiln-batch",
+    "archive-box",
+    "pump-valve",
+    "trail-marker"
+  ],
+  "cases": [
+    {
+      "case_id": "shelf-code-start-tight",
+      "generation_family": "shelf-code",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "prateleira marcada no inventario e a B7",
+            "B7"
+          ],
+          "contradictions": [
+            "prateleira B1"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "aisle",
+          "equivalents": [
+            "corredor desse inventario e o leste",
+            "leste"
+          ],
+          "contradictions": [
+            "corredor oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "inventario",
+        "caixa"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A prateleira marcada no inventario e a B7."
+        },
+        {
+          "role": "user",
+          "content": "O corredor desse inventario e o leste."
+        },
+        {
+          "role": "user",
+          "content": "A etiqueta antiga citava a prateleira B1, mas foi rasurada."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 1: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 2: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 3: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 4: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 5: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 6: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 7: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 8: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 9: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 10: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 11: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 12: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Onde o inventario manda guardar a caixa, deixando de lado o adesivo rasurado?"
+        }
+      ]
+    },
+    {
+      "case_id": "shelf-code-middle-tight",
+      "generation_family": "shelf-code",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "prateleira marcada no inventario e a B7",
+            "B7"
+          ],
+          "contradictions": [
+            "prateleira B1"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "aisle",
+          "equivalents": [
+            "corredor desse inventario e o leste",
+            "leste"
+          ],
+          "contradictions": [
+            "corredor oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "inventario",
+        "caixa"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Etiqueta solta 1: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 2: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 3: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 4: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 5: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 6: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "A prateleira marcada no inventario e a B7."
+        },
+        {
+          "role": "user",
+          "content": "O corredor desse inventario e o leste."
+        },
+        {
+          "role": "user",
+          "content": "A etiqueta antiga citava a prateleira B1, mas foi rasurada."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 7: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 8: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 9: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 10: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 11: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 12: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Onde o inventario manda guardar a caixa, deixando de lado o adesivo rasurado?"
+        }
+      ]
+    },
+    {
+      "case_id": "shelf-code-end-tight",
+      "generation_family": "shelf-code",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "prateleira marcada no inventario e a B7",
+            "B7"
+          ],
+          "contradictions": [
+            "prateleira B1"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "aisle",
+          "equivalents": [
+            "corredor desse inventario e o leste",
+            "leste"
+          ],
+          "contradictions": [
+            "corredor oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "inventario",
+        "caixa"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Etiqueta solta 1: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 2: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 3: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 4: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 5: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 6: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 7: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 8: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 9: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 10: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 11: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 12: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "A prateleira marcada no inventario e a B7."
+        },
+        {
+          "role": "user",
+          "content": "O corredor desse inventario e o leste."
+        },
+        {
+          "role": "user",
+          "content": "A etiqueta antiga citava a prateleira B1, mas foi rasurada."
+        },
+        {
+          "role": "user",
+          "content": "Onde o inventario manda guardar a caixa, deixando de lado o adesivo rasurado?"
+        }
+      ]
+    },
+    {
+      "case_id": "shelf-code-distributed-tight",
+      "generation_family": "shelf-code",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "prateleira marcada no inventario e a B7",
+            "B7"
+          ],
+          "contradictions": [
+            "prateleira B1"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "aisle",
+          "equivalents": [
+            "corredor desse inventario e o leste",
+            "leste"
+          ],
+          "contradictions": [
+            "corredor oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "inventario",
+        "caixa"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A prateleira marcada no inventario e a B7."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 1: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 2: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 3: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 4: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 5: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 6: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 7: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "O corredor desse inventario e o leste."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 8: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 9: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 10: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 11: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 12: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "A etiqueta antiga citava a prateleira B1, mas foi rasurada."
+        },
+        {
+          "role": "user",
+          "content": "Onde o inventario manda guardar a caixa, deixando de lado o adesivo rasurado?"
+        }
+      ]
+    },
+    {
+      "case_id": "shelf-code-middle-loose",
+      "generation_family": "shelf-code",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "prateleira marcada no inventario e a B7",
+            "B7"
+          ],
+          "contradictions": [
+            "prateleira B1"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "aisle",
+          "equivalents": [
+            "corredor desse inventario e o leste",
+            "leste"
+          ],
+          "contradictions": [
+            "corredor oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "inventario",
+        "caixa"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Etiqueta solta 1: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "A prateleira marcada no inventario e a B7."
+        },
+        {
+          "role": "user",
+          "content": "O corredor desse inventario e o leste."
+        },
+        {
+          "role": "user",
+          "content": "A etiqueta antiga citava a prateleira B1, mas foi rasurada."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 2: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Onde o inventario manda guardar a caixa, deixando de lado o adesivo rasurado?"
+        }
+      ]
+    },
+    {
+      "case_id": "shelf-code-end-loose",
+      "generation_family": "shelf-code",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "prateleira marcada no inventario e a B7",
+            "B7"
+          ],
+          "contradictions": [
+            "prateleira B1"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "aisle",
+          "equivalents": [
+            "corredor desse inventario e o leste",
+            "leste"
+          ],
+          "contradictions": [
+            "corredor oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "inventario",
+        "caixa"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Etiqueta solta 1: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "Etiqueta solta 2: este adesivo nao indica o lugar."
+        },
+        {
+          "role": "user",
+          "content": "A prateleira marcada no inventario e a B7."
+        },
+        {
+          "role": "user",
+          "content": "O corredor desse inventario e o leste."
+        },
+        {
+          "role": "user",
+          "content": "A etiqueta antiga citava a prateleira B1, mas foi rasurada."
+        },
+        {
+          "role": "user",
+          "content": "Onde o inventario manda guardar a caixa, deixando de lado o adesivo rasurado?"
+        }
+      ]
+    },
+    {
+      "case_id": "clinic-room-start-tight",
+      "generation_family": "clinic-room",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "room",
+          "equivalents": [
+            "numero 12",
+            "sala de curativo reservada hoje e a de numero 12"
+          ],
+          "contradictions": [
+            "sala 4"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno dessa reserva e o vespertino",
+            "vespertino"
+          ],
+          "contradictions": [
+            "noturno"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "reserva",
+        "curativo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A sala de curativo reservada hoje e a de numero 12."
+        },
+        {
+          "role": "user",
+          "content": "O turno dessa reserva e o vespertino."
+        },
+        {
+          "role": "user",
+          "content": "A sala 4 aparece no mapa, porem nao entra na reserva de hoje."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 1: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 2: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 3: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 4: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 5: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 6: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 7: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 8: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 9: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 10: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 11: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 12: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Qual numero ficou na reserva de curativo de hoje?"
+        }
+      ]
+    },
+    {
+      "case_id": "clinic-room-middle-tight",
+      "generation_family": "clinic-room",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "room",
+          "equivalents": [
+            "numero 12",
+            "sala de curativo reservada hoje e a de numero 12"
+          ],
+          "contradictions": [
+            "sala 4"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno dessa reserva e o vespertino",
+            "vespertino"
+          ],
+          "contradictions": [
+            "noturno"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "reserva",
+        "curativo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Recado de corredor 1: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 2: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 3: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 4: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 5: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 6: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "A sala de curativo reservada hoje e a de numero 12."
+        },
+        {
+          "role": "user",
+          "content": "O turno dessa reserva e o vespertino."
+        },
+        {
+          "role": "user",
+          "content": "A sala 4 aparece no mapa, porem nao entra na reserva de hoje."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 7: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 8: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 9: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 10: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 11: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 12: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Qual numero ficou na reserva de curativo de hoje?"
+        }
+      ]
+    },
+    {
+      "case_id": "clinic-room-end-tight",
+      "generation_family": "clinic-room",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "room",
+          "equivalents": [
+            "numero 12",
+            "sala de curativo reservada hoje e a de numero 12"
+          ],
+          "contradictions": [
+            "sala 4"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno dessa reserva e o vespertino",
+            "vespertino"
+          ],
+          "contradictions": [
+            "noturno"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "reserva",
+        "curativo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Recado de corredor 1: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 2: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 3: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 4: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 5: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 6: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 7: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 8: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 9: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 10: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 11: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 12: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "A sala de curativo reservada hoje e a de numero 12."
+        },
+        {
+          "role": "user",
+          "content": "O turno dessa reserva e o vespertino."
+        },
+        {
+          "role": "user",
+          "content": "A sala 4 aparece no mapa, porem nao entra na reserva de hoje."
+        },
+        {
+          "role": "user",
+          "content": "Qual numero ficou na reserva de curativo de hoje?"
+        }
+      ]
+    },
+    {
+      "case_id": "clinic-room-distributed-tight",
+      "generation_family": "clinic-room",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "room",
+          "equivalents": [
+            "numero 12",
+            "sala de curativo reservada hoje e a de numero 12"
+          ],
+          "contradictions": [
+            "sala 4"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno dessa reserva e o vespertino",
+            "vespertino"
+          ],
+          "contradictions": [
+            "noturno"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "reserva",
+        "curativo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A sala de curativo reservada hoje e a de numero 12."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 1: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 2: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 3: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 4: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 5: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 6: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 7: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "O turno dessa reserva e o vespertino."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 8: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 9: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 10: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 11: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 12: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "A sala 4 aparece no mapa, porem nao entra na reserva de hoje."
+        },
+        {
+          "role": "user",
+          "content": "Qual numero ficou na reserva de curativo de hoje?"
+        }
+      ]
+    },
+    {
+      "case_id": "clinic-room-middle-loose",
+      "generation_family": "clinic-room",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "room",
+          "equivalents": [
+            "numero 12",
+            "sala de curativo reservada hoje e a de numero 12"
+          ],
+          "contradictions": [
+            "sala 4"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno dessa reserva e o vespertino",
+            "vespertino"
+          ],
+          "contradictions": [
+            "noturno"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "reserva",
+        "curativo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Recado de corredor 1: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "A sala de curativo reservada hoje e a de numero 12."
+        },
+        {
+          "role": "user",
+          "content": "O turno dessa reserva e o vespertino."
+        },
+        {
+          "role": "user",
+          "content": "A sala 4 aparece no mapa, porem nao entra na reserva de hoje."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 2: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Qual numero ficou na reserva de curativo de hoje?"
+        }
+      ]
+    },
+    {
+      "case_id": "clinic-room-end-loose",
+      "generation_family": "clinic-room",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "room",
+          "equivalents": [
+            "numero 12",
+            "sala de curativo reservada hoje e a de numero 12"
+          ],
+          "contradictions": [
+            "sala 4"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno dessa reserva e o vespertino",
+            "vespertino"
+          ],
+          "contradictions": [
+            "noturno"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "reserva",
+        "curativo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Recado de corredor 1: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "Recado de corredor 2: este papel nao marca a reserva."
+        },
+        {
+          "role": "user",
+          "content": "A sala de curativo reservada hoje e a de numero 12."
+        },
+        {
+          "role": "user",
+          "content": "O turno dessa reserva e o vespertino."
+        },
+        {
+          "role": "user",
+          "content": "A sala 4 aparece no mapa, porem nao entra na reserva de hoje."
+        },
+        {
+          "role": "user",
+          "content": "Qual numero ficou na reserva de curativo de hoje?"
+        }
+      ]
+    },
+    {
+      "case_id": "orchard-crate-start-tight",
+      "generation_family": "orchard-crate",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "fruit",
+          "equivalents": [
+            "caixa que segue para a feira e a de macas",
+            "macas"
+          ],
+          "contradictions": [
+            "peras"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "count",
+          "equivalents": [
+            "quantidade contada nessa caixa e 30",
+            "30"
+          ],
+          "contradictions": [
+            "40"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "feira",
+        "unidades"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A caixa que segue para a feira e a de macas."
+        },
+        {
+          "role": "user",
+          "content": "A quantidade contada nessa caixa e 30."
+        },
+        {
+          "role": "user",
+          "content": "As peras ficam na caixa ao lado e nao vao para a feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 1: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 2: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 3: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 4: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 5: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 6: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 7: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 8: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 9: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 10: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 11: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 12: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "O que segue para a feira e quantas unidades foram contadas?"
+        }
+      ]
+    },
+    {
+      "case_id": "orchard-crate-middle-tight",
+      "generation_family": "orchard-crate",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "fruit",
+          "equivalents": [
+            "caixa que segue para a feira e a de macas",
+            "macas"
+          ],
+          "contradictions": [
+            "peras"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "count",
+          "equivalents": [
+            "quantidade contada nessa caixa e 30",
+            "30"
+          ],
+          "contradictions": [
+            "40"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "feira",
+        "unidades"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Folha de caderno 1: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 2: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 3: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 4: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 5: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 6: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "A caixa que segue para a feira e a de macas."
+        },
+        {
+          "role": "user",
+          "content": "A quantidade contada nessa caixa e 30."
+        },
+        {
+          "role": "user",
+          "content": "As peras ficam na caixa ao lado e nao vao para a feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 7: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 8: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 9: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 10: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 11: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 12: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "O que segue para a feira e quantas unidades foram contadas?"
+        }
+      ]
+    },
+    {
+      "case_id": "orchard-crate-end-tight",
+      "generation_family": "orchard-crate",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "fruit",
+          "equivalents": [
+            "caixa que segue para a feira e a de macas",
+            "macas"
+          ],
+          "contradictions": [
+            "peras"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "count",
+          "equivalents": [
+            "quantidade contada nessa caixa e 30",
+            "30"
+          ],
+          "contradictions": [
+            "40"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "feira",
+        "unidades"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Folha de caderno 1: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 2: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 3: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 4: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 5: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 6: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 7: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 8: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 9: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 10: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 11: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 12: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "A caixa que segue para a feira e a de macas."
+        },
+        {
+          "role": "user",
+          "content": "A quantidade contada nessa caixa e 30."
+        },
+        {
+          "role": "user",
+          "content": "As peras ficam na caixa ao lado e nao vao para a feira."
+        },
+        {
+          "role": "user",
+          "content": "O que segue para a feira e quantas unidades foram contadas?"
+        }
+      ]
+    },
+    {
+      "case_id": "orchard-crate-distributed-tight",
+      "generation_family": "orchard-crate",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "fruit",
+          "equivalents": [
+            "caixa que segue para a feira e a de macas",
+            "macas"
+          ],
+          "contradictions": [
+            "peras"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "count",
+          "equivalents": [
+            "quantidade contada nessa caixa e 30",
+            "30"
+          ],
+          "contradictions": [
+            "40"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "feira",
+        "unidades"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A caixa que segue para a feira e a de macas."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 1: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 2: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 3: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 4: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 5: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 6: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 7: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "A quantidade contada nessa caixa e 30."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 8: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 9: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 10: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 11: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 12: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "As peras ficam na caixa ao lado e nao vao para a feira."
+        },
+        {
+          "role": "user",
+          "content": "O que segue para a feira e quantas unidades foram contadas?"
+        }
+      ]
+    },
+    {
+      "case_id": "orchard-crate-middle-loose",
+      "generation_family": "orchard-crate",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "fruit",
+          "equivalents": [
+            "caixa que segue para a feira e a de macas",
+            "macas"
+          ],
+          "contradictions": [
+            "peras"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "count",
+          "equivalents": [
+            "quantidade contada nessa caixa e 30",
+            "30"
+          ],
+          "contradictions": [
+            "40"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "feira",
+        "unidades"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Folha de caderno 1: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "A caixa que segue para a feira e a de macas."
+        },
+        {
+          "role": "user",
+          "content": "A quantidade contada nessa caixa e 30."
+        },
+        {
+          "role": "user",
+          "content": "As peras ficam na caixa ao lado e nao vao para a feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 2: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "O que segue para a feira e quantas unidades foram contadas?"
+        }
+      ]
+    },
+    {
+      "case_id": "orchard-crate-end-loose",
+      "generation_family": "orchard-crate",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "fruit",
+          "equivalents": [
+            "caixa que segue para a feira e a de macas",
+            "macas"
+          ],
+          "contradictions": [
+            "peras"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "count",
+          "equivalents": [
+            "quantidade contada nessa caixa e 30",
+            "30"
+          ],
+          "contradictions": [
+            "40"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "feira",
+        "unidades"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Folha de caderno 1: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "Folha de caderno 2: esta linha nao descreve a caixa da feira."
+        },
+        {
+          "role": "user",
+          "content": "A caixa que segue para a feira e a de macas."
+        },
+        {
+          "role": "user",
+          "content": "A quantidade contada nessa caixa e 30."
+        },
+        {
+          "role": "user",
+          "content": "As peras ficam na caixa ao lado e nao vao para a feira."
+        },
+        {
+          "role": "user",
+          "content": "O que segue para a feira e quantas unidades foram contadas?"
+        }
+      ]
+    },
+    {
+      "case_id": "ferry-time-start-tight",
+      "generation_family": "ferry-time",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "departure",
+          "equivalents": [
+            "parte as 06h10",
+            "06h10"
+          ],
+          "contradictions": [
+            "16h40"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "ramp",
+          "equivalents": [
+            "rampa dessa partida e a rampa norte",
+            "rampa norte"
+          ],
+          "contradictions": [
+            "rampa sul"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "travessia",
+        "manha"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A balsa da manha parte as 06h10."
+        },
+        {
+          "role": "user",
+          "content": "A rampa dessa partida e a rampa norte."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da tarde parte as 16h40 e nao marca a partida da manha."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 1: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 2: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 3: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 4: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 5: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 6: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 7: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 8: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 9: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 10: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 11: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 12: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Quando parte a travessia da manha?"
+        }
+      ]
+    },
+    {
+      "case_id": "ferry-time-middle-tight",
+      "generation_family": "ferry-time",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "departure",
+          "equivalents": [
+            "parte as 06h10",
+            "06h10"
+          ],
+          "contradictions": [
+            "16h40"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "ramp",
+          "equivalents": [
+            "rampa dessa partida e a rampa norte",
+            "rampa norte"
+          ],
+          "contradictions": [
+            "rampa sul"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "travessia",
+        "manha"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Aviso de deck 1: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 2: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 3: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 4: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 5: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 6: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da manha parte as 06h10."
+        },
+        {
+          "role": "user",
+          "content": "A rampa dessa partida e a rampa norte."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da tarde parte as 16h40 e nao marca a partida da manha."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 7: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 8: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 9: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 10: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 11: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 12: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Quando parte a travessia da manha?"
+        }
+      ]
+    },
+    {
+      "case_id": "ferry-time-end-tight",
+      "generation_family": "ferry-time",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "departure",
+          "equivalents": [
+            "parte as 06h10",
+            "06h10"
+          ],
+          "contradictions": [
+            "16h40"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "ramp",
+          "equivalents": [
+            "rampa dessa partida e a rampa norte",
+            "rampa norte"
+          ],
+          "contradictions": [
+            "rampa sul"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "travessia",
+        "manha"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Aviso de deck 1: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 2: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 3: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 4: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 5: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 6: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 7: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 8: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 9: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 10: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 11: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 12: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da manha parte as 06h10."
+        },
+        {
+          "role": "user",
+          "content": "A rampa dessa partida e a rampa norte."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da tarde parte as 16h40 e nao marca a partida da manha."
+        },
+        {
+          "role": "user",
+          "content": "Quando parte a travessia da manha?"
+        }
+      ]
+    },
+    {
+      "case_id": "ferry-time-distributed-tight",
+      "generation_family": "ferry-time",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "departure",
+          "equivalents": [
+            "parte as 06h10",
+            "06h10"
+          ],
+          "contradictions": [
+            "16h40"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "ramp",
+          "equivalents": [
+            "rampa dessa partida e a rampa norte",
+            "rampa norte"
+          ],
+          "contradictions": [
+            "rampa sul"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "travessia",
+        "manha"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A balsa da manha parte as 06h10."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 1: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 2: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 3: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 4: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 5: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 6: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 7: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "A rampa dessa partida e a rampa norte."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 8: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 9: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 10: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 11: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 12: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da tarde parte as 16h40 e nao marca a partida da manha."
+        },
+        {
+          "role": "user",
+          "content": "Quando parte a travessia da manha?"
+        }
+      ]
+    },
+    {
+      "case_id": "ferry-time-middle-loose",
+      "generation_family": "ferry-time",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "departure",
+          "equivalents": [
+            "parte as 06h10",
+            "06h10"
+          ],
+          "contradictions": [
+            "16h40"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "ramp",
+          "equivalents": [
+            "rampa dessa partida e a rampa norte",
+            "rampa norte"
+          ],
+          "contradictions": [
+            "rampa sul"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "travessia",
+        "manha"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Aviso de deck 1: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da manha parte as 06h10."
+        },
+        {
+          "role": "user",
+          "content": "A rampa dessa partida e a rampa norte."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da tarde parte as 16h40 e nao marca a partida da manha."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 2: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Quando parte a travessia da manha?"
+        }
+      ]
+    },
+    {
+      "case_id": "ferry-time-end-loose",
+      "generation_family": "ferry-time",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "departure",
+          "equivalents": [
+            "parte as 06h10",
+            "06h10"
+          ],
+          "contradictions": [
+            "16h40"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "ramp",
+          "equivalents": [
+            "rampa dessa partida e a rampa norte",
+            "rampa norte"
+          ],
+          "contradictions": [
+            "rampa sul"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "travessia",
+        "manha"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Aviso de deck 1: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "Aviso de deck 2: este aviso nao marca o horario pedido."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da manha parte as 06h10."
+        },
+        {
+          "role": "user",
+          "content": "A rampa dessa partida e a rampa norte."
+        },
+        {
+          "role": "user",
+          "content": "A balsa da tarde parte as 16h40 e nao marca a partida da manha."
+        },
+        {
+          "role": "user",
+          "content": "Quando parte a travessia da manha?"
+        }
+      ]
+    },
+    {
+      "case_id": "kiln-batch-start-tight",
+      "generation_family": "kiln-batch",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "batch",
+          "equivalents": [
+            "fornada liberada para sair e a segunda",
+            "segunda"
+          ],
+          "contradictions": [
+            "primeira fornada"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "operator",
+          "equivalents": [
+            "operador dessa fornada assina com o nome Lina",
+            "Lina"
+          ],
+          "contradictions": [
+            "Rita"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "fornada",
+        "forno"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A fornada liberada para sair e a segunda."
+        },
+        {
+          "role": "user",
+          "content": "O operador dessa fornada assina com o nome Lina."
+        },
+        {
+          "role": "user",
+          "content": "A primeira fornada ficou retida e nao pode sair."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 1: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 2: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 3: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 4: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 5: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 6: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 7: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 8: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 9: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 10: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 11: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 12: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Qual fornada pode deixar o forno?"
+        }
+      ]
+    },
+    {
+      "case_id": "kiln-batch-middle-tight",
+      "generation_family": "kiln-batch",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "batch",
+          "equivalents": [
+            "fornada liberada para sair e a segunda",
+            "segunda"
+          ],
+          "contradictions": [
+            "primeira fornada"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "operator",
+          "equivalents": [
+            "operador dessa fornada assina com o nome Lina",
+            "Lina"
+          ],
+          "contradictions": [
+            "Rita"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "fornada",
+        "forno"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Bilhete de forno 1: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 2: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 3: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 4: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 5: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 6: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "A fornada liberada para sair e a segunda."
+        },
+        {
+          "role": "user",
+          "content": "O operador dessa fornada assina com o nome Lina."
+        },
+        {
+          "role": "user",
+          "content": "A primeira fornada ficou retida e nao pode sair."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 7: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 8: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 9: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 10: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 11: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 12: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Qual fornada pode deixar o forno?"
+        }
+      ]
+    },
+    {
+      "case_id": "kiln-batch-end-tight",
+      "generation_family": "kiln-batch",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "batch",
+          "equivalents": [
+            "fornada liberada para sair e a segunda",
+            "segunda"
+          ],
+          "contradictions": [
+            "primeira fornada"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "operator",
+          "equivalents": [
+            "operador dessa fornada assina com o nome Lina",
+            "Lina"
+          ],
+          "contradictions": [
+            "Rita"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "fornada",
+        "forno"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Bilhete de forno 1: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 2: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 3: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 4: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 5: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 6: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 7: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 8: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 9: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 10: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 11: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 12: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "A fornada liberada para sair e a segunda."
+        },
+        {
+          "role": "user",
+          "content": "O operador dessa fornada assina com o nome Lina."
+        },
+        {
+          "role": "user",
+          "content": "A primeira fornada ficou retida e nao pode sair."
+        },
+        {
+          "role": "user",
+          "content": "Qual fornada pode deixar o forno?"
+        }
+      ]
+    },
+    {
+      "case_id": "kiln-batch-distributed-tight",
+      "generation_family": "kiln-batch",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "batch",
+          "equivalents": [
+            "fornada liberada para sair e a segunda",
+            "segunda"
+          ],
+          "contradictions": [
+            "primeira fornada"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "operator",
+          "equivalents": [
+            "operador dessa fornada assina com o nome Lina",
+            "Lina"
+          ],
+          "contradictions": [
+            "Rita"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "fornada",
+        "forno"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A fornada liberada para sair e a segunda."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 1: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 2: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 3: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 4: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 5: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 6: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 7: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "O operador dessa fornada assina com o nome Lina."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 8: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 9: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 10: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 11: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 12: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "A primeira fornada ficou retida e nao pode sair."
+        },
+        {
+          "role": "user",
+          "content": "Qual fornada pode deixar o forno?"
+        }
+      ]
+    },
+    {
+      "case_id": "kiln-batch-middle-loose",
+      "generation_family": "kiln-batch",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "batch",
+          "equivalents": [
+            "fornada liberada para sair e a segunda",
+            "segunda"
+          ],
+          "contradictions": [
+            "primeira fornada"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "operator",
+          "equivalents": [
+            "operador dessa fornada assina com o nome Lina",
+            "Lina"
+          ],
+          "contradictions": [
+            "Rita"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "fornada",
+        "forno"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Bilhete de forno 1: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "A fornada liberada para sair e a segunda."
+        },
+        {
+          "role": "user",
+          "content": "O operador dessa fornada assina com o nome Lina."
+        },
+        {
+          "role": "user",
+          "content": "A primeira fornada ficou retida e nao pode sair."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 2: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Qual fornada pode deixar o forno?"
+        }
+      ]
+    },
+    {
+      "case_id": "kiln-batch-end-loose",
+      "generation_family": "kiln-batch",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "batch",
+          "equivalents": [
+            "fornada liberada para sair e a segunda",
+            "segunda"
+          ],
+          "contradictions": [
+            "primeira fornada"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "operator",
+          "equivalents": [
+            "operador dessa fornada assina com o nome Lina",
+            "Lina"
+          ],
+          "contradictions": [
+            "Rita"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "fornada",
+        "forno"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Bilhete de forno 1: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "Bilhete de forno 2: este bilhete nao libera fornada."
+        },
+        {
+          "role": "user",
+          "content": "A fornada liberada para sair e a segunda."
+        },
+        {
+          "role": "user",
+          "content": "O operador dessa fornada assina com o nome Lina."
+        },
+        {
+          "role": "user",
+          "content": "A primeira fornada ficou retida e nao pode sair."
+        },
+        {
+          "role": "user",
+          "content": "Qual fornada pode deixar o forno?"
+        }
+      ]
+    },
+    {
+      "case_id": "archive-box-start-tight",
+      "generation_family": "archive-box",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "code",
+          "equivalents": [
+            "codigo AZ-4",
+            "AZ-4"
+          ],
+          "contradictions": [
+            "AZ-9"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "estante inferior"
+          ],
+          "contradictions": [
+            "estante superior"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "codigo",
+        "arquivo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": "Mantenha a resposta em uma unica linha.",
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "system",
+          "content": "Mantenha a resposta em uma unica linha."
+        },
+        {
+          "role": "user",
+          "content": "A caixa do arquivo morto leva o codigo AZ-4."
+        },
+        {
+          "role": "user",
+          "content": "Essa caixa fica na estante inferior."
+        },
+        {
+          "role": "user",
+          "content": "A caixa AZ-9 foi descartada e nao esta no arquivo morto."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 1: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 2: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 3: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 4: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 5: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 6: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 7: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 8: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 9: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 10: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 11: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 12: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Qual codigo identifica a caixa guardada no arquivo morto?"
+        }
+      ]
+    },
+    {
+      "case_id": "archive-box-middle-tight",
+      "generation_family": "archive-box",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "code",
+          "equivalents": [
+            "codigo AZ-4",
+            "AZ-4"
+          ],
+          "contradictions": [
+            "AZ-9"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "estante inferior"
+          ],
+          "contradictions": [
+            "estante superior"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "codigo",
+        "arquivo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": "Mantenha a resposta em uma unica linha.",
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "system",
+          "content": "Mantenha a resposta em uma unica linha."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 1: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 2: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 3: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 4: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 5: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 6: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "A caixa do arquivo morto leva o codigo AZ-4."
+        },
+        {
+          "role": "user",
+          "content": "Essa caixa fica na estante inferior."
+        },
+        {
+          "role": "user",
+          "content": "A caixa AZ-9 foi descartada e nao esta no arquivo morto."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 7: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 8: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 9: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 10: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 11: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 12: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Qual codigo identifica a caixa guardada no arquivo morto?"
+        }
+      ]
+    },
+    {
+      "case_id": "archive-box-end-tight",
+      "generation_family": "archive-box",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "code",
+          "equivalents": [
+            "codigo AZ-4",
+            "AZ-4"
+          ],
+          "contradictions": [
+            "AZ-9"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "estante inferior"
+          ],
+          "contradictions": [
+            "estante superior"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "codigo",
+        "arquivo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": "Mantenha a resposta em uma unica linha.",
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "system",
+          "content": "Mantenha a resposta em uma unica linha."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 1: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 2: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 3: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 4: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 5: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 6: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 7: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 8: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 9: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 10: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 11: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 12: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "A caixa do arquivo morto leva o codigo AZ-4."
+        },
+        {
+          "role": "user",
+          "content": "Essa caixa fica na estante inferior."
+        },
+        {
+          "role": "user",
+          "content": "A caixa AZ-9 foi descartada e nao esta no arquivo morto."
+        },
+        {
+          "role": "user",
+          "content": "Qual codigo identifica a caixa guardada no arquivo morto?"
+        }
+      ]
+    },
+    {
+      "case_id": "archive-box-distributed-tight",
+      "generation_family": "archive-box",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "code",
+          "equivalents": [
+            "codigo AZ-4",
+            "AZ-4"
+          ],
+          "contradictions": [
+            "AZ-9"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "estante inferior"
+          ],
+          "contradictions": [
+            "estante superior"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "codigo",
+        "arquivo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": "Mantenha a resposta em uma unica linha.",
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "system",
+          "content": "Mantenha a resposta em uma unica linha."
+        },
+        {
+          "role": "user",
+          "content": "A caixa do arquivo morto leva o codigo AZ-4."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 1: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 2: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 3: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 4: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 5: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 6: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 7: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Essa caixa fica na estante inferior."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 8: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 9: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 10: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 11: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 12: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "A caixa AZ-9 foi descartada e nao esta no arquivo morto."
+        },
+        {
+          "role": "user",
+          "content": "Qual codigo identifica a caixa guardada no arquivo morto?"
+        }
+      ]
+    },
+    {
+      "case_id": "archive-box-middle-loose",
+      "generation_family": "archive-box",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "code",
+          "equivalents": [
+            "codigo AZ-4",
+            "AZ-4"
+          ],
+          "contradictions": [
+            "AZ-9"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "estante inferior"
+          ],
+          "contradictions": [
+            "estante superior"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "codigo",
+        "arquivo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": "Mantenha a resposta em uma unica linha.",
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "system",
+          "content": "Mantenha a resposta em uma unica linha."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 1: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "A caixa do arquivo morto leva o codigo AZ-4."
+        },
+        {
+          "role": "user",
+          "content": "Essa caixa fica na estante inferior."
+        },
+        {
+          "role": "user",
+          "content": "A caixa AZ-9 foi descartada e nao esta no arquivo morto."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 2: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Qual codigo identifica a caixa guardada no arquivo morto?"
+        }
+      ]
+    },
+    {
+      "case_id": "archive-box-end-loose",
+      "generation_family": "archive-box",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "code",
+          "equivalents": [
+            "codigo AZ-4",
+            "AZ-4"
+          ],
+          "contradictions": [
+            "AZ-9"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shelf",
+          "equivalents": [
+            "estante inferior"
+          ],
+          "contradictions": [
+            "estante superior"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "codigo",
+        "arquivo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": "Mantenha a resposta em uma unica linha.",
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "system",
+          "content": "Mantenha a resposta em uma unica linha."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 1: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "Ficha avulsa 2: esta ficha nao guarda o codigo."
+        },
+        {
+          "role": "user",
+          "content": "A caixa do arquivo morto leva o codigo AZ-4."
+        },
+        {
+          "role": "user",
+          "content": "Essa caixa fica na estante inferior."
+        },
+        {
+          "role": "user",
+          "content": "A caixa AZ-9 foi descartada e nao esta no arquivo morto."
+        },
+        {
+          "role": "user",
+          "content": "Qual codigo identifica a caixa guardada no arquivo morto?"
+        }
+      ]
+    },
+    {
+      "case_id": "pump-valve-start-tight",
+      "generation_family": "pump-valve",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "pressure",
+          "equivalents": [
+            "pressao anotada no visor e 3 bar",
+            "3 bar"
+          ],
+          "contradictions": [
+            "5 bar"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "tool",
+          "equivalents": [
+            "ler_pressao"
+          ],
+          "contradictions": [
+            "ler_vazao"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "visor",
+        "leitura"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": "ler_pressao",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Antes de fechar o registro, use a ferramenta ler_pressao."
+        },
+        {
+          "role": "user",
+          "content": "A pressao anotada no visor e 3 bar."
+        },
+        {
+          "role": "user",
+          "content": "O visor ao lado, que nao vale, marcava 5 bar."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 1: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 2: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 3: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 4: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 5: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 6: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 7: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 8: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 9: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 10: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 11: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 12: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "O que o visor valido mostrou na leitura?"
+        }
+      ]
+    },
+    {
+      "case_id": "pump-valve-middle-tight",
+      "generation_family": "pump-valve",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "pressure",
+          "equivalents": [
+            "pressao anotada no visor e 3 bar",
+            "3 bar"
+          ],
+          "contradictions": [
+            "5 bar"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "tool",
+          "equivalents": [
+            "ler_pressao"
+          ],
+          "contradictions": [
+            "ler_vazao"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "visor",
+        "leitura"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": "ler_pressao",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Nota de valvula 1: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 2: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 3: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 4: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 5: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 6: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Antes de fechar o registro, use a ferramenta ler_pressao."
+        },
+        {
+          "role": "user",
+          "content": "A pressao anotada no visor e 3 bar."
+        },
+        {
+          "role": "user",
+          "content": "O visor ao lado, que nao vale, marcava 5 bar."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 7: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 8: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 9: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 10: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 11: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 12: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "O que o visor valido mostrou na leitura?"
+        }
+      ]
+    },
+    {
+      "case_id": "pump-valve-end-tight",
+      "generation_family": "pump-valve",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "pressure",
+          "equivalents": [
+            "pressao anotada no visor e 3 bar",
+            "3 bar"
+          ],
+          "contradictions": [
+            "5 bar"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "tool",
+          "equivalents": [
+            "ler_pressao"
+          ],
+          "contradictions": [
+            "ler_vazao"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "visor",
+        "leitura"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": "ler_pressao",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Nota de valvula 1: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 2: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 3: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 4: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 5: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 6: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 7: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 8: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 9: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 10: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 11: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 12: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Antes de fechar o registro, use a ferramenta ler_pressao."
+        },
+        {
+          "role": "user",
+          "content": "A pressao anotada no visor e 3 bar."
+        },
+        {
+          "role": "user",
+          "content": "O visor ao lado, que nao vale, marcava 5 bar."
+        },
+        {
+          "role": "user",
+          "content": "O que o visor valido mostrou na leitura?"
+        }
+      ]
+    },
+    {
+      "case_id": "pump-valve-distributed-tight",
+      "generation_family": "pump-valve",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "pressure",
+          "equivalents": [
+            "pressao anotada no visor e 3 bar",
+            "3 bar"
+          ],
+          "contradictions": [
+            "5 bar"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "tool",
+          "equivalents": [
+            "ler_pressao"
+          ],
+          "contradictions": [
+            "ler_vazao"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "visor",
+        "leitura"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": "ler_pressao",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Antes de fechar o registro, use a ferramenta ler_pressao."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 1: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 2: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 3: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 4: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 5: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 6: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 7: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "A pressao anotada no visor e 3 bar."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 8: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 9: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 10: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 11: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 12: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "O visor ao lado, que nao vale, marcava 5 bar."
+        },
+        {
+          "role": "user",
+          "content": "O que o visor valido mostrou na leitura?"
+        }
+      ]
+    },
+    {
+      "case_id": "pump-valve-middle-loose",
+      "generation_family": "pump-valve",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "pressure",
+          "equivalents": [
+            "pressao anotada no visor e 3 bar",
+            "3 bar"
+          ],
+          "contradictions": [
+            "5 bar"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "tool",
+          "equivalents": [
+            "ler_pressao"
+          ],
+          "contradictions": [
+            "ler_vazao"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "visor",
+        "leitura"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": "ler_pressao",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Nota de valvula 1: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Antes de fechar o registro, use a ferramenta ler_pressao."
+        },
+        {
+          "role": "user",
+          "content": "A pressao anotada no visor e 3 bar."
+        },
+        {
+          "role": "user",
+          "content": "O visor ao lado, que nao vale, marcava 5 bar."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 2: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "O que o visor valido mostrou na leitura?"
+        }
+      ]
+    },
+    {
+      "case_id": "pump-valve-end-loose",
+      "generation_family": "pump-valve",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "pressure",
+          "equivalents": [
+            "pressao anotada no visor e 3 bar",
+            "3 bar"
+          ],
+          "contradictions": [
+            "5 bar"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "tool",
+          "equivalents": [
+            "ler_pressao"
+          ],
+          "contradictions": [
+            "ler_vazao"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "visor",
+        "leitura"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": "ler_pressao",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Nota de valvula 1: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Nota de valvula 2: esta nota nao traz a leitura."
+        },
+        {
+          "role": "user",
+          "content": "Antes de fechar o registro, use a ferramenta ler_pressao."
+        },
+        {
+          "role": "user",
+          "content": "A pressao anotada no visor e 3 bar."
+        },
+        {
+          "role": "user",
+          "content": "O visor ao lado, que nao vale, marcava 5 bar."
+        },
+        {
+          "role": "user",
+          "content": "O que o visor valido mostrou na leitura?"
+        }
+      ]
+    },
+    {
+      "case_id": "trail-marker-start-tight",
+      "generation_family": "trail-marker",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "marker",
+          "equivalents": [
+            "marco que indica a trilha certa e o marco verde",
+            "marco verde"
+          ],
+          "contradictions": [
+            "marco vermelho"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "distance",
+          "equivalents": [
+            "2 quilometros"
+          ],
+          "contradictions": [
+            "5 quilometros"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cor",
+        "abrigo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "O marco que indica a trilha certa e o marco verde."
+        },
+        {
+          "role": "user",
+          "content": "A distancia desse marco ate o abrigo e de 2 quilometros."
+        },
+        {
+          "role": "user",
+          "content": "O marco vermelho aponta para o desvio e nao para a trilha certa."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 1: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 2: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 3: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 4: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 5: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 6: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 7: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 8: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 9: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 10: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 11: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 12: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Qual cor guia quem procura o abrigo?"
+        }
+      ]
+    },
+    {
+      "case_id": "trail-marker-middle-tight",
+      "generation_family": "trail-marker",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "marker",
+          "equivalents": [
+            "marco que indica a trilha certa e o marco verde",
+            "marco verde"
+          ],
+          "contradictions": [
+            "marco vermelho"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "distance",
+          "equivalents": [
+            "2 quilometros"
+          ],
+          "contradictions": [
+            "5 quilometros"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cor",
+        "abrigo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Placa caiada 1: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 2: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 3: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 4: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 5: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 6: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "O marco que indica a trilha certa e o marco verde."
+        },
+        {
+          "role": "user",
+          "content": "A distancia desse marco ate o abrigo e de 2 quilometros."
+        },
+        {
+          "role": "user",
+          "content": "O marco vermelho aponta para o desvio e nao para a trilha certa."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 7: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 8: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 9: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 10: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 11: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 12: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Qual cor guia quem procura o abrigo?"
+        }
+      ]
+    },
+    {
+      "case_id": "trail-marker-end-tight",
+      "generation_family": "trail-marker",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "marker",
+          "equivalents": [
+            "marco que indica a trilha certa e o marco verde",
+            "marco verde"
+          ],
+          "contradictions": [
+            "marco vermelho"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "distance",
+          "equivalents": [
+            "2 quilometros"
+          ],
+          "contradictions": [
+            "5 quilometros"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cor",
+        "abrigo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Placa caiada 1: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 2: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 3: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 4: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 5: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 6: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 7: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 8: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 9: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 10: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 11: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 12: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "O marco que indica a trilha certa e o marco verde."
+        },
+        {
+          "role": "user",
+          "content": "A distancia desse marco ate o abrigo e de 2 quilometros."
+        },
+        {
+          "role": "user",
+          "content": "O marco vermelho aponta para o desvio e nao para a trilha certa."
+        },
+        {
+          "role": "user",
+          "content": "Qual cor guia quem procura o abrigo?"
+        }
+      ]
+    },
+    {
+      "case_id": "trail-marker-distributed-tight",
+      "generation_family": "trail-marker",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "marker",
+          "equivalents": [
+            "marco que indica a trilha certa e o marco verde",
+            "marco verde"
+          ],
+          "contradictions": [
+            "marco vermelho"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "distance",
+          "equivalents": [
+            "2 quilometros"
+          ],
+          "contradictions": [
+            "5 quilometros"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cor",
+        "abrigo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "O marco que indica a trilha certa e o marco verde."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 1: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 2: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 3: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 4: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 5: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 6: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 7: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "A distancia desse marco ate o abrigo e de 2 quilometros."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 8: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 9: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 10: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 11: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 12: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "O marco vermelho aponta para o desvio e nao para a trilha certa."
+        },
+        {
+          "role": "user",
+          "content": "Qual cor guia quem procura o abrigo?"
+        }
+      ]
+    },
+    {
+      "case_id": "trail-marker-middle-loose",
+      "generation_family": "trail-marker",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "marker",
+          "equivalents": [
+            "marco que indica a trilha certa e o marco verde",
+            "marco verde"
+          ],
+          "contradictions": [
+            "marco vermelho"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "distance",
+          "equivalents": [
+            "2 quilometros"
+          ],
+          "contradictions": [
+            "5 quilometros"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cor",
+        "abrigo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Placa caiada 1: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "O marco que indica a trilha certa e o marco verde."
+        },
+        {
+          "role": "user",
+          "content": "A distancia desse marco ate o abrigo e de 2 quilometros."
+        },
+        {
+          "role": "user",
+          "content": "O marco vermelho aponta para o desvio e nao para a trilha certa."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 2: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Qual cor guia quem procura o abrigo?"
+        }
+      ]
+    },
+    {
+      "case_id": "trail-marker-end-loose",
+      "generation_family": "trail-marker",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "marker",
+          "equivalents": [
+            "marco que indica a trilha certa e o marco verde",
+            "marco verde"
+          ],
+          "contradictions": [
+            "marco vermelho"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "distance",
+          "equivalents": [
+            "2 quilometros"
+          ],
+          "contradictions": [
+            "5 quilometros"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cor",
+        "abrigo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Placa caiada 1: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "Placa caiada 2: esta placa nao aponta o abrigo."
+        },
+        {
+          "role": "user",
+          "content": "O marco que indica a trilha certa e o marco verde."
+        },
+        {
+          "role": "user",
+          "content": "A distancia desse marco ate o abrigo e de 2 quilometros."
+        },
+        {
+          "role": "user",
+          "content": "O marco vermelho aponta para o desvio e nao para a trilha certa."
+        },
+        {
+          "role": "user",
+          "content": "Qual cor guia quem procura o abrigo?"
+        }
+      ]
+    }
+  ]
+}

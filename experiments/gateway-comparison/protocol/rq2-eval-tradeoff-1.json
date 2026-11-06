@@ -1,0 +1,79 @@
+{
+  "name": "rq2-eval-tradeoff-1",
+  "execution_authorized": true,
+  "approved_option": "tradeoff_estimation",
+  "non_inferiority": false,
+  "delta": null,
+  "collection_id": "col-rq2-eval-20261106",
+  "phase": "final",
+  "replaces_rq1": false,
+  "primary_outcome": "critical_fact_present_in_the_answer",
+  "primary_contrast": "heuristic_minus_direct",
+  "estimator": "Unweighted mean of within-family mean paired differences. A case scores 1 when every critical fact is present. The paired difference is heuristic minus direct. Cases in a family are averaged first. The eight family means then receive equal weight.",
+  "interval": {
+    "method": "Percentile bootstrap of the eight generation-family means, with replacement, 2000 resamples, seed 20261106. Sorted ascending, lower index int(0.025*2000)-1 and upper index int(0.975*2000)-1.",
+    "resamples": 2000,
+    "seed": 20261106,
+    "level": 0.95,
+    "n_families": 8,
+    "n_cases_nested": 48
+  },
+  "limitations": [
+    "Eight families are the independent units. Forty-eight cases are not forty-eight families.",
+    "The percentile interval has only the resolution of eight clusters.",
+    "One generation per case. A repeated generation would not add a family.",
+    "The heuristic was chosen from earlier development work, before this file was scored.",
+    "The estimate belongs to llama3.2 at temperature 0 and max_tokens 64, with the frozen routes.",
+    "An interval that covers zero is not a finding of no loss, and no margin is applied.",
+    "Human rubric scores are absent.",
+    "Message counts and character counts are not token counts.",
+    "The grid omits start-loose and distributed-loose."
+  ],
+  "secondary": [
+    "chronological_minus_direct on the same answer indicator",
+    "melis_none_minus_direct on the same answer indicator",
+    "critical fact retained in the forwarded context",
+    "reduction of forwarded messages and of characters for the compacting arms"
+  ],
+  "model": {
+    "name": "llama3.2",
+    "source": "local ollama",
+    "temperature": 0,
+    "max_tokens": 64,
+    "seed": 20261106
+  },
+  "generation_reps": 1,
+  "arms": [
+    "direct",
+    "none",
+    "chronological",
+    "heuristic"
+  ],
+  "families": [
+    "shelf-code",
+    "clinic-room",
+    "orchard-crate",
+    "ferry-time",
+    "kiln-batch",
+    "archive-box",
+    "pump-valve",
+    "trail-marker"
+  ],
+  "duration_plan_s": 840,
+  "duration_plan_basis": "development pilot, 420 seconds for 96 calls, scaled to 192 calls",
+  "cases_sha256": "a0d3950fe824abe6ba43f494346869287fa4ce6cc47db4cdb25186453feaacfc",
+  "frozen_files": {
+    "cases": "quality/eval_cases.json",
+    "routes": "melis/routes.rq2-pilot.yaml",
+    "config": "melis/config.rq2-pilot.yaml",
+    "scorer": "harness/quality_checks.py",
+    "estimator": "harness/rq2_family_estimate.py"
+  },
+  "frozen_sha256": {
+    "cases": "a0d3950fe824abe6ba43f494346869287fa4ce6cc47db4cdb25186453feaacfc",
+    "routes": "24b6cc1f7cd2156fa57db81f105822c1986a1271d960d2a4993b6d6b86578019",
+    "config": "fa763ddb63af94653a3ec8110779632dca2c786633beda1749daf4093d435dfc",
+    "scorer": "2804569db3f28b27788165b7d4bcc942beca187f2c180f68239f1f271508fe68",
+    "estimator": "78f346e9a6a91cdce49466a07b2d8077d479fc5c00eba1b89b766bc53a3aebf4"
+  }
+}
