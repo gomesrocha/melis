@@ -1,6 +1,6 @@
 # Data dictionary — gateway-comparison raw CSVs
 
-Schema version: **1.2.0** (see `SCHEMA_VERSION`; every row carries
+Schema version: **1.3.0** (see `SCHEMA_VERSION`; every row carries
 `schema_version`). Authoritative column definitions live in `schemas.py`; this
 document is the human-readable companion and the protocol→schema traceability.
 
@@ -203,6 +203,7 @@ pairing preserved):
 | 1.0.0 | Initial protocol columns. Historical smoke/pilot files stay at this version and are not rewritten. |
 | 1.1.0 | Separate cgroup memory, working set and RSS; per-sample timing and method; stratum fields; execution facts; analysis id. |
 | 1.2.0 | `collection_id` on new rows; block/run/request ids include it. Requested versus effective duration, termination reason, truncation. Third RQ1 contrast. Historical 1.0.0 and 1.1.0 files are not rewritten; analysis namespaces them. |
+| 1.3.0 | Adds `facts.csv` and `episodes.csv`. Readers accept 1.2.0 and 1.3.0. Historical files are not rewritten. |
 
 Any future change to a column, unit, type, or enum **bumps `SCHEMA_VERSION`**
 and is recorded here and in the git history. Data written under an older schema

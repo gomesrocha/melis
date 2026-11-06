@@ -1,0 +1,29 @@
+{
+  "role": "evaluation_candidate",
+  "not_scored": true,
+  "do_not_run_until_checkpoint_approval": true,
+  "planned_case_count": 48,
+  "independent_unit": "generation_family",
+  "family_count": 8,
+  "cases_per_family": 6,
+  "dependence": "Cases that share a generation family are dependent. Resampling for a formal interval draws families, not rows. 48 rows are not 48 independent replications.",
+  "old_120_is_not_approved": true,
+  "families": [
+    "shelf-code",
+    "clinic-room",
+    "orchard-crate",
+    "ferry-time",
+    "kiln-batch",
+    "archive-box",
+    "pump-valve",
+    "trail-marker"
+  ],
+  "rights": {
+    "authorship": "Original sentences written for this experiment.",
+    "copied_from_external_corpus": false,
+    "private_data": false,
+    "license": null,
+    "license_note": "No license is granted here and none is attributed to the repository owner. The text stays unlicensed repository material until that owner chooses one."
+  },
+  "cases": []
+}

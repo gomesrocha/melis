@@ -28,7 +28,9 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-SCHEMA_VERSION = "1.2.0"
+SCHEMA_VERSION = "1.3.0"
+# 1.2.0 rows stay valid. A new collection uses one version; it does not rewrite old files.
+ACCEPTED_SCHEMA_VERSIONS = ("1.2.0", "1.3.0")
 
 
 def _read_version_file() -> Optional[str]:
@@ -399,6 +401,46 @@ EXECUTION_FACTS = (
     Column("sampler_interval_s", FLOAT, unit="s"),
 )
 
+# ── facts.csv ─────────────────────────────────────────────────────────────────
+# One row per controlled fact and channel. Labels are not sent to the compactor.
+FACTS = (
+    Column("schema_version", STR, required=True),
+    Column("collection_id", STR, required=True),
+    Column("run_id", STR, required=True),
+    Column("case_id", STR, required=True),
+    Column("pair_id", STR, required=True),
+    Column("policy", ENUM, required=True, enum=POLICIES),
+    Column("fact_id", STR, required=True),
+    Column("fact_role", STR, required=True, doc="critical|other|protected|tool."),
+    Column("channel", STR, required=True, doc="forwarded_context|answer."),
+    Column("expected_present", BOOL, required=True),
+    Column("observed_present", BOOL, required=True),
+    Column("equivalence_rule", STR, required=True, doc="casefold_substring of listed equivalents."),
+    Column("evaluator_id", STR, required=True),
+)
+
+# ── episodes.csv ──────────────────────────────────────────────────────────────
+# One row per resilience episode. Requests inside it are nested, not extra N.
+EPISODES = (
+    Column("schema_version", STR, required=True),
+    Column("collection_id", STR, required=True),
+    Column("episode_id", STR, required=True),
+    Column("gateway", STR, required=True, doc="direct|melis|litellm or a named diagnostic client."),
+    Column("scenario", STR, required=True),
+    Column("phase", ENUM, required=True, enum=PHASES),
+    Column("seed", STR, required=True),
+    Column("order_in_pair", INT, required=True),
+    Column("deadline_ms", FLOAT, required=True, unit="ms"),
+    Column("success_within_deadline", BOOL, required=True),
+    Column("success_after_deadline", BOOL, required=True),
+    Column("failed", BOOL, required=True),
+    Column("recovery_observed", BOOL),
+    Column("recovery_censored", BOOL, required=True),
+    Column("recovery_ms", FLOAT, unit="ms", doc="Empty when recovery was not observed."),
+    Column("backend_call_count", INT, doc="External backend counter. Empty if the counter was not read."),
+    Column("attempt_count_scope", STR, required=True, doc="per_attempt|aggregate_only|not_observable."),
+)
+
 # Registry: logical table name -> (columns, key columns used for duplicate checks).
 SCHEMAS = {
     "requests": (REQUESTS, ("run_id", "request_id")),
@@ -410,6 +452,8 @@ SCHEMAS = {
     "safety_cases": (SAFETY_CASES, ("run_id", "case_id")),
     "comparisons": (COMPARISONS, ("collection_id", "question", "outcome", "contrast", "population")),
     "execution_facts": (EXECUTION_FACTS, ("run_id", "window")),
+    "facts": (FACTS, ("run_id", "case_id", "policy", "fact_id", "channel")),
+    "episodes": (EPISODES, ("episode_id", "gateway")),
 }
 
 

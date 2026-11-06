@@ -39,6 +39,7 @@ from schemas import (
     ENUM,
     FLOAT,
     INT,
+    ACCEPTED_SCHEMA_VERSIONS,
     SCHEMA_VERSION,
     columns,
     header,
@@ -73,8 +74,10 @@ def _cell_errors(table: str, header_row, data_rows) -> list:
                 if col.required:
                     errs.append(f"{table}:{rnum}: required '{name}' is empty")
                 continue
-            if name == "schema_version" and val != SCHEMA_VERSION:
-                errs.append(f"{table}:{rnum}: schema_version {val!r} != {SCHEMA_VERSION!r}")
+            if name == "schema_version" and val not in ACCEPTED_SCHEMA_VERSIONS:
+                errs.append(
+                    f"{table}:{rnum}: schema_version {val!r} not in {ACCEPTED_SCHEMA_VERSIONS}"
+                )
             if col.kind == BOOL and val not in _BOOL_OK:
                 errs.append(f"{table}:{rnum}: bool '{name}'={val!r} not true/false")
             elif col.kind == ENUM and col.enum is not None and val not in col.enum:

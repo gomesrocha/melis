@@ -1,0 +1,45 @@
+{
+  "role": "development_labels",
+  "not_scored": true,
+  "do_not_fit_threshold_on_a_later_set": true,
+  "candidate_cosine_threshold": 0.92,
+  "threshold_status": "proposed on the development labels; not approved and not fitted",
+  "rights": {
+    "authorship": "Original sentences written for this experiment.",
+    "copied_from_external_corpus": false,
+    "private_data": false,
+    "license": null
+  },
+  "distinction": {
+    "hit_opportunity": "A later request is eligible to reuse a stored answer.",
+    "correct_reuse": "The reused answer is the answer labelled for that request.",
+    "false_hit": "A stored answer is reused for a request whose labelled answer is different."
+  },
+  "cases": [
+    {
+      "case_id": "cache-berth-exact",
+      "family": "cache-berth",
+      "hit_category": "exact",
+      "prompt": "Qual e o cais registrado no livro?",
+      "labelled_answer": "O cais registrado e 14.",
+      "eligible_reuse_of": null
+    },
+    {
+      "case_id": "cache-berth-paraphrase",
+      "family": "cache-berth",
+      "hit_category": "paraphrase",
+      "prompt": "No livro, qual cais ficou registrado?",
+      "labelled_answer": "O cais registrado e 14.",
+      "eligible_reuse_of": "cache-berth-exact"
+    },
+    {
+      "case_id": "cache-berth-hard-negative",
+      "family": "cache-berth",
+      "hit_category": "hard_negative",
+      "prompt": "Qual e o cais que o livro diz para nao usar?",
+      "labelled_answer": "O cais que o livro diz para nao usar e 2.",
+      "eligible_reuse_of": null,
+      "must_not_reuse": "cache-berth-exact"
+    }
+  ]
+}

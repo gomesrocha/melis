@@ -1,41 +1,2038 @@
 {
   "role": "development",
   "not_evaluation": true,
-  "authorship": "Original text written for this experiment. Not copied from an external corpus. Not dedicated CC0.",
-  "split_policy": "A family is entirely development or entirely evaluation. These families are development. The evaluation set is not generated here and must be assigned before any case in it is written.",
-  "rubric": "0-3 as recorded in CHECKPOINT.md. Critical facts are marked critical.",
+  "seed": 20261106,
+  "generation_reps_pilot": 1,
+  "generation_reps_do_not_multiply_n": true,
+  "rights": {
+    "authorship": "Original sentences written for this experiment.",
+    "copied_from_external_corpus": false,
+    "private_data": false,
+    "license": null,
+    "license_note": "No license is granted here and none is attributed to the repository owner. The text stays unlicensed repository material until that owner chooses one."
+  },
+  "split_policy": "A generation family is entirely development or entirely evaluation. Position and budget pressure are experimental categories and may recur.",
+  "families": [
+    "banner-rule",
+    "dye-batch",
+    "harbor-ledger",
+    "nick-name",
+    "route-sheet",
+    "tool-kit",
+    "well-depth"
+  ],
   "cases": [
     {
-      "family": "critical_number_late",
-      "case_id": "dev-port-late",
-      "critical_facts": ["porta 7071"],
-      "other_facts": ["o servico chama-se gateway"],
+      "case_id": "harbor-ledger-end-tight",
+      "generation_family": "harbor-ledger",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "berth",
+          "equivalents": [
+            "cais 14",
+            "cais registrado e 14"
+          ],
+          "contradictions": [
+            "cais 2"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno da manha",
+            "turno e o da manha"
+          ],
+          "contradictions": [
+            "turno da noite"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cais",
+        "14",
+        "atracacao"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
       "messages": [
-        {"role": "user", "content": "Vamos documentar o servico de teste."},
-        {"role": "assistant", "content": "O servico chama-se gateway."},
-        {"role": "user", "content": "A porta local do mock e 7071. Qual porta devo configurar?"}
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "O cais registrado e 14."
+        },
+        {
+          "role": "user",
+          "content": "O turno e o da manha."
+        },
+        {
+          "role": "user",
+          "content": "Qual identificador de atracacao ficou no livro?"
+        }
       ]
     },
     {
-      "family": "critical_number_early",
-      "case_id": "dev-budget-early",
-      "critical_facts": ["orcamento 128000"],
-      "other_facts": ["a estrategia desta conversa e nenhuma"],
+      "case_id": "harbor-ledger-start-tight",
+      "generation_family": "harbor-ledger",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "berth",
+          "equivalents": [
+            "cais 14",
+            "cais registrado e 14"
+          ],
+          "contradictions": [
+            "cais 2"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno da manha",
+            "turno e o da manha"
+          ],
+          "contradictions": [
+            "turno da noite"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cais",
+        "14"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
       "messages": [
-        {"role": "user", "content": "O orcamento de tokens deste perfil e 128000."},
-        {"role": "assistant", "content": "A estrategia desta conversa e nenhuma."},
-        {"role": "user", "content": "Qual e o orcamento que nao posso ultrapassar?"}
+        {
+          "role": "user",
+          "content": "O cais registrado e 14."
+        },
+        {
+          "role": "user",
+          "content": "O turno e o da manha."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual identificador de atracacao ficou no livro?"
+        }
       ]
     },
     {
-      "family": "distractor",
-      "case_id": "dev-distractor-color",
-      "critical_facts": ["modelo mock-model"],
-      "other_facts": ["a cor do aviso e azul"],
+      "case_id": "harbor-ledger-middle-loose",
+      "generation_family": "harbor-ledger",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "berth",
+          "equivalents": [
+            "cais 14",
+            "cais registrado e 14"
+          ],
+          "contradictions": [
+            "cais 2"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno da manha",
+            "turno e o da manha"
+          ],
+          "contradictions": [
+            "turno da noite"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cais",
+        "14"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
       "messages": [
-        {"role": "user", "content": "Ignore a cor do aviso, que e azul."},
-        {"role": "assistant", "content": "Entendido."},
-        {"role": "user", "content": "O modelo deste ensaio e mock-model. Qual modelo entra no pedido?"}
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "O cais registrado e 14."
+        },
+        {
+          "role": "user",
+          "content": "O turno e o da manha."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual identificador de atracacao ficou no livro?"
+        }
+      ]
+    },
+    {
+      "case_id": "harbor-ledger-distributed-tight",
+      "generation_family": "harbor-ledger",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "berth",
+          "equivalents": [
+            "cais 14",
+            "cais registrado e 14"
+          ],
+          "contradictions": [
+            "cais 2"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "shift",
+          "equivalents": [
+            "turno da manha",
+            "turno e o da manha"
+          ],
+          "contradictions": [
+            "turno da noite"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "cais",
+        "14"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "O cais registrado e 14."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "O turno e o da manha."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual identificador de atracacao ficou no livro?"
+        }
+      ]
+    },
+    {
+      "case_id": "dye-batch-end-tight",
+      "generation_family": "dye-batch",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "batch",
+          "equivalents": [
+            "verde 19"
+          ],
+          "contradictions": [
+            "azul 19",
+            "lote azul"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "notice",
+          "equivalents": [
+            "aviso"
+          ],
+          "contradictions": [
+            "obrigatorio"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "lote",
+        "verde"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Ignore o lote azul, que e so o aviso."
+        },
+        {
+          "role": "user",
+          "content": "O lote que vale e o verde 19."
+        },
+        {
+          "role": "user",
+          "content": "Qual lote entra na ficha?"
+        }
+      ]
+    },
+    {
+      "case_id": "dye-batch-start-loose",
+      "generation_family": "dye-batch",
+      "position": "start",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "batch",
+          "equivalents": [
+            "verde 19"
+          ],
+          "contradictions": [
+            "azul 19"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "notice",
+          "equivalents": [
+            "aviso"
+          ],
+          "contradictions": []
+        }
+      ],
+      "question_anchors": [
+        "lote"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Ignore o lote azul, que e so o aviso."
+        },
+        {
+          "role": "user",
+          "content": "O lote que vale e o verde 19."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual lote entra na ficha?"
+        }
+      ]
+    },
+    {
+      "case_id": "dye-batch-middle-tight",
+      "generation_family": "dye-batch",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "batch",
+          "equivalents": [
+            "verde 19"
+          ],
+          "contradictions": [
+            "azul 19"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "notice",
+          "equivalents": [
+            "aviso"
+          ],
+          "contradictions": []
+        }
+      ],
+      "question_anchors": [
+        "lote"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Ignore o lote azul, que e so o aviso."
+        },
+        {
+          "role": "user",
+          "content": "O lote que vale e o verde 19."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual lote entra na ficha?"
+        }
+      ]
+    },
+    {
+      "case_id": "route-sheet-middle-tight",
+      "generation_family": "route-sheet",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "origin",
+          "equivalents": [
+            "galpao norte"
+          ],
+          "contradictions": [
+            "galpao leste"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "dest",
+          "equivalents": [
+            "galpao sul"
+          ],
+          "contradictions": [
+            "galpao oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "galpao",
+        "sai",
+        "chega"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "A peca sai do galpao norte."
+        },
+        {
+          "role": "user",
+          "content": "Ela chega no galpao sul."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "De onde sai e para onde chega a peca?"
+        }
+      ]
+    },
+    {
+      "case_id": "route-sheet-distributed-tight",
+      "generation_family": "route-sheet",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "origin",
+          "equivalents": [
+            "galpao norte"
+          ],
+          "contradictions": [
+            "galpao leste"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "dest",
+          "equivalents": [
+            "galpao sul"
+          ],
+          "contradictions": [
+            "galpao oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "galpao"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A peca sai do galpao norte."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Ela chega no galpao sul."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "De onde sai e para onde chega a peca?"
+        }
+      ]
+    },
+    {
+      "case_id": "route-sheet-end-loose",
+      "generation_family": "route-sheet",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "origin",
+          "equivalents": [
+            "galpao norte"
+          ],
+          "contradictions": [
+            "galpao leste"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "dest",
+          "equivalents": [
+            "galpao sul"
+          ],
+          "contradictions": [
+            "galpao oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "galpao"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "A peca sai do galpao norte."
+        },
+        {
+          "role": "user",
+          "content": "Ela chega no galpao sul."
+        },
+        {
+          "role": "user",
+          "content": "De onde sai e para onde chega a peca?"
+        }
+      ]
+    },
+    {
+      "case_id": "route-sheet-start-tight",
+      "generation_family": "route-sheet",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "origin",
+          "equivalents": [
+            "galpao norte"
+          ],
+          "contradictions": [
+            "galpao leste"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "dest",
+          "equivalents": [
+            "galpao sul"
+          ],
+          "contradictions": [
+            "galpao oeste"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "galpao"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A peca sai do galpao norte."
+        },
+        {
+          "role": "user",
+          "content": "Ela chega no galpao sul."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "De onde sai e para onde chega a peca?"
+        }
+      ]
+    },
+    {
+      "case_id": "nick-name-end-tight",
+      "generation_family": "nick-name",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "nick",
+          "equivalents": [
+            "Coruja"
+          ],
+          "contradictions": [
+            "Falcão",
+            "Falcao"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "temp",
+          "equivalents": [
+            "180"
+          ],
+          "contradictions": [
+            "200"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "coruja",
+        "180",
+        "apelido"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "O apelido do forno e Coruja."
+        },
+        {
+          "role": "user",
+          "content": "A temperatura marcada e 180."
+        },
+        {
+          "role": "user",
+          "content": "Como chamam o equipamento, sem repetir o tipo dele?"
+        }
+      ]
+    },
+    {
+      "case_id": "nick-name-middle-loose",
+      "generation_family": "nick-name",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "nick",
+          "equivalents": [
+            "Coruja"
+          ],
+          "contradictions": [
+            "Falcao"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "temp",
+          "equivalents": [
+            "180"
+          ],
+          "contradictions": [
+            "200"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "coruja"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "O apelido do forno e Coruja."
+        },
+        {
+          "role": "user",
+          "content": "A temperatura marcada e 180."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Como chamam o equipamento, sem repetir o tipo dele?"
+        }
+      ]
+    },
+    {
+      "case_id": "nick-name-start-tight",
+      "generation_family": "nick-name",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "nick",
+          "equivalents": [
+            "Coruja"
+          ],
+          "contradictions": [
+            "Falcao"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "temp",
+          "equivalents": [
+            "180"
+          ],
+          "contradictions": [
+            "200"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "coruja"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "O apelido do forno e Coruja."
+        },
+        {
+          "role": "user",
+          "content": "A temperatura marcada e 180."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Como chamam o equipamento, sem repetir o tipo dele?"
+        }
+      ]
+    },
+    {
+      "case_id": "banner-rule-start-tight",
+      "generation_family": "banner-rule",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "room",
+          "equivalents": [
+            "sala de ensaio e a 3",
+            "sala 3"
+          ],
+          "contradictions": [
+            "sala 9"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "sign",
+          "equivalents": [
+            "amarelo"
+          ],
+          "contradictions": [
+            "vermelho"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "sala"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": "Regra protegida: responda em uma frase.",
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "system",
+          "content": "Regra protegida: responda em uma frase."
+        },
+        {
+          "role": "user",
+          "content": "A sala de ensaio e a 3."
+        },
+        {
+          "role": "user",
+          "content": "O aviso de parede e amarelo."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual sala de ensaio foi marcada?"
+        }
+      ]
+    },
+    {
+      "case_id": "banner-rule-end-tight",
+      "generation_family": "banner-rule",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "room",
+          "equivalents": [
+            "sala 3",
+            "sala de ensaio e a 3"
+          ],
+          "contradictions": [
+            "sala 9"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "sign",
+          "equivalents": [
+            "amarelo"
+          ],
+          "contradictions": [
+            "vermelho"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "sala"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": "Regra protegida: responda em uma frase.",
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "system",
+          "content": "Regra protegida: responda em uma frase."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "A sala de ensaio e a 3."
+        },
+        {
+          "role": "user",
+          "content": "O aviso de parede e amarelo."
+        },
+        {
+          "role": "user",
+          "content": "Qual sala de ensaio foi marcada?"
+        }
+      ]
+    },
+    {
+      "case_id": "banner-rule-middle-loose",
+      "generation_family": "banner-rule",
+      "position": "middle",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "room",
+          "equivalents": [
+            "sala 3",
+            "sala de ensaio e a 3"
+          ],
+          "contradictions": [
+            "sala 9"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "sign",
+          "equivalents": [
+            "amarelo"
+          ],
+          "contradictions": [
+            "vermelho"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "sala"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": "Regra protegida: responda em uma frase.",
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "system",
+          "content": "Regra protegida: responda em uma frase."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "A sala de ensaio e a 3."
+        },
+        {
+          "role": "user",
+          "content": "O aviso de parede e amarelo."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual sala de ensaio foi marcada?"
+        }
+      ]
+    },
+    {
+      "case_id": "tool-kit-end-tight",
+      "generation_family": "tool-kit",
+      "position": "end",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "code",
+          "equivalents": [
+            "K-17"
+          ],
+          "contradictions": [
+            "K-18"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "tool",
+          "equivalents": [
+            "consultar_estoque"
+          ],
+          "contradictions": [
+            "consultar_preco"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "K-17",
+        "codigo"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": "consultar_estoque",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Consulte a ferramenta consultar_estoque antes de fechar."
+        },
+        {
+          "role": "user",
+          "content": "O codigo do item e K-17."
+        },
+        {
+          "role": "user",
+          "content": "Qual codigo de item ficou anotado?"
+        }
+      ]
+    },
+    {
+      "case_id": "tool-kit-start-loose",
+      "generation_family": "tool-kit",
+      "position": "start",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "code",
+          "equivalents": [
+            "K-17"
+          ],
+          "contradictions": [
+            "K-18"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "tool",
+          "equivalents": [
+            "consultar_estoque"
+          ],
+          "contradictions": []
+        }
+      ],
+      "question_anchors": [
+        "K-17"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": "consultar_estoque",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Consulte a ferramenta consultar_estoque antes de fechar."
+        },
+        {
+          "role": "user",
+          "content": "O codigo do item e K-17."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual codigo de item ficou anotado?"
+        }
+      ]
+    },
+    {
+      "case_id": "tool-kit-distributed-tight",
+      "generation_family": "tool-kit",
+      "position": "distributed",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "code",
+          "equivalents": [
+            "K-17"
+          ],
+          "contradictions": [
+            "K-18"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "tool",
+          "equivalents": [
+            "consultar_estoque"
+          ],
+          "contradictions": []
+        }
+      ],
+      "question_anchors": [
+        "K-17"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": "consultar_estoque",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Consulte a ferramenta consultar_estoque antes de fechar."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "O codigo do item e K-17."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual codigo de item ficou anotado?"
+        }
+      ]
+    },
+    {
+      "case_id": "well-depth-end-loose",
+      "generation_family": "well-depth",
+      "position": "end",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "depth",
+          "equivalents": [
+            "12 metros"
+          ],
+          "contradictions": [
+            "20 metros"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "lot",
+          "equivalents": [
+            "lote 4"
+          ],
+          "contradictions": [
+            "lote 8"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "profundidade",
+        "12"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "A profundidade util e 12 metros."
+        },
+        {
+          "role": "user",
+          "content": "O poco fica no lote 4."
+        },
+        {
+          "role": "user",
+          "content": "Qual profundidade util foi medida?"
+        }
+      ]
+    },
+    {
+      "case_id": "well-depth-middle-tight",
+      "generation_family": "well-depth",
+      "position": "middle",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "depth",
+          "equivalents": [
+            "12 metros"
+          ],
+          "contradictions": [
+            "20 metros"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "lot",
+          "equivalents": [
+            "lote 4"
+          ],
+          "contradictions": [
+            "lote 8"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "profundidade"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "A profundidade util e 12 metros."
+        },
+        {
+          "role": "user",
+          "content": "O poco fica no lote 4."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual profundidade util foi medida?"
+        }
+      ]
+    },
+    {
+      "case_id": "well-depth-start-tight",
+      "generation_family": "well-depth",
+      "position": "start",
+      "budget_pressure": "tight",
+      "critical_facts": [
+        {
+          "id": "depth",
+          "equivalents": [
+            "12 metros"
+          ],
+          "contradictions": [
+            "20 metros"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "lot",
+          "equivalents": [
+            "lote 4"
+          ],
+          "contradictions": [
+            "lote 8"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "profundidade"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A profundidade util e 12 metros."
+        },
+        {
+          "role": "user",
+          "content": "O poco fica no lote 4."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 3: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 4: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 5: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 6: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 7: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 8: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 9: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 10: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 11: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 12: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Qual profundidade util foi medida?"
+        }
+      ]
+    },
+    {
+      "case_id": "well-depth-distributed-loose",
+      "generation_family": "well-depth",
+      "position": "distributed",
+      "budget_pressure": "loose",
+      "critical_facts": [
+        {
+          "id": "depth",
+          "equivalents": [
+            "12 metros"
+          ],
+          "contradictions": [
+            "20 metros"
+          ]
+        }
+      ],
+      "other_facts": [
+        {
+          "id": "lot",
+          "equivalents": [
+            "lote 4"
+          ],
+          "contradictions": [
+            "lote 8"
+          ]
+        }
+      ],
+      "question_anchors": [
+        "profundidade"
+      ],
+      "decision_changing_inventions": [],
+      "protected_instruction": null,
+      "tool_name": null,
+      "messages": [
+        {
+          "role": "user",
+          "content": "A profundidade util e 12 metros."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 1: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "Anotacao lateral 2: nada aqui responde a pergunta."
+        },
+        {
+          "role": "user",
+          "content": "O poco fica no lote 4."
+        },
+        {
+          "role": "user",
+          "content": "Qual profundidade util foi medida?"
+        }
       ]
     }
   ]

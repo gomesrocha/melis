@@ -1,0 +1,32 @@
+# Development-only profile. Points at the local Ollama proxy. Not the RQ1 cell.
+server:
+  host: "0.0.0.0"
+  port: 7071
+
+redis:
+  cluster_urls:
+    - "redis://127.0.0.1:6379"
+  required_for_readiness: false
+
+auth:
+  enabled: false
+  api_keys: []
+
+observability:
+  enabled: false
+  service_name: "melis-rq2-pilot"
+
+compactor:
+  token_threshold: 128000
+  strategy: "none"
+
+circuit_breaker:
+  backend: "local"
+
+providers:
+  - id: "local-ollama"
+    provider_type: "openai"
+    api_key: "unused"
+    base_url: "http://host.docker.internal:11435/v1"
+
+routes_config_path: "/etc/melis/routes.yaml"

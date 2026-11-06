@@ -49,6 +49,31 @@ _seen = []  # list of {"path","model","stream","params":{...},"n_messages"}
 _inflight = 0
 _peak_inflight = 0
 HOLD_MS = int(os.environ.get("MOCK_HOLD_MS", "0"))
+# Empty rules keep the historical success path. A schedule is opt-in per process.
+_rules = []
+_calls = []
+
+
+def _match_fault(destination: str):
+    """Return the matching rule and record the call. None keeps the success path."""
+    global _calls
+    with _lock:
+        seen = sum(1 for call in _calls if call["destination"] == destination) + 1
+        chosen = None
+        for rule in _rules:
+            if rule.get("destination") not in (None, destination):
+                continue
+            if int(rule["from_call"]) <= seen <= int(rule["to_call"]):
+                chosen = rule
+                break
+        _calls.append({
+            "n": seen,
+            "destination": destination,
+            "status": 200 if chosen is None else int(chosen["status"]),
+        })
+        if chosen is not None:
+            _counts["chat"] += 1
+        return None if chosen is None else dict(chosen)
 
 
 def _enter_inflight():
@@ -151,6 +176,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/__inflight":
             with _lock:
                 return self._json(200, {"inflight": _inflight, "peak_inflight": _peak_inflight})
+        if self.path == "/__calls":
+            with _lock:
+                return self._json(200, {"calls": list(_calls)})
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
@@ -167,8 +195,17 @@ class Handler(BaseHTTPRequestHandler):
                 for k in _counts:
                     _counts[k] = 0
                 _seen.clear()
+                _calls.clear()
+                _rules.clear()
                 _peak_inflight = _inflight  # keep current, reset the peak
             return self._json(200, {"status": "reset"})
+
+        if self.path == "/__schedule":
+            rules = req.get("rules") or []
+            with _lock:
+                _rules[:] = list(rules)
+                _calls.clear()
+            return self._json(200, {"rules": len(_rules)})
 
         if LATENCY_MS:
             time.sleep(LATENCY_MS / 1000.0)
@@ -197,6 +234,23 @@ class Handler(BaseHTTPRequestHandler):
             messages = req.get("messages", [])
             _record_seen(self.path, req)
             content = _deterministic_reply(model, messages)
+            destination = self.headers.get("X-Experiment-Destination", "primary")
+            fault = _match_fault(destination)
+            if fault is not None:
+                delay_ms = int(fault.get("delay_ms") or 0)
+                if delay_ms:
+                    time.sleep(delay_ms / 1000.0)
+                status = int(fault["status"])
+                if fault.get("retry_after_s") is not None:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Retry-After", str(fault["retry_after_s"]))
+                    body = json.dumps({"error": "scheduled", "status": status}).encode()
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                return self._json(status, {"error": "scheduled", "status": status})
             stream = bool(req.get("stream", False))
             # Enter in-flight accounting and optionally HOLD the request open so
             # concurrent overlap is observable at the backend. Per-request override

@@ -1,0 +1,51 @@
+{
+  "name": "rq23-final-candidate",
+  "status": "candidate",
+  "execution_authorized": false,
+  "do_not_run_until_checkpoint_approval": true,
+  "replaces_rq1": false,
+  "rq1_collection_id": "col-3bcdfa2f0aeb",
+  "rq1_primary_n_blocks": 15,
+  "model": {
+    "name": "llama3.2",
+    "source": "local ollama",
+    "parameters": {"temperature": 0, "max_tokens": 64, "seed": 20261106}
+  },
+  "rq2": {
+    "arms": ["direct", "melis_none", "chronological_sliding_window", "heuristic_semantic_guarded_trimming"],
+    "not_arms": ["litellm_as_compaction", "embedding", "hybrid"],
+    "generation_reps": 1,
+    "independent_unit": "generation_family",
+    "development_cases": 24,
+    "development_families": 7,
+    "evaluation_cases_proposed": 48,
+    "evaluation_families_proposed": 8,
+    "evaluation_cases_written": false,
+    "primary_outcome_proposed": "paired difference in critical-fact retention in the answer",
+    "rubric_0_to_3": "descriptive",
+    "non_inferiority_margin": null,
+    "delta_0_25": "not approved"
+  },
+  "rq3": {
+    "scenarios": [
+      "healthy",
+      "rq3_429_retry_after",
+      "rq3_5xx_transient",
+      "rq3_timeout",
+      "rq3_primary_down_fallback",
+      "rq3_none_healthy_then_recovery"
+    ],
+    "independent_unit": "episode",
+    "deadline_ms": 1000,
+    "pilot_episodes_per_scenario_per_client": 5,
+    "clients_in_pilot": ["direct", "aligned_failover"],
+    "product_gateways_not_compared_in_pilot": ["melis", "litellm"],
+    "litellm_pinned_config": "num_retries 0, cache false, no fallbacks",
+    "two_replicas_and_redis": "supplementary Melis evidence only"
+  },
+  "final_commands_not_executed": [
+    "python3 harness/rq2_dev_pilot.py is the development pilot and must not be pointed at quality/eval_proposal.json",
+    "The evaluation generator is not written. Do not invent its 48 cases at run time.",
+    "Do not start an RQ3 product comparison until Melis and LiteLLM configs are aligned and this file has execution_authorized true."
+  ]
+}

@@ -1,0 +1,29 @@
+# Development routes. Chronological compaction is the product strategy sliding_window.
+# Heuristic is semantic_guarded_trimming with semantic_scoring omitted.
+routes:
+  - path: "/v1/chat/none"
+    method: "POST"
+    provider: "openai"
+    model: "llama3.2"
+    token_optimization:
+      strategy: "none"
+  - path: "/v1/chat/chronological"
+    method: "POST"
+    provider: "openai"
+    model: "llama3.2"
+    token_optimization:
+      strategy: "sliding_window"
+      max_history_messages: 6
+      compress_above_tokens: 80
+      local_tokenizer: "cl100k_base"
+  - path: "/v1/chat/heuristic"
+    method: "POST"
+    provider: "openai"
+    model: "llama3.2"
+    token_optimization:
+      strategy: "semantic_guarded_trimming"
+      compress_above_tokens: 80
+      target_token_ratio: 0.45
+      min_final_tokens: 40
+      max_history_messages: 20
+      local_tokenizer: "cl100k_base"
