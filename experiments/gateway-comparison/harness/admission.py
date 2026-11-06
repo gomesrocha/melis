@@ -17,10 +17,101 @@ import host_pressure
 UNITS = {
     "mem_available_bytes": "bytes",
     "swap_pages": "pages",
-    "load1": "loadavg_1min",
+    "load1": "loadavg_1min_diagnostic",
     "disk_free_bytes": "bytes",
     "duration_s": "seconds",
+    "utilization": "fraction_of_jiffies",
+    "iowait_fraction": "fraction_of_jiffies",
 }
+
+_CPU_FIELDS = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
+
+
+def parse_proc_stat(text: str) -> list[dict]:
+    """Rows from ``/proc/stat``. The aggregate line is ``cpu``; cores are ``cpuN``."""
+    rows = []
+    for line in text.splitlines():
+        if not line.startswith("cpu"):
+            continue
+        parts = line.split()
+        numbers = [int(part) for part in parts[1:]]
+        while len(numbers) < len(_CPU_FIELDS):
+            numbers.append(0)
+        row = {"cpu": parts[0]}
+        for name, value in zip(_CPU_FIELDS, numbers):
+            row[name] = value
+        rows.append(row)
+    return rows
+
+
+def read_proc_stat(root: str = "") -> list[dict]:
+    path = os.path.join(root, "proc/stat") if root else "/proc/stat"
+    with open(path, encoding="utf-8") as fh:
+        return parse_proc_stat(fh.read())
+
+
+def cpu_interval(before: list[dict], after: list[dict]) -> dict | None:
+    """Utilization and I/O wait from the first and last CPU snapshots."""
+    if not before or not after:
+        return None
+    start = {row["cpu"]: row for row in before}
+    per_cpu = []
+    aggregate = None
+    for end in after:
+        origin = start.get(end["cpu"])
+        if origin is None:
+            continue
+        delta = {name: end[name] - origin[name] for name in _CPU_FIELDS}
+        total = sum(delta.values())
+        entry = {
+            "cpu": end["cpu"],
+            "total_jiffies": total,
+            "utilization": None if total <= 0 else (total - delta["idle"]) / total,
+            "iowait_fraction": None if total <= 0 else delta["iowait"] / total,
+        }
+        if end["cpu"] == "cpu":
+            aggregate = entry
+        else:
+            per_cpu.append(entry)
+    if not per_cpu and aggregate is None:
+        return None
+    return {"per_cpu": per_cpu, "aggregate": aggregate, "role": "recorded"}
+
+
+def volume_fact(path: str | None) -> dict:
+    if not path:
+        return {"path": None, "free_bytes": None, "total_bytes": None}
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return {"path": path, "free_bytes": None, "total_bytes": None}
+    return {
+        "path": path,
+        "free_bytes": int(st.f_bavail * st.f_frsize),
+        "total_bytes": int(st.f_blocks * st.f_frsize),
+    }
+
+
+def docker_root_dir() -> str | None:
+    """Docker's data root. Read-only; does not stop a service."""
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["docker", "info", "--format", "{{.DockerRootDir}}"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    text = proc.stdout.strip()
+    return text or None
+
+
+def read_volumes(csv_path: str, docker_path: str | None = None) -> dict:
+    if docker_path is None:
+        docker_path = docker_root_dir()
+    return {"csv": volume_fact(csv_path), "docker": volume_fact(docker_path)}
 
 
 def disk_free_bytes(path: str) -> int | None:
@@ -31,8 +122,13 @@ def disk_free_bytes(path: str) -> int | None:
     return int(st.f_bavail * st.f_frsize)
 
 
-def judge(readings, disk_free, duration_s, components, criteria=None) -> dict:
-    """Decide from a finished sample. Missing metrics refuse."""
+def judge(readings, disk_free, duration_s, components, criteria=None,
+          cpu=None, volumes=None) -> dict:
+    """Decide from a finished sample. Missing safety metrics refuse.
+
+    ``disk_free`` is the CSV volume when ``volumes`` is omitted. Load average
+    is stored and is not a refusal. A stale ``max_load1`` key is ignored.
+    """
     criteria = criteria or final_protocol.ADMISSION
     reasons = []
     if duration_s is None or float(duration_s) < float(criteria["duration_s"]):
@@ -41,9 +137,24 @@ def judge(readings, disk_free, duration_s, components, criteria=None) -> dict:
         reasons.append("no_readings")
     if components is None:
         reasons.append("components_unlisted")
-    if disk_free is None:
+    if cpu is None or not cpu.get("per_cpu"):
+        reasons.append("cpu_sample_missing")
+
+    volume_free = {}
+    if volumes is None:
+        volume_free["csv"] = disk_free
+        reasons.append("docker_volume_missing")
+    else:
+        for name in ("csv", "docker"):
+            fact = volumes.get(name) or {}
+            volume_free[name] = fact.get("free_bytes")
+            if volume_free[name] is None:
+                reasons.append(f"{name}_volume_missing")
+            elif volume_free[name] < criteria["min_disk_free_bytes"]:
+                reasons.append(f"{name}_volume_free")
+    if volumes is None and disk_free is None:
         reasons.append("disk_free_missing")
-    elif disk_free < criteria["min_disk_free_bytes"]:
+    elif volumes is None and disk_free is not None and disk_free < criteria["min_disk_free_bytes"]:
         reasons.append("disk_free")
 
     mems = []
@@ -51,15 +162,12 @@ def judge(readings, disk_free, duration_s, components, criteria=None) -> dict:
     swap_complete = bool(readings)
     for reading in readings:
         mem = reading.get("mem_available_bytes")
-        load = reading.get("load1")
         if mem is None:
             reasons.append("mem_available_missing")
         else:
             mems.append(mem)
-        if load is None:
-            reasons.append("load1_missing")
-        else:
-            loads.append(load)
+        if reading.get("load1") is not None:
+            loads.append(reading["load1"])
         if reading.get("pswpin") is None or reading.get("pswpout") is None:
             reasons.append("swap_missing")
             swap_complete = False
@@ -67,8 +175,6 @@ def judge(readings, disk_free, duration_s, components, criteria=None) -> dict:
         reasons.append("mem_available")
     if mems and any(value < criteria["min_reading_mem_available_bytes"] for value in mems):
         reasons.append("mem_reading_floor")
-    if loads and any(value >= criteria["max_load1"] for value in loads):
-        reasons.append("load1")
     pages = None
     if swap_complete and readings:
         pages = (
@@ -85,13 +191,23 @@ def judge(readings, disk_free, duration_s, components, criteria=None) -> dict:
         "reasons": unique,
         "duration_s": duration_s,
         "readings": readings,
-        "disk_free_bytes": disk_free,
+        "disk_free_bytes": volume_free.get("csv", disk_free),
+        "volumes": volumes,
+        "cpu": cpu,
         "swap_pages": pages,
         "components_already_up": components,
+        "load_average": {
+            "role": "diagnostic",
+            "blocks_admission": False,
+            "excludes_block": False,
+            "load1_min": min(loads) if loads else None,
+            "load1_max": max(loads) if loads else None,
+        },
         "units": dict(UNITS),
-        "criteria": criteria,
+        "criteria": {key: value for key, value in criteria.items() if key != "max_load1"},
         "reusable": False,
         "replaces_5s_gate": False,
+        "execution_authorized": False,
     }
 
 
@@ -114,27 +230,42 @@ def accept_for_start(record: dict, invocation_id: str, now_s: float, max_age_s: 
 
 
 def collect(invocation_id: str, disk_path: str, seconds: float = 60.0, interval: float = 5.0,
-            reader=None, sleeper=None, disk_reader=None, component_lister=None, clock=None) -> dict:
-    """Sample until ``seconds`` have elapsed on ``clock``. Tests pass a fake clock."""
+            reader=None, sleeper=None, disk_reader=None, component_lister=None, clock=None,
+            cpu_reader=None, volume_reader=None) -> dict:
+    """Sample until ``seconds`` have elapsed on ``clock``. Tests pass a fake clock.
+
+    Does not change sysctl, swap, or running services. Load average is diagnostic.
+    """
     reader = reader or host_pressure.read_pressure
     sleeper = sleeper or time.sleep
-    disk_reader = disk_reader or disk_free_bytes
     clock = clock or time.time
+    cpu_reader = cpu_reader or read_proc_stat
     if component_lister is None:
         raise RuntimeError("component_lister is required so the sample names what is already up")
     readings = []
+    cpu_samples = []
     started = clock()
     while True:
         readings.append(reader())
+        cpu_samples.append(cpu_reader())
         elapsed = clock() - started
         if elapsed >= seconds:
             break
         sleeper(min(interval, seconds - elapsed))
-    record = judge(readings, disk_reader(disk_path), clock() - started, component_lister())
+    if volume_reader is None:
+        volumes = read_volumes(disk_path)
+    else:
+        volumes = volume_reader(disk_path)
+    cpu = cpu_interval(cpu_samples[0], cpu_samples[-1]) if len(cpu_samples) >= 2 else None
+    record = judge(
+        readings, None, clock() - started, component_lister(),
+        cpu=cpu, volumes=volumes,
+    )
     record["invocation_id"] = invocation_id
     record["started_at_s"] = started
     record["finished_at_s"] = clock()
     record["disk_path"] = disk_path
+    record["collection_started"] = False
     return record
 
 

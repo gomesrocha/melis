@@ -17,42 +17,7 @@ revisão e não foi executado. O arquivo de protocolo é candidato: traz
 | Testes t bilaterais das diferenças entre blocos contra zero, Holm na família de três, alfa 0,05, intervalos t marginais de 95% | Propostos no protocolo. Não calculados. |
 | `--phase final` em ids, CSV, manifesto, agregação e validação | Implementado. Testado com linhas sintéticas marcadas `SYNTHETIC`. |
 | Protocolo versionado, hash, divergência de argumentos, diretório existente, árvore suja | Implementado. Testado sem carga. |
-| Admissão de 60 s, com métrica ausente bloqueando | Implementado. Testada com relógio e leituras simulados. A amostra de 2026-11-05 que recusou load1 continua válida e não é reutilizada. |
-| Gate de 5 s | Continua complementar. Não admite a coleta. |
-| Sampler de 30 s produz decisão | Implementado. Testado com métricas simuladas. Violação ambiental termina os três caminhos, preserva e exclui da estimativa. Risco grave interrompe na hora. |
-| Uma repetição da permutação completa, readmissão nova, segunda violação para a coleta | Implementado e testado. Não aumenta N. |
-| Falha do gateway | Registrada como resultado do sistema. Não vira interferência externa. |
-| Imagem local `sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb` | Preservada. O modo final recusa outro id no campo Image do contêiner. A tag não prova o id. |
-| RQ2, δ, licença, merge de `main` | Não foram alterados. |
-
-Limites de segurança, estabelecidos antes de qualquer execução e mais
-estritos que a violação ambiental: MemAvailable abaixo de 1 GiB, disco
-livre abaixo de 1 GiB, ou 65536 páginas ou mais num intervalo de 30 s.
-Nesses casos a coleta para na hora e o bloco parcial fica preservado. Não
-substituem os limiares de 6 GiB, 1024 páginas e 10 GiB.
-
-Se o limiar ambiental dispara e a memória do contêiner do gateway explica
-pelo menos metade da queda de MemAvailable, a pressão fica como resultado
-do sistema. Se essa memória não foi lida, a causa fica incerta: o bloco sai
-da estimativa primária, não é repetido e não é chamado de interferência
-externa. A fração 0,5 é regra candidata, não um ajuste feito depois de ver
-quem venceu.
-
-## Estado em 2026-11-06
-
-A coleta não começou. O comando com `--phase final` está escrito para
-revisão e não foi executado. O arquivo de protocolo é candidato: traz
-`execution_authorized: false` e não autoriza a execução. A flag
-`--confirm-operational-start` também não é essa autorização.
-
-| Regra | Estado |
-| --- | --- |
-| N=18, semente 20261105, JSON, concorrência 1, latência 0, perfil mínimo, janelas 20/60 s | Candidato. Não aprovado para execução. |
-| Meia-largura de 0,50 ms | Meta de planejamento. Não é margem de equivalência nem efeito mínimo. |
-| Testes t bilaterais das diferenças entre blocos contra zero, Holm na família de três, alfa 0,05, intervalos t marginais de 95% | Propostos no protocolo. Não calculados. |
-| `--phase final` em ids, CSV, manifesto, agregação e validação | Implementado. Testado com linhas sintéticas marcadas `SYNTHETIC`. |
-| Protocolo versionado, hash, divergência de argumentos, diretório existente, árvore suja | Implementado. Testado sem carga. |
-| Admissão de 60 s, com métrica ausente bloqueando | Implementado. Testada com relógio e leituras simulados. A amostra de 2026-11-05 que recusou load1 continua válida e não é reutilizada. |
+| Admissão de 60 s | Emenda 1.1.0. Memória, swap e os volumes do Docker e dos CSVs continuam obrigatórios. Load average é diagnóstico e não recusa o host nem exclui bloco. |
 | Gate de 5 s | Continua complementar. Não admite a coleta. |
 | Sampler de 30 s produz decisão | Implementado. Testado com métricas simuladas. Violação ambiental termina os três caminhos, preserva e exclui da estimativa. Risco grave interrompe na hora. |
 | Uma repetição da permutação completa, readmissão nova, segunda violação para a coleta | Implementado e testado. Não aumenta N. |
@@ -353,15 +318,11 @@ de modelo, a imagem do LiteLLM nem texto de terceiros. CC0 não se aplica.
 
 ## Plano de host
 
-Os limiares abaixo não foram reduzidos. A coleta não foi aplicada. A amostra
-de 60 s de 2026-11-05T22:14:56Z a 22:15:56Z recusou o host por load1
-(10,46 a 11,33, limiar abaixo de 2). Memória, páginas de swap e disco
-passaram naquela amostra. Essa recusa fica registrada e não serve de
-admissão para uma execução posterior.
-
-Uma leitura instantânea em 2026-11-06, que não é admissão, mostrou load1
-6,22, MemAvailable cerca de 22,2 GiB e 284 GiB livres. Continua acima do
-limiar de load1. Nenhum stack foi parado.
+Memória, swap e disco não foram afrouxados. A coleta não foi aplicada.
+A amostra de 60 s de 2026-11-05T22:14:56Z a 22:15:56Z registrou load1 de
+10,46 a 11,33 e, pelo protocolo 1.0.0, recusou o host só por isso. Essa
+observação fica no arquivo. A emenda 1.1.0 retira `load1 < 2` como recusa
+automática. Nenhum stack foi parado.
 
 O contêiner `gateway-comparison-melis-1` existente foi criado com a imagem
 `f87640f8e886` e está parado. A tag `gateway-comparison-melis:latest` aponta
@@ -369,30 +330,47 @@ para `sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb`,
 sem RepoDigests e sem labels. Omitir `--build-melis` não seleciona essa
 imagem. O modo final lê o campo Image do contêiner criado e recusa outro id.
 
-Esta máquina, em 2026-11-05, não passou no critério de admissão: o swap de
-8 GiB está quase cheio, houve movimento de páginas durante o piloto e há
-dezenas de contêineres alheios. Eles não foram parados. A coleta
-confirmatória fica bloqueada neste host até uma janela que passe o critério
-ou até outro host. O limiar de 1024 páginas num preflight de 5 s não prova
-estabilidade da hora seguinte. O código agora aplica a admissão de 60 s
-antes da primeira carga; os testes usaram relógio e métricas simulados.
+O cenário da emenda é esta máquina compartilhada. Há contêineres alheios e
+o swap de 8 GiB segue ocupado; nada disso foi desligado nem alterado com
+sysctl ou swapoff. O limiar de 1024 páginas num preflight de 5 s não prova
+a hora seguinte e não substitui a amostra de 60 s. A coleta continua
+bloqueada enquanto `execution_authorized` for falso.
 
 Admissão, numa amostra de 60 s antes de começar, com a coleta ainda parada:
 
 - MemAvailable no mínimo 8 GiB, e nenhuma leitura da amostra abaixo de 6 GiB.
 - Páginas de swap, entrada mais saída, abaixo de 256 na amostra inteira.
-- load1 abaixo de 2 nesta máquina de 16 CPUs, antes da carga da própria
-  coleta.
-- Pelo menos 20 GiB livres no disco que receberá os CSVs.
+- Pelo menos 20 GiB livres no volume dos CSVs e no volume de dados do Docker.
+- CPU por núcleo, utilização e espera de I/O entram no registro. A ausência
+  desse registro não vira aprovação.
+- Load average fica no registro como diagnóstico. Não recusa o host e não
+  exclui bloco. Latência alta também não exclui bloco.
 - Redis, quando a célula precisar dele, dedicado e identificado; o Redis de
   outros stacks não é o da coleta.
+
+A emenda 1.1.0, `protocol/rq1-final-amendment-1.1.0.json`, SHA-256
+`953e5bfee33803b883f163ba6696e34ec7de6ab7064d72c3666ebcbf329985b0`, nomeia o
+protocolo 1.0.0 preservado
+`d566da7ab4804d2313a6ca63deae17b2244841ecc57eddd1628b0861f638184e`. O cenário
+é esta máquina em ambiente compartilhado. A observação de load1 de
+2026-11-05 permanece; a recusa automática por `load1 < 2` não.
+
+Amostra inicial de 60,12 s, em 2026-11-06, com a coleta parada e serviços
+alheios ligados. Não autoriza a execução e não serve para uma partida
+posterior. Admitida pelos critérios que restam: MemAvailable mínima 21,11 GiB;
+7 páginas de swap; volume dos CSVs com 284 GiB livres; `/var/lib/docker` com
+214 GiB livres, em outro sistema de arquivos. Utilização agregada 18,6% e
+espera de I/O 0,039%, em 16 núcleos. Load1 diagnóstico de 2,35 a 5,32.
+Contêineres já presentes: backend e LiteLLM ligados, Melis parado na imagem
+antiga `f87640f8e886`. O registro está em
+`protocol/admission-shared-host-20261106.json`.
 
 Durante a coleta, a cada 30 s, o mesmo registro de `host_pressure.csv`:
 
 - Violação se MemAvailable cair abaixo de 6 GiB, ou se um intervalo de 30 s
   mover 1024 páginas ou mais, ou se o disco livre cair abaixo de 10 GiB.
-- load1 alto produzido pela própria coleta não é, sozinho, violação. O
-  piloto chegou a 15 com a carga ligada.
+- Load alto e latência desfavorável não excluem bloco. Ficam no relatório.
+  O piloto chegou a load1 15 com a carga ligada.
 - Ao violar o limiar ambiental: preservar CSVs e logs, marcar o bloco inteiro
   e não interromper no meio de um caminho. Os três caminhos daquele bloco
   terminam. O bloco sai da estimativa e permanece listado. Uma repetição, se
@@ -403,9 +381,9 @@ Durante a coleta, a cada 30 s, o mesmo registro de `host_pressure.csv`:
   páginas ou mais num intervalo, a parada é imediata. O bloco parcial fica
   preservado e não entra na estimativa.
 
-Opções enquanto não houver host que passe: esperar e amostrar de novo; usar
-outra máquina com o mesmo protocolo de proveniência; não baixar o limiar
-para esta máquina passar.
+A amostra de 2026-11-06 passou nos critérios que continuam bloqueantes.
+Isso não autoriza a coleta. Não se baixa um limiar de memória ou disco para
+obter essa passagem.
 
 ## Comando futuro, não executado
 
@@ -419,8 +397,8 @@ cd experiments/gateway-comparison
 PYTHONDONTWRITEBYTECODE=1 python3 harness/run_comparative_pilot.py \
   --out-dir data/rq1-final-20261106 \
   --phase final \
-  --protocol protocol/rq1-final-candidate.json \
-  --protocol-sha256 d566da7ab4804d2313a6ca63deae17b2244841ecc57eddd1628b0861f638184e \
+  --protocol protocol/rq1-final-amendment-1.1.0.json \
+  --protocol-sha256 953e5bfee33803b883f163ba6696e34ec7de6ab7064d72c3666ebcbf329985b0 \
   --confirm-operational-start \
   --blocks 18 \
   --modes json \
@@ -438,8 +416,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 harness/run_comparative_pilot.py \
 
 ## Pendências
 
-- A coleta confirmatória continua bloqueada. O protocolo candidato e os
-  testes não são autorização. O host segue recusado por load1.
+- A coleta confirmatória continua bloqueada porque `execution_authorized`
+  está falso. A emenda e a amostra inicial não são autorização.
 - N e as metas de 0,50 ms e 0,25 ms não estão aprovados. A recomendação
   condicional é N=18 se a meta for 0,50 ms com o limite de sigma.
 - δ e a heurística continuam propostas. Nenhuma licença foi escolhida.

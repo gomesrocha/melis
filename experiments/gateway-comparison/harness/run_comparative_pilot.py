@@ -404,7 +404,7 @@ def _load_final_protocol(args):
         raise SystemExit(
             f"protocol hash mismatch: file {digest} != {args.protocol_sha256}"
         )
-    final_protocol.validate_document(document)
+    final_protocol.validate_for_start(document)
     bound = final_protocol.bind_hash(document, digest)
     mismatches = final_protocol.argument_mismatches(bound, args)
     if mismatches:

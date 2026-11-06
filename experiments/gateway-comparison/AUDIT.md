@@ -34,7 +34,10 @@ Testes dos módulos novos, a partir de `harness/tests`:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_provenance.py test_final_protocol.py -q
 ```
 
-O protocolo candidato está em `protocol/rq1-final-candidate.json`. O hash
+O protocolo 1.0.0 preservado está em `protocol/rq1-final-candidate.json`.
+A emenda de host compartilhado está em `protocol/rq1-final-amendment-1.1.0.json`,
+SHA-256 `953e5bfee33803b883f163ba6696e34ec7de6ab7064d72c3666ebcbf329985b0`.
+O hash
 desse arquivo é a identidade; o sidecar `.sha256` só a reproduz. `--dry-run`
 imprime 54 células e 4320 s de carga, com o overhead de troca à parte, e
 não amostra o host nem sobe contêiner. A flag

@@ -34,6 +34,7 @@ from manifest import build_manifest  # noqa: E402
 from validate import validate_dir  # noqa: E402
 
 PROTOCOL = os.path.join(ROOT, "protocol", "rq1-final-candidate.json")
+AMENDMENT = os.path.join(ROOT, "protocol", "rq1-final-amendment-1.1.0.json")
 GIB = 1024 ** 3
 GATES = ["direct", "melis", "litellm"]
 
@@ -56,6 +57,40 @@ def _quiet():
         "pswpout": 100,
         "load1": 0.4,
     }
+
+
+def _cpu_summary():
+    return {
+        "per_cpu": [{
+            "cpu": "cpu0", "utilization": 0.2, "iowait_fraction": 0.01, "total_jiffies": 100,
+        }],
+        "aggregate": {
+            "cpu": "cpu", "utilization": 0.2, "iowait_fraction": 0.01, "total_jiffies": 100,
+        },
+        "role": "recorded",
+    }
+
+
+def _volumes(path):
+    return {
+        "csv": {"path": path, "free_bytes": 30 * GIB, "total_bytes": 100 * GIB},
+        "docker": {"path": "/var/lib/docker", "free_bytes": 30 * GIB, "total_bytes": 100 * GIB},
+    }
+
+
+def _cpu_reader():
+    calls = {"n": 0}
+
+    def read():
+        calls["n"] += 1
+        n = calls["n"]
+        row = {
+            "user": 5 * n, "nice": 0, "system": n, "idle": 40 * n, "iowait": n,
+            "irq": 0, "softirq": 0, "steal": 0,
+        }
+        return [{"cpu": "cpu", **row}, {"cpu": "cpu0", **row}]
+
+    return read
 
 
 def _identity():
@@ -108,6 +143,26 @@ class TestProtocolFile(unittest.TestCase):
         self.assertFalse(document["execution_authorized"])
         self.assertEqual(document["test_procedure"]["status"], "proposed_not_executed")
         self.assertTrue(document["test_procedure"]["not_computed_in_this_revision"])
+        self.assertEqual(digest, final_protocol.PRESERVED_SHA256)
+
+    def test_amendment_withdraws_the_load_threshold_and_keeps_the_old_file(self):
+        amended, digest = final_protocol.load(AMENDMENT)
+        final_protocol.validate_for_start(amended)
+        self.assertEqual(amended, final_protocol.amended_document())
+        with open(AMENDMENT + ".sha256", encoding="utf-8") as fh:
+            self.assertEqual(digest, fh.read().split()[0])
+        self.assertEqual(amended["amends_sha256"], final_protocol.PRESERVED_SHA256)
+        self.assertNotIn("max_load1", amended["admission"])
+        self.assertEqual(amended["admission"]["load1_role"], "diagnostic")
+        self.assertFalse(amended["execution_authorized"])
+        preserved, preserved_digest = final_protocol.load(PROTOCOL)
+        self.assertEqual(preserved_digest, final_protocol.PRESERVED_SHA256)
+        with self.assertRaises(final_protocol.ProtocolError):
+            final_protocol.validate_for_start(preserved)
+        broken = final_protocol.amended_document()
+        broken["admission"]["max_load1"] = 2.0
+        with self.assertRaises(final_protocol.ProtocolError):
+            final_protocol.validate_for_start(broken)
 
     def test_a_lowered_threshold_is_rejected(self):
         document = final_protocol.candidate_document()
@@ -157,16 +212,19 @@ class TestAdmission(unittest.TestCase):
         return admission.collect(
             "inv-synthetic", "/tmp", seconds=seconds, interval=60.0,
             reader=reader, sleeper=clock.sleep,
-            disk_reader=lambda path: 30 * GIB,
             component_lister=lambda: ["gateway-comparison-backend-1\tup 2 hours"],
-            clock=clock,
+            clock=clock, cpu_reader=_cpu_reader(), volume_reader=_volumes,
         )
 
     def test_approved_refused_missing_and_stale(self):
         approved = self._collect(lambda: _quiet())
         self.assertTrue(approved["admitted"])
         self.assertGreaterEqual(approved["duration_s"], 60)
-        self.assertEqual(approved["units"]["load1"], "loadavg_1min")
+        self.assertEqual(approved["units"]["load1"], "loadavg_1min_diagnostic")
+        self.assertFalse(approved["load_average"]["blocks_admission"])
+        self.assertTrue(approved["cpu"]["per_cpu"])
+        self.assertIn("csv", approved["volumes"])
+        self.assertIn("docker", approved["volumes"])
         self.assertEqual(
             admission.accept_for_start(approved, "inv-synthetic", approved["finished_at_s"]),
             "",
@@ -174,9 +232,22 @@ class TestAdmission(unittest.TestCase):
 
         noisy = dict(_quiet())
         noisy["load1"] = 11.0
-        refused = self._collect(lambda: noisy)
-        self.assertFalse(refused["admitted"])
-        self.assertIn("load1", refused["reasons"])
+        shared = self._collect(lambda: noisy)
+        self.assertTrue(shared["admitted"])
+        self.assertNotIn("load1", shared["reasons"])
+        self.assertEqual(shared["load_average"]["load1_max"], 11.0)
+        self.assertFalse(shared["load_average"]["blocks_admission"])
+        tight = admission.judge(
+            [noisy], None, 60.0, ["gateway-comparison-backend-1\tup"],
+            cpu=_cpu_summary(),
+            volumes={
+                "csv": {"path": "/tmp", "free_bytes": 30 * GIB},
+                "docker": {"path": "/var/lib/docker", "free_bytes": 1 * GIB},
+            },
+        )
+        self.assertFalse(tight["admitted"])
+        self.assertIn("docker_volume_free", tight["reasons"])
+        self.assertNotIn("load1", tight["reasons"])
 
         missing = dict(_quiet())
         missing["mem_available_bytes"] = None
@@ -200,7 +271,9 @@ class TestAdmission(unittest.TestCase):
         )
 
     def test_unlisted_components_do_not_pass(self):
-        record = admission.judge([_quiet()], 30 * GIB, 60.0, None)
+        record = admission.judge(
+            [_quiet()], None, 60.0, None, cpu=_cpu_summary(), volumes=_volumes("/tmp"),
+        )
         self.assertIn("components_unlisted", record["reasons"])
         self.assertFalse(record["admitted"])
 
@@ -437,14 +510,14 @@ class TestImageAndDryRun(unittest.TestCase):
         self.assertFalse(same_inputs["image_labeled_with_harness_commit"])
 
     def test_dry_run_prints_the_plan_and_starts_nothing(self):
-        with open(PROTOCOL + ".sha256", encoding="utf-8") as fh:
+        with open(AMENDMENT + ".sha256", encoding="utf-8") as fh:
             digest = fh.read().split()[0]
         out = os.path.join(tempfile.gettempdir(), "melis-final-dry-run-should-not-exist")
         if os.path.exists(out):
             os.rmdir(out)
         argv = [
             "--dry-run", "--phase", "final",
-            "--protocol", PROTOCOL, "--protocol-sha256", digest,
+            "--protocol", AMENDMENT, "--protocol-sha256", digest,
             "--out-dir", out,
             "--blocks", "18", "--modes", "json", "--concurrency", "1",
             "--warmup-s", "20", "--measure-s", "60", "--backend-latency-ms", "0",

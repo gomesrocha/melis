@@ -17,6 +17,8 @@ import block_design
 import provenance
 
 PROTOCOL_VERSION = "1.0.0"
+AMENDMENT_VERSION = "1.1.0"
+PRESERVED_SHA256 = "d566da7ab4804d2313a6ca63deae17b2244841ecc57eddd1628b0861f638184e"
 GiB = 1024 ** 3
 IMAGE_ID = "sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb"
 IMAGE_BUILD_COMMIT = "7b1c4a8734c301344615adc8c213b2dc7a2fb085"
@@ -26,7 +28,7 @@ CONTRASTS = ["melis_minus_direct", "litellm_minus_direct", "melis_minus_litellm"
 SWITCH_S_PER_BLOCK = 25.937
 SWITCH_SOURCE = "col-33439a62b8ab observed 25.937 s/block; not remeasured"
 
-ADMISSION = {
+ADMISSION_V1 = {
     "duration_s": 60.0,
     "min_mem_available_bytes": 8 * GiB,
     "min_reading_mem_available_bytes": 6 * GiB,
@@ -35,7 +37,20 @@ ADMISSION = {
     "min_disk_free_bytes": 20 * GiB,
 }
 
-MONITOR = {
+# Shared-host amendment. Load average is recorded and does not refuse the host.
+ADMISSION = {
+    "duration_s": 60.0,
+    "min_mem_available_bytes": 8 * GiB,
+    "min_reading_mem_available_bytes": 6 * GiB,
+    "max_swap_pages": 256,
+    "min_disk_free_bytes": 20 * GiB,
+    "load1_role": "diagnostic",
+    "cpu_record_required": True,
+    "volumes_required": ["csv", "docker"],
+    "scenario": "shared_host",
+}
+
+MONITOR_V1 = {
     "interval_s": 30.0,
     "environmental": {
         "min_mem_available_bytes": 6 * GiB,
@@ -51,6 +66,10 @@ MONITOR = {
     # container. At or above this share the pressure stays a system result.
     "attribution_gateway_share": 0.5,
 }
+
+MONITOR = dict(MONITOR_V1)
+MONITOR["load_average_excludes_block"] = False
+MONITOR["latency_excludes_block"] = False
 
 TEST_PROCEDURE = {
     "status": "proposed_not_executed",
@@ -119,8 +138,8 @@ def candidate_document() -> dict:
         "melis_image_id": IMAGE_ID,
         "image_build_commit": IMAGE_BUILD_COMMIT,
         "image_id_is_not_a_registry_digest": True,
-        "admission": json.loads(json.dumps(ADMISSION)),
-        "monitor": json.loads(json.dumps(MONITOR)),
+        "admission": json.loads(json.dumps(ADMISSION_V1)),
+        "monitor": json.loads(json.dumps(MONITOR_V1)),
         "repeat": {
             "max_full_permutation_repeats": 1,
             "unit": "full_permutation",
@@ -180,13 +199,10 @@ def load(path: str) -> tuple[dict, str]:
     return document, sha256_text(raw)
 
 
-def validate_document(document: dict) -> None:
-    """Reject a file that is incomplete or that disagrees with the code."""
+def _common(document: dict) -> None:
     missing = [name for name in REQUIRED if name not in document]
     if missing:
         raise ProtocolError("protocol missing fields: " + ", ".join(missing))
-    if document["protocol_version"] != PROTOCOL_VERSION:
-        raise ProtocolError("protocol_version mismatch")
     if document["role"] != "candidate":
         raise ProtocolError("protocol role must stay candidate")
     if document["execution_authorized"] is not False:
@@ -195,10 +211,6 @@ def validate_document(document: dict) -> None:
         raise ProtocolError("protocol file cannot claim confirmatory evidence")
     if document["phase"] != "final":
         raise ProtocolError("protocol phase must be final")
-    if document["admission"] != ADMISSION:
-        raise ProtocolError("admission criteria differ from the recorded thresholds")
-    if document["monitor"] != MONITOR:
-        raise ProtocolError("monitor limits differ from the recorded limits")
     if document["test_procedure"] != TEST_PROCEDURE:
         raise ProtocolError("test procedure differs from the proposed procedure")
     if document["melis_image_id"] != IMAGE_ID:
@@ -215,6 +227,70 @@ def validate_document(document: dict) -> None:
         raise ProtocolError("the recorded host refusal is not an admission")
     if document["precision_target_role"] != "candidate_planning_half_width":
         raise ProtocolError("0.50 ms is a planning target, not an equivalence margin")
+
+
+def validate_document(document: dict) -> None:
+    """Validate the preserved 1.0.0 candidate. It is not the execution protocol."""
+    _common(document)
+    if document["protocol_version"] != PROTOCOL_VERSION:
+        raise ProtocolError("protocol_version mismatch")
+    if document["admission"] != ADMISSION_V1:
+        raise ProtocolError("admission criteria differ from the recorded thresholds")
+    if document["monitor"] != MONITOR_V1:
+        raise ProtocolError("monitor limits differ from the recorded limits")
+
+
+def amended_document() -> dict:
+    """Shared-host amendment. Load average does not refuse the host or a block."""
+    document = candidate_document()
+    document["protocol_version"] = AMENDMENT_VERSION
+    document["amends_sha256"] = PRESERVED_SHA256
+    document["amendment"] = {
+        "id": "shared-host-load-diagnostic",
+        "scenario": "this machine in a shared environment",
+        "withdrawn": ["admission.max_load1 as an automatic host refusal"],
+        "load_average": "diagnostic_only",
+        "blocks_not_excluded_for": ["high_load", "unfavorable_latency"],
+        "safety_unchanged": ["memory", "disk"],
+    }
+    document["admission"] = json.loads(json.dumps(ADMISSION))
+    document["monitor"] = json.loads(json.dumps(MONITOR))
+    document["historical_host_refusal_not_an_admission"] = {
+        "sample_start": "2026-11-05T22:14:56Z",
+        "sample_end": "2026-11-05T22:15:56Z",
+        "reason": "load1",
+        "load1_min": 10.46,
+        "load1_max": 11.33,
+        "threshold": 2.0,
+        "observation_preserved": True,
+        "automatic_refusal_withdrawn": True,
+        "stands": False,
+        "reusable": False,
+    }
+    return document
+
+
+def validate_for_start(document: dict) -> None:
+    """The only protocol a final start may use. It does not authorize the run."""
+    _common(document)
+    if document["protocol_version"] != AMENDMENT_VERSION:
+        raise ProtocolError("phase final requires amendment 1.1.0; 1.0.0 is preserved and is not the start protocol")
+    if document.get("amends_sha256") != PRESERVED_SHA256:
+        raise ProtocolError("amendment must name the preserved protocol hash")
+    if document.get("amendment", {}).get("scenario") != "this machine in a shared environment":
+        raise ProtocolError("amendment scenario must be this shared machine")
+    if "max_load1" in document["admission"]:
+        raise ProtocolError("load1 must not be an admission threshold")
+    if document["admission"] != ADMISSION:
+        raise ProtocolError("admission criteria differ from the shared-host amendment")
+    if document["monitor"] != MONITOR:
+        raise ProtocolError("monitor limits differ from the shared-host amendment")
+    if document["monitor"].get("load_average_excludes_block") is not False:
+        raise ProtocolError("high load must not exclude a block")
+    if document["monitor"].get("latency_excludes_block") is not False:
+        raise ProtocolError("unfavorable latency must not exclude a block")
+    if document["historical_host_refusal_not_an_admission"].get("automatic_refusal_withdrawn") is not True:
+        raise ProtocolError("the load1 refusal must be withdrawn by the amendment")
 
 
 def argument_mismatches(document: dict, args) -> list[str]:

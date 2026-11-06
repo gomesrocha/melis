@@ -1,0 +1,290 @@
+{
+  "admitted": true,
+  "reasons": [],
+  "duration_s": 60.119752407073975,
+  "readings": [
+    {
+      "mem_available_bytes": 22773444608,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 4096,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220641,
+      "pswpout": 5764104,
+      "load1": 2.46
+    },
+    {
+      "mem_available_bytes": 22772895744,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 4096,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220641,
+      "pswpout": 5764104,
+      "load1": 2.51
+    },
+    {
+      "mem_available_bytes": 22782255104,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 4096,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220641,
+      "pswpout": 5764104,
+      "load1": 2.47
+    },
+    {
+      "mem_available_bytes": 22797254656,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 4096,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220641,
+      "pswpout": 5764104,
+      "load1": 2.35
+    },
+    {
+      "mem_available_bytes": 22750621696,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 4096,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220641,
+      "pswpout": 5764104,
+      "load1": 2.88
+    },
+    {
+      "mem_available_bytes": 22718902272,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 12288,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220643,
+      "pswpout": 5764104,
+      "load1": 2.73
+    },
+    {
+      "mem_available_bytes": 22754283520,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 16384,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220644,
+      "pswpout": 5764104,
+      "load1": 2.67
+    },
+    {
+      "mem_available_bytes": 22756081664,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 16384,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220644,
+      "pswpout": 5764104,
+      "load1": 3.58
+    },
+    {
+      "mem_available_bytes": 22922293248,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 16384,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220644,
+      "pswpout": 5764104,
+      "load1": 3.37
+    },
+    {
+      "mem_available_bytes": 22927323136,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 32768,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220648,
+      "pswpout": 5764104,
+      "load1": 3.74
+    },
+    {
+      "mem_available_bytes": 22667436032,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 36864,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220648,
+      "pswpout": 5764104,
+      "load1": 3.68
+    },
+    {
+      "mem_available_bytes": 22675169280,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 36864,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220648,
+      "pswpout": 5764104,
+      "load1": 3.87
+    },
+    {
+      "mem_available_bytes": 22883815424,
+      "mem_total_bytes": 66070204416,
+      "swap_free_bytes": 36864,
+      "swap_total_bytes": 8589930496,
+      "pswpin": 1220648,
+      "pswpout": 5764104,
+      "load1": 5.32
+    }
+  ],
+  "disk_free_bytes": 305087123456,
+  "volumes": {
+    "csv": {
+      "path": "/home/fabio/organizacao/repository/melis-exp/experiments/gateway-comparison",
+      "free_bytes": 305087123456,
+      "total_bytes": 502921060352
+    },
+    "docker": {
+      "path": "/var/lib/docker",
+      "free_bytes": 230092767232,
+      "total_bytes": 501809635328
+    }
+  },
+  "cpu": {
+    "per_cpu": [
+      {
+        "cpu": "cpu0",
+        "total_jiffies": 5893,
+        "utilization": 0.19090446292211097,
+        "iowait_fraction": 0.00016969285593076533
+      },
+      {
+        "cpu": "cpu1",
+        "total_jiffies": 5922,
+        "utilization": 0.12664640324214793,
+        "iowait_fraction": 0.00033772374197906115
+      },
+      {
+        "cpu": "cpu2",
+        "total_jiffies": 5945,
+        "utilization": 0.2746846089150547,
+        "iowait_fraction": 0.001009251471825063
+      },
+      {
+        "cpu": "cpu3",
+        "total_jiffies": 5980,
+        "utilization": 0.4426421404682274,
+        "iowait_fraction": 0.0
+      },
+      {
+        "cpu": "cpu4",
+        "total_jiffies": 5915,
+        "utilization": 0.17751479289940827,
+        "iowait_fraction": 0.0010143702451394759
+      },
+      {
+        "cpu": "cpu5",
+        "total_jiffies": 5966,
+        "utilization": 0.11816962789138451,
+        "iowait_fraction": 0.00016761649346295676
+      },
+      {
+        "cpu": "cpu6",
+        "total_jiffies": 5932,
+        "utilization": 0.32788267026298046,
+        "iowait_fraction": 0.00016857720836142953
+      },
+      {
+        "cpu": "cpu7",
+        "total_jiffies": 5973,
+        "utilization": 0.3036999832579943,
+        "iowait_fraction": 0.00016742005692281934
+      },
+      {
+        "cpu": "cpu8",
+        "total_jiffies": 5904,
+        "utilization": 0.14329268292682926,
+        "iowait_fraction": 0.00033875338753387534
+      },
+      {
+        "cpu": "cpu9",
+        "total_jiffies": 5967,
+        "utilization": 0.1085972850678733,
+        "iowait_fraction": 0.00016758840288252054
+      },
+      {
+        "cpu": "cpu10",
+        "total_jiffies": 5913,
+        "utilization": 0.1515305259597497,
+        "iowait_fraction": 0.0005073566717402334
+      },
+      {
+        "cpu": "cpu11",
+        "total_jiffies": 5954,
+        "utilization": 0.11370507222035606,
+        "iowait_fraction": 0.00016795431642593214
+      },
+      {
+        "cpu": "cpu12",
+        "total_jiffies": 5908,
+        "utilization": 0.13083953960731212,
+        "iowait_fraction": 0.0005077860528097495
+      },
+      {
+        "cpu": "cpu13",
+        "total_jiffies": 5960,
+        "utilization": 0.10671140939597315,
+        "iowait_fraction": 0.0003355704697986577
+      },
+      {
+        "cpu": "cpu14",
+        "total_jiffies": 5903,
+        "utilization": 0.13704895815686938,
+        "iowait_fraction": 0.0008470269354565475
+      },
+      {
+        "cpu": "cpu15",
+        "total_jiffies": 5947,
+        "utilization": 0.11299815032789642,
+        "iowait_fraction": 0.00016815200941651252
+      }
+    ],
+    "aggregate": {
+      "cpu": "cpu",
+      "total_jiffies": 94982,
+      "utilization": 0.18556147480575266,
+      "iowait_fraction": 0.00038954749320923963
+    },
+    "role": "recorded"
+  },
+  "swap_pages": 7,
+  "components_already_up": [
+    "gateway-comparison-litellm-1\tUp 15 hours",
+    "gateway-comparison-melis-1\tExited (0) 15 hours ago",
+    "gateway-comparison-backend-1\tUp 16 hours"
+  ],
+  "load_average": {
+    "role": "diagnostic",
+    "blocks_admission": false,
+    "excludes_block": false,
+    "load1_min": 2.35,
+    "load1_max": 5.32
+  },
+  "units": {
+    "mem_available_bytes": "bytes",
+    "swap_pages": "pages",
+    "load1": "loadavg_1min_diagnostic",
+    "disk_free_bytes": "bytes",
+    "duration_s": "seconds",
+    "utilization": "fraction_of_jiffies",
+    "iowait_fraction": "fraction_of_jiffies"
+  },
+  "criteria": {
+    "duration_s": 60.0,
+    "min_mem_available_bytes": 8589934592,
+    "min_reading_mem_available_bytes": 6442450944,
+    "max_swap_pages": 256,
+    "min_disk_free_bytes": 21474836480,
+    "load1_role": "diagnostic",
+    "cpu_record_required": true,
+    "volumes_required": [
+      "csv",
+      "docker"
+    ],
+    "scenario": "shared_host"
+  },
+  "reusable": false,
+  "replaces_5s_gate": false,
+  "execution_authorized": false,
+  "invocation_id": "sample-shared-host-20261106",
+  "started_at_s": 1793968666.0719159,
+  "finished_at_s": 1793968726.221609,
+  "disk_path": "/home/fabio/organizacao/repository/melis-exp/experiments/gateway-comparison",
+  "collection_started": false,
+  "role": "initial_shared_host_sample",
+  "note": "Initial 60 s sample under amendment 1.1.0. Not conversation authorization and not reusable as the admission of a later start."
+}
