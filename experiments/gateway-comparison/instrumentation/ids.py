@@ -89,16 +89,23 @@ def apply_historical_namespace(rows, source_label: str):
     return out
 
 
-def block_id(experiment_id_: str, phase: str, block_index, collection_id_: str = "") -> str:
+def block_id(experiment_id_: str, phase: str, block_index, collection_id_: str = "",
+             attempt: str = "original") -> str:
     """A block is an independent repetition unit inside one collection.
 
     Omitting ``collection_id_`` reproduces the pre-1.2.0 hash so historical
-    ids can still be recomputed. New collections must pass it.
+    ids can still be recomputed. New collections must pass it. ``attempt``
+    ``original`` keeps that hash. A later attempt of the same planned block
+    is a different id and is not a second planned block.
     """
     parts = [experiment_id_, phase, int(block_index)]
     if collection_id_:
         parts.append(collection_id_)
-    return f"blk-{_slug(phase)}-{int(block_index):04d}-{_short_hash(*parts)}"
+    suffix = ""
+    if attempt not in ("", "original"):
+        parts.append(attempt)
+        suffix = "-" + _slug(attempt)
+    return f"blk-{_slug(phase)}-{int(block_index):04d}{suffix}-{_short_hash(*parts)}"
 
 
 def pair_id(block_id_: str, case_id_: str, scenario: str, streaming: bool, concurrency,

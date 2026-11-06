@@ -259,16 +259,41 @@ def truncated_block_ids(facts):
     return found
 
 
+def load_block_decisions(data_dir):
+    """Ledger of original and repeat attempts. Absent means historical behavior.
+
+    A planned block contributes at most one attempt to the primary mean.
+    """
+    path = os.path.join(data_dir, "block_decisions.csv")
+    if not os.path.exists(path):
+        return None
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    primaries = {}
+    for row in rows:
+        row["include_in_primary"] = row.get("include_in_primary") == "true"
+        if not row["include_in_primary"]:
+            continue
+        key = row.get("planned_block_index")
+        if key in primaries:
+            raise ValueError(
+                f"planned block {key} has two attempts in the primary estimate"
+            )
+        primaries[key] = row.get("block_id")
+    return rows
+
+
 def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory",
-                  facts=None):
+                  facts=None, decisions=None):
     """Mean, across blocks, of differences of per-execution completion medians.
 
     A block contributes to the estimate only when direct, Melis and LiteLLM
     each have a successful median in that stratum, and the block was not
     truncated. Blocks that fail or are truncated stay in ``excluded``; they
     are not dropped without a trace and they are not removed because the
-    latency looks large. The three contrasts share that block set. p-values
-    stay empty; Holm is the final-analysis plan, not a pilot result.
+    latency looks large. When a decision ledger is present, a repeat is not
+    a second planned block. p-values stay empty. The proposed t-tests and
+    Holm are not computed here.
     """
     grouped = defaultdict(list)
     for r in requests:
@@ -293,18 +318,45 @@ def rq1_contrasts(requests, experiment_id, seed, evidence_role="exploratory",
         block_med = _block_medians(kept)
         population = stratum_population(key)
         role = evidence_role if phase == "final" else "exploratory"
+        by_block = {}
+        if decisions:
+            for decision in decisions:
+                if decision.get("block_id"):
+                    by_block[decision["block_id"]] = decision
         usable = []
         for block_id in sorted(complete_ids):
             meds = block_med.get(block_id, {})
+            decision = by_block.get(block_id)
+            if decisions is not None and decision is None:
+                excluded.append({
+                    "block_id": block_id, "population": population,
+                    "reason": "attempt_not_in_decision_ledger",
+                })
+                continue
+            if decision is not None and not decision["include_in_primary"]:
+                excluded.append({
+                    "block_id": block_id, "population": population,
+                    "reason": decision.get("reason"),
+                    "attempt": decision.get("attempt"),
+                    "planned_block_index": decision.get("planned_block_index"),
+                    "attribution": decision.get("attribution"),
+                })
+                continue
             if block_id in truncated:
                 excluded.append({
                     "block_id": block_id, "population": population, "reason": "truncated",
                 })
                 continue
             if not all(name in meds for name in REQUIRED_GATEWAYS):
+                reason = "no_successful_median"
+                if decision is not None and decision.get("attribution") == "system":
+                    reason = "system_under_test"
                 excluded.append({
                     "block_id": block_id, "population": population,
-                    "reason": "no_successful_median",
+                    "reason": reason,
+                    "attempt": None if decision is None else decision.get("attempt"),
+                    "planned_block_index": None if decision is None else decision.get("planned_block_index"),
+                    "attribution": None if decision is None else decision.get("attribution"),
                     "gateways_with_success": sorted(meds),
                 })
                 continue
@@ -374,13 +426,14 @@ def build(data_dir, runs_out, comparisons_out, experiment_id, phase, seed,
         w.write_rows(runs_rows)
         w.close()
 
+    decisions = load_block_decisions(data_dir)
     comparisons_rows = []
     excluded = []
     if requests:
         experiment_id = experiment_id or requests[0]["experiment_id"]
         comparisons_rows, excluded = rq1_contrasts(
             requests, experiment_id, seed, evidence_role=evidence_role,
-            facts=list(facts.values()),
+            facts=list(facts.values()), decisions=decisions,
         )
     if comparisons_out and comparisons_rows:
         w = CsvTableWriter("comparisons", comparisons_out)

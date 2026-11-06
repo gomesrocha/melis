@@ -31,8 +31,11 @@ REPO = os.path.dirname(os.path.dirname(ROOT))
 sys.path.insert(0, HARNESS)
 sys.path.insert(0, INSTR)
 
+import admission  # noqa: E402
 import block_design  # noqa: E402
+import block_rules  # noqa: E402
 import conc_load  # noqa: E402
+import final_protocol  # noqa: E402
 import host_pressure  # noqa: E402
 import ids  # noqa: E402
 import melis_preflight  # noqa: E402
@@ -321,10 +324,103 @@ def _image_record(container):
     return identity
 
 
+def _list_components():
+    """Names already up. Does not stop them. None means the list could not be read."""
+    proc = subprocess.run(
+        ["docker", "ps", "-a", "--filter", "name=gateway-comparison",
+         "--format", "{{.Names}}\t{{.Status}}"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return [line for line in proc.stdout.splitlines() if line]
+
+
+def _container_image_id(container):
+    proc = subprocess.run(
+        ["docker", "inspect", "-f", "{{.Image}}", container],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def _compose_melis_reference():
+    """Resolved compose image field. A tag here is not the local image id."""
+    text = _compose(["config", "--format", "json"])
+    document = json.loads(text)
+    return (document.get("services") or {}).get("melis", {}).get("image")
+
+
+def _one_cell(args, experiment_id, collection, block, case, mode, conc, position,
+              gateway, sampler, registry, req_writer, fact_writer, extra, stop_event=None):
+    _activate(gateway, extra)
+    if sampler is not None:
+        sampler.set_containers(_containers(gateway))
+    return conc_load.execute_cell({
+        "experiment_id": experiment_id,
+        "collection_id": collection,
+        "phase": args.phase,
+        "gateway": gateway,
+        "url": TARGETS[gateway],
+        "model": args.model,
+        "backend_profile": "deterministic",
+        "mode": mode,
+        "concurrency": conc,
+        "block_id": block,
+        "case_id": case,
+        "timeout": args.timeout,
+        "max_tokens": args.max_tokens,
+        "max_requests": args.max_requests,
+        "safety_cap": args.safety_cap,
+        "measure_s": args.measure_s,
+        "warmup_s": args.warmup_s,
+        "inflight_url": "http://127.0.0.1:7070/__inflight",
+        "count_url": "http://127.0.0.1:7070/__count",
+        "sampler": sampler,
+        "registry": registry,
+        "req_writer": req_writer,
+        "fact_writer": fact_writer,
+        "feature_profile": "minimal",
+        "policy": "none",
+        "seed": str(args.seed),
+        "order_in_block": position,
+        "stop_event": stop_event,
+    })
+
+
+def _load_final_protocol(args):
+    if args.phase != "final":
+        if args.protocol or args.protocol_sha256 or args.confirm_operational_start:
+            raise SystemExit(
+                "protocol and operational confirmation are only valid with --phase final"
+            )
+        return None, None
+    if not args.protocol or not args.protocol_sha256:
+        raise SystemExit("phase final requires --protocol and --protocol-sha256")
+    document, digest = final_protocol.load(args.protocol)
+    if digest != args.protocol_sha256:
+        raise SystemExit(
+            f"protocol hash mismatch: file {digest} != {args.protocol_sha256}"
+        )
+    final_protocol.validate_document(document)
+    bound = final_protocol.bind_hash(document, digest)
+    mismatches = final_protocol.argument_mismatches(bound, args)
+    if mismatches:
+        raise SystemExit("protocol and arguments diverge: " + ", ".join(mismatches))
+    return bound, digest
+
+
 def run(args):
+    protocol, protocol_sha = _load_final_protocol(args)
     est = estimate(args)
+    if protocol is not None:
+        est.update(final_protocol.plan_fields(protocol, protocol_sha))
+    else:
+        est["phase"] = args.phase
     print(json.dumps({"estimate": est}, indent=2))
-    if args.dry_estimate:
+    if args.dry_estimate or args.dry_run:
         return 0
     process_started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     execution_state = git_state(REPO)
@@ -348,8 +444,41 @@ def run(args):
             )
     if os.path.exists(args.out_dir):
         raise SystemExit(f"refusing existing output directory {args.out_dir}")
-    os.makedirs(args.out_dir)
+    final_invocation = None
+    if protocol is not None:
+        numstat = provenance.git_diff_numstat(
+            REPO, final_protocol.IMAGE_BUILD_COMMIT, execution_state.get("commit"),
+            provenance.BUILD_INPUTS,
+        )
+        reuse = final_protocol.image_reuse(
+            bool(execution_state.get("clean")), execution_state.get("commit"), numstat,
+        )
+        blockers = final_protocol.start_blockers(args, execution_state, False, reuse)
+        if blockers:
+            raise SystemExit("phase final will not start: " + ", ".join(blockers))
+        final_invocation = ids.new_collection_nonce()
+        disk_path = os.path.dirname(os.path.abspath(args.out_dir)) or "."
+        # The 60 s sample finishes before this process creates the directory,
+        # starts a container, or sends a request.
+        admission_record = admission.collect(
+            final_invocation, disk_path, component_lister=_list_components,
+        )
+        os.makedirs(args.out_dir)
+        with open(os.path.join(args.out_dir, "admission.json"), "w", encoding="utf-8") as fh:
+            json.dump(admission_record, fh, indent=2)
+            fh.write("\n")
+        refusal = admission.accept_for_start(
+            admission_record, final_invocation, admission_record["finished_at_s"],
+        )
+        if refusal:
+            raise SystemExit(
+                "60s admission refused: " + refusal + " "
+                + ",".join(admission_record["reasons"])
+            )
+    else:
+        os.makedirs(args.out_dir)
     if args.check_host:
+        # Complementary 5 s gate. It cannot admit a final collection.
         delta = host_pressure.sample_delta(5)
         with open(os.path.join(args.out_dir, "host_pressure_before.json"), "w", encoding="utf-8") as fh:
             json.dump(delta, fh, indent=2)
@@ -379,6 +508,8 @@ def run(args):
     sampler = None
     cells = []
     payload_report = None
+    image_observation = None
+    monitor = None
     pressure_stop = threading.Event()
     pressure_thread = threading.Thread(
         target=_record_pressure, args=(args.out_dir, pressure_stop), daemon=True,
@@ -398,6 +529,25 @@ def run(args):
                 args.out_dir, _containers("direct"), interval=args.sample_interval,
                 collection_id=collection,
             ).start()
+        if protocol is not None:
+            _up("melis", extra)
+            try:
+                observed = _container_image_id("gateway-comparison-melis-1")
+                reference = _compose_melis_reference()
+                image_observation = {
+                    "container_image_id": observed,
+                    "compose_image_reference": reference,
+                    "compose_reference_is_proof": final_protocol.reference_is_proof(
+                        reference, protocol["melis_image_id"],
+                    ),
+                    "expected_image_id": protocol["melis_image_id"],
+                }
+                final_protocol.require_container_image(protocol["melis_image_id"], observed)
+            finally:
+                _stop("melis")
+            with open(os.path.join(args.out_dir, "image_check.json"), "w", encoding="utf-8") as fh:
+                json.dump(image_observation, fh, indent=2)
+                fh.write("\n")
         payload_report = check_forwarded_payloads(extra, args.model) if args.check_payloads else None
         if payload_report is not None:
             with open(os.path.join(args.out_dir, "payload_check.json"), "w", encoding="utf-8") as fh:
@@ -422,46 +572,88 @@ def run(args):
             )
         if payload_report is not None and not payload_report.get("replies_equal"):
             raise RuntimeError("preflight reconstructed replies differ across paths")
-        for b, order in enumerate(orders):
-            block = ids.block_id(experiment_id, args.phase, b, collection)
-            case = ids.case_id(experiment_id, "rq1-conc", 0)
-            for mode in args.modes:
-                for conc in args.concurrency:
-                    for position, gateway in enumerate(order):
-                        _activate(gateway, extra)
-                        if sampler is not None:
-                            sampler.set_containers(_containers(gateway))
-                        cells.append(conc_load.execute_cell({
-                            "experiment_id": experiment_id,
-                            "collection_id": collection,
-                            "phase": args.phase,
-                            "gateway": gateway,
-                            "url": TARGETS[gateway],
-                            "model": args.model,
-                            "backend_profile": "deterministic",
-                            "mode": mode,
-                            "concurrency": conc,
-                            "block_id": block,
-                            "case_id": case,
-                            "timeout": args.timeout,
-                            "max_tokens": args.max_tokens,
-                            "max_requests": args.max_requests,
-                            "safety_cap": args.safety_cap,
-                            "measure_s": args.measure_s,
-                            "warmup_s": args.warmup_s,
-                            "inflight_url": "http://127.0.0.1:7070/__inflight",
-                            "count_url": "http://127.0.0.1:7070/__count",
-                            "sampler": sampler,
-                            "registry": registry,
-                            "req_writer": req_writer,
-                            "fact_writer": fact_writer,
-                            "feature_profile": "minimal",
-                            "policy": "none",
-                            "seed": str(args.seed),
-                            "order_in_block": position,
-                        }))
+        case = ids.case_id(experiment_id, "rq1-conc", 0)
+        if protocol is None:
+            for b, order in enumerate(orders):
+                block = ids.block_id(experiment_id, args.phase, b, collection)
+                for mode in args.modes:
+                    for conc in args.concurrency:
+                        for position, gateway in enumerate(order):
+                            cells.append(_one_cell(
+                                args, experiment_id, collection, block, case, mode, conc,
+                                position, gateway, sampler, registry, req_writer,
+                                fact_writer, extra,
+                            ))
+        else:
+            monitor = admission.Monitor(
+                os.path.join(args.out_dir, "monitor_decisions.jsonl"),
+                disk_reader=lambda: admission.disk_free_bytes(args.out_dir),
+            )
+            monitor.start()
+
+            def on_cell(index, attempt, gateway, position, block_id, monitor=monitor):
+                interval = monitor.latest
+                if monitor.stop_event.is_set() or interval.get("host") in ("grave", "metric_missing"):
+                    decision = "metric_missing" if interval.get("host") == "metric_missing" else "grave"
+                    return {"started": False, "decision": decision}
+                result = None
+                for mode in args.modes:
+                    for conc in args.concurrency:
+                        result = _one_cell(
+                            args, experiment_id, collection, block_id, case, mode, conc,
+                            position, gateway, sampler, registry, req_writer, fact_writer,
+                            extra, stop_event=monitor.stop_event,
+                        )
+                        cells.append(result)
+                interval = dict(monitor.latest)
+                if result is not None and result.get("termination_reason") == "safety_stop":
+                    interval["host"] = "grave"
+                failed = result is None or result["ok"] == 0
+                return {
+                    "started": True,
+                    "decision": admission.decide_cell(interval, failed, protocol["monitor"]),
+                }
+
+            repeat_n = {"n": 0}
+
+            def readmission():
+                repeat_n["n"] += 1
+                invocation = f"{final_invocation}-repeat-{repeat_n['n']}"
+                record = admission.collect(
+                    invocation, args.out_dir, component_lister=_list_components,
+                )
+                with open(
+                    os.path.join(args.out_dir, f"admission-repeat-{repeat_n['n']}.json"),
+                    "w", encoding="utf-8",
+                ) as fh:
+                    json.dump(record, fh, indent=2)
+                    fh.write("\n")
+                return admission.accept_for_start(
+                    record, invocation, record["finished_at_s"],
+                ) == ""
+
+            ledger = block_rules.drive(
+                orders,
+                {
+                    "experiment_id": experiment_id,
+                    "phase": args.phase,
+                    "collection_id": collection,
+                },
+                on_cell, readmission,
+                os.path.join(args.out_dir, "block_decisions.csv"),
+                max_repeats=protocol["repeat"]["max_full_permutation_repeats"],
+            )
+            with open(os.path.join(args.out_dir, "attempt_ledger.json"), "w", encoding="utf-8") as fh:
+                json.dump({
+                    "incomplete": ledger.incomplete,
+                    "repeats_used": ledger.repeats_used,
+                    "records": ledger.records,
+                }, fh, indent=2)
+                fh.write("\n")
     finally:
         pressure_stop.set()
+        if monitor is not None:
+            monitor.stop()
         if pressure_thread.is_alive():
             pressure_thread.join(timeout=2)
         req_writer.close()
@@ -512,7 +704,11 @@ def run(args):
             "backend_peak_inflight": "backend /__inflight peak after per-cell /__reset",
         },
         field_limitations={
-            "phase": "smoke and pilot are exploratory, not confirmatory",
+            "phase": (
+                "smoke and pilot are exploratory. phase=final is the candidate "
+                "machinery; a row is confirmatory only when evidence_role is "
+                "confirmatory, which this runner does not write"
+            ),
             "memory_rss_bytes": "cgroup v2 Docker stats have no rss field; anon is not substituted",
             "tokens": "SSE chunks are not tokenizer tokens",
             "melis_image": (
@@ -539,6 +735,14 @@ def run(args):
                 "conc_load": sha256_file(os.path.join(HARNESS, "conc_load.py")),
                 "run_comparative_pilot": sha256_file(os.path.join(HARNESS, "run_comparative_pilot.py")),
                 "mock_openai": sha256_file(os.path.join(ROOT, "backend-deterministic", "mock_openai.py")),
+            },
+            "protocol_sha256": protocol_sha,
+            "image_check": image_observation,
+            "final_rules": None if protocol is None else {
+                "admission": "60s_before_first_request",
+                "repeat": protocol["repeat"],
+                "test_procedure_status": protocol["test_procedure"]["status"],
+                "confirmatory_claim": False,
             },
             "payload_check": None if payload_report is None else {
                 "replies_equal": payload_report.get("replies_equal"),
@@ -595,7 +799,18 @@ def run(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Balanced three-path smoke/pilot")
     ap.add_argument("--out-dir", default=None)
-    ap.add_argument("--phase", default="pilot", choices=["smoke", "pilot"])
+    ap.add_argument("--phase", default="pilot", choices=["smoke", "pilot", "final"])
+    ap.add_argument("--protocol", default=None,
+                    help="Machine-readable candidate protocol. Required for --phase final.")
+    ap.add_argument("--protocol-sha256", default=None,
+                    help="SHA-256 of the protocol file. Required for --phase final.")
+    ap.add_argument("--confirm-operational-start", action="store_true",
+                    help="Required to start a phase=final load. This flag is not "
+                         "conversation authorization. Dry-run does not need it and "
+                         "does not start load.")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Print the plan and exit. Does not sample the host, "
+                         "start containers, or send requests.")
     ap.add_argument("--blocks", type=int, default=1)
     ap.add_argument("--modes", nargs="+", default=["json", "sse"])
     ap.add_argument("--concurrency", type=int, nargs="+", default=[1, 4])

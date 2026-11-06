@@ -3,6 +3,76 @@
 Desenho registrado em 2026-11-05. Smoke, piloto e o piloto de variância são
 exploratórios. Não entram na avaliação final.
 
+## Estado em 2026-11-06
+
+A coleta não começou. O comando com `--phase final` está escrito para
+revisão e não foi executado. O arquivo de protocolo é candidato: traz
+`execution_authorized: false` e não autoriza a execução. A flag
+`--confirm-operational-start` também não é essa autorização.
+
+| Regra | Estado |
+| --- | --- |
+| N=18, semente 20261105, JSON, concorrência 1, latência 0, perfil mínimo, janelas 20/60 s | Candidato. Não aprovado para execução. |
+| Meia-largura de 0,50 ms | Meta de planejamento. Não é margem de equivalência nem efeito mínimo. |
+| Testes t bilaterais das diferenças entre blocos contra zero, Holm na família de três, alfa 0,05, intervalos t marginais de 95% | Propostos no protocolo. Não calculados. |
+| `--phase final` em ids, CSV, manifesto, agregação e validação | Implementado. Testado com linhas sintéticas marcadas `SYNTHETIC`. |
+| Protocolo versionado, hash, divergência de argumentos, diretório existente, árvore suja | Implementado. Testado sem carga. |
+| Admissão de 60 s, com métrica ausente bloqueando | Implementado. Testada com relógio e leituras simulados. A amostra de 2026-11-05 que recusou load1 continua válida e não é reutilizada. |
+| Gate de 5 s | Continua complementar. Não admite a coleta. |
+| Sampler de 30 s produz decisão | Implementado. Testado com métricas simuladas. Violação ambiental termina os três caminhos, preserva e exclui da estimativa. Risco grave interrompe na hora. |
+| Uma repetição da permutação completa, readmissão nova, segunda violação para a coleta | Implementado e testado. Não aumenta N. |
+| Falha do gateway | Registrada como resultado do sistema. Não vira interferência externa. |
+| Imagem local `sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb` | Preservada. O modo final recusa outro id no campo Image do contêiner. A tag não prova o id. |
+| RQ2, δ, licença, merge de `main` | Não foram alterados. |
+
+Limites de segurança, estabelecidos antes de qualquer execução e mais
+estritos que a violação ambiental: MemAvailable abaixo de 1 GiB, disco
+livre abaixo de 1 GiB, ou 65536 páginas ou mais num intervalo de 30 s.
+Nesses casos a coleta para na hora e o bloco parcial fica preservado. Não
+substituem os limiares de 6 GiB, 1024 páginas e 10 GiB.
+
+Se o limiar ambiental dispara e a memória do contêiner do gateway explica
+pelo menos metade da queda de MemAvailable, a pressão fica como resultado
+do sistema. Se essa memória não foi lida, a causa fica incerta: o bloco sai
+da estimativa primária, não é repetido e não é chamado de interferência
+externa. A fração 0,5 é regra candidata, não um ajuste feito depois de ver
+quem venceu.
+
+## Estado em 2026-11-06
+
+A coleta não começou. O comando com `--phase final` está escrito para
+revisão e não foi executado. O arquivo de protocolo é candidato: traz
+`execution_authorized: false` e não autoriza a execução. A flag
+`--confirm-operational-start` também não é essa autorização.
+
+| Regra | Estado |
+| --- | --- |
+| N=18, semente 20261105, JSON, concorrência 1, latência 0, perfil mínimo, janelas 20/60 s | Candidato. Não aprovado para execução. |
+| Meia-largura de 0,50 ms | Meta de planejamento. Não é margem de equivalência nem efeito mínimo. |
+| Testes t bilaterais das diferenças entre blocos contra zero, Holm na família de três, alfa 0,05, intervalos t marginais de 95% | Propostos no protocolo. Não calculados. |
+| `--phase final` em ids, CSV, manifesto, agregação e validação | Implementado. Testado com linhas sintéticas marcadas `SYNTHETIC`. |
+| Protocolo versionado, hash, divergência de argumentos, diretório existente, árvore suja | Implementado. Testado sem carga. |
+| Admissão de 60 s, com métrica ausente bloqueando | Implementado. Testada com relógio e leituras simulados. A amostra de 2026-11-05 que recusou load1 continua válida e não é reutilizada. |
+| Gate de 5 s | Continua complementar. Não admite a coleta. |
+| Sampler de 30 s produz decisão | Implementado. Testado com métricas simuladas. Violação ambiental termina os três caminhos, preserva e exclui da estimativa. Risco grave interrompe na hora. |
+| Uma repetição da permutação completa, readmissão nova, segunda violação para a coleta | Implementado e testado. Não aumenta N. |
+| Falha do gateway | Registrada como resultado do sistema. Não vira interferência externa. |
+| Imagem local `sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb` | Preservada. O modo final recusa outro id no campo Image do contêiner. A tag não prova o id. |
+| RQ2, δ, licença, merge de `main` | Não foram alterados. |
+
+Limites de segurança, estabelecidos antes de qualquer execução e mais
+estritos que a violação ambiental: MemAvailable abaixo de 1 GiB, disco
+livre abaixo de 1 GiB, ou 65536 páginas ou mais num intervalo de 30 s.
+Nesses casos a coleta para na hora e o bloco parcial fica preservado. Não
+substituem os limiares de 6 GiB, 1024 páginas e 10 GiB.
+
+Se o limiar ambiental dispara e a memória do contêiner do gateway explica
+pelo menos metade da queda de MemAvailable, a pressão fica como resultado
+do sistema. Se essa memória não foi lida, a causa fica incerta: o bloco sai
+da estimativa primária, não é repetido e não é chamado de interferência
+externa. A fração 0,5 é regra candidata, não um ajuste feito depois de ver
+quem venceu.
+
 ## Commits de main que esta branch não contém
 
 `origin/main` está em `c365c2dc`. A branch de revisão não contém:
@@ -134,9 +204,13 @@ acrescentaram cerca de cinco minutos.
 ### Releitura
 
 A agregação foi reexecutada para arquivos novos, sem sobrescrever a coleta.
-O código de análise é `agg-1.2.0-1185a4fe8930`, SHA-256 de `aggregate.py`
+A releitura usou `agg-1.2.0-1185a4fe8930`, SHA-256 de `aggregate.py`
 `1185a4fe8930d8853b724230f275d6d1253ab0259248ef27877c83871f57f903`.
-O validador releu o diretório original e terminou sem erros.
+O validador releu o diretório original e terminou sem erros. O código que
+passa a ler `block_decisions.csv` é outro arquivo: `agg-1.2.0-652834aee581`,
+SHA-256 `652834aee581137342dabe6c292f5c5d91193c7cb7c2590e318b425d12f75dd1`.
+Ele não regravou a coleta. O `comparisons.csv` de exemplo continua com o
+id antigo porque foi produzido por aquele código.
 
 `requests.csv` tem 1.866.300 linhas de dados. O aquecimento tem 465.183 e a
 medição 1.401.117. A soma é 1.866.300. A linha de cabeçalho explica a
@@ -277,14 +351,31 @@ os casos originais, com todos os direitos reservados até essa escolha. O
 escopo possível são os casos escritos para o experimento. Não cobre pesos
 de modelo, a imagem do LiteLLM nem texto de terceiros. CC0 não se aplica.
 
-## Plano de host, não aplicado
+## Plano de host
 
-Esta máquina, em 2026-11-05, não passa no critério de admissão abaixo: o
-swap de 8 GiB está quase cheio, houve movimento de páginas durante o piloto
-e há dezenas de contêineres alheios. Eles não foram parados. A coleta
+Os limiares abaixo não foram reduzidos. A coleta não foi aplicada. A amostra
+de 60 s de 2026-11-05T22:14:56Z a 22:15:56Z recusou o host por load1
+(10,46 a 11,33, limiar abaixo de 2). Memória, páginas de swap e disco
+passaram naquela amostra. Essa recusa fica registrada e não serve de
+admissão para uma execução posterior.
+
+Uma leitura instantânea em 2026-11-06, que não é admissão, mostrou load1
+6,22, MemAvailable cerca de 22,2 GiB e 284 GiB livres. Continua acima do
+limiar de load1. Nenhum stack foi parado.
+
+O contêiner `gateway-comparison-melis-1` existente foi criado com a imagem
+`f87640f8e886` e está parado. A tag `gateway-comparison-melis:latest` aponta
+para `sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb`,
+sem RepoDigests e sem labels. Omitir `--build-melis` não seleciona essa
+imagem. O modo final lê o campo Image do contêiner criado e recusa outro id.
+
+Esta máquina, em 2026-11-05, não passou no critério de admissão: o swap de
+8 GiB está quase cheio, houve movimento de páginas durante o piloto e há
+dezenas de contêineres alheios. Eles não foram parados. A coleta
 confirmatória fica bloqueada neste host até uma janela que passe o critério
 ou até outro host. O limiar de 1024 páginas num preflight de 5 s não prova
-estabilidade da hora seguinte.
+estabilidade da hora seguinte. O código agora aplica a admissão de 60 s
+antes da primeira carga; os testes usaram relógio e métricas simulados.
 
 Admissão, numa amostra de 60 s antes de começar, com a coleta ainda parada:
 
@@ -302,21 +393,53 @@ Durante a coleta, a cada 30 s, o mesmo registro de `host_pressure.csv`:
   mover 1024 páginas ou mais, ou se o disco livre cair abaixo de 10 GiB.
 - load1 alto produzido pela própria coleta não é, sozinho, violação. O
   piloto chegou a 15 com a carga ligada.
-- Ao violar: preservar CSVs e logs, marcar o bloco inteiro e não interromper
-  no meio de um caminho. Os três caminhos daquele bloco terminam. O bloco
-  sai da estimativa e permanece listado. Uma repetição, se a violação tiver
-  cessado, refaz a permutação completa no fim, uma vez. Não se repete só o
-  caminho de pior latência. Se a violação continuar, a coleta para e os
-  blocos já gravados ficam marcados.
+- Ao violar o limiar ambiental: preservar CSVs e logs, marcar o bloco inteiro
+  e não interromper no meio de um caminho. Os três caminhos daquele bloco
+  terminam. O bloco sai da estimativa e permanece listado. Uma repetição, se
+  uma admissão nova de 60 s passar, refaz a permutação completa, uma vez, no
+  máximo na coleta. Não se repete só o caminho de pior latência. Se a
+  violação continuar ou aparecer outra, a coleta para incompleta.
+- Abaixo de 1 GiB de MemAvailable, de 1 GiB de disco livre, ou com 65536
+  páginas ou mais num intervalo, a parada é imediata. O bloco parcial fica
+  preservado e não entra na estimativa.
 
 Opções enquanto não houver host que passe: esperar e amostrar de novo; usar
 outra máquina com o mesmo protocolo de proveniência; não baixar o limiar
 para esta máquina passar.
 
+## Comando futuro, não executado
+
+Exige checkout limpo do commit do harness, não esta árvore suja por
+`src/bedrock.rs`. `--confirm-operational-start` não substitui autorização
+na conversa. `--check-host` é o gate de 5 s, depois da admissão de 60 s.
+O diretório `data/rq1-final-20261106` não foi criado.
+
+```
+cd experiments/gateway-comparison
+PYTHONDONTWRITEBYTECODE=1 python3 harness/run_comparative_pilot.py \
+  --out-dir data/rq1-final-20261106 \
+  --phase final \
+  --protocol protocol/rq1-final-candidate.json \
+  --protocol-sha256 d566da7ab4804d2313a6ca63deae17b2244841ecc57eddd1628b0861f638184e \
+  --confirm-operational-start \
+  --blocks 18 \
+  --modes json \
+  --concurrency 1 \
+  --warmup-s 20 \
+  --measure-s 60 \
+  --backend-latency-ms 0 \
+  --order permutations \
+  --permutation-repeats 3 \
+  --seed 20261105 \
+  --check-host \
+  --max-load-seconds 5200 \
+  --model mock-model
+```
+
 ## Pendências
 
-- A coleta confirmatória continua bloqueada até aprovação explícita de
-  desenho, N, ambiente e critérios.
+- A coleta confirmatória continua bloqueada. O protocolo candidato e os
+  testes não são autorização. O host segue recusado por load1.
 - N e as metas de 0,50 ms e 0,25 ms não estão aprovados. A recomendação
   condicional é N=18 se a meta for 0,50 ms com o limite de sigma.
 - δ e a heurística continuam propostas. Nenhuma licença foi escolhida.

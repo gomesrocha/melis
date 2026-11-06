@@ -105,7 +105,7 @@ EVALUATOR_TYPES = ("human", "llm_judge", "automatic")
 WINDOWS = ("warmup", "measured")
 EVIDENCE_ROLES = ("exploratory", "confirmatory")
 COUNT_SCOPES = ("execution",)
-TERMINATION_REASONS = ("deadline", "safety_cap", "request_cap")
+TERMINATION_REASONS = ("deadline", "safety_cap", "request_cap", "safety_stop")
 
 # ── requests.csv ────────────────────────────────────────────────────────────
 # One row per LOGICAL request (including failures). Retries do NOT duplicate the
@@ -201,7 +201,7 @@ RUNS = (
     Column("requested_duration_s", FLOAT, unit="s",
            doc="Configured window. Empty when the cell was count-capped on purpose."),
     Column("termination_reason", ENUM, enum=TERMINATION_REASONS,
-           doc="Why admission stopped: deadline, safety_cap, or request_cap."),
+           doc="Why admission stopped: deadline, safety_cap, request_cap, or safety_stop."),
     Column("truncated", BOOL, doc="True when a safety or request cap cut a duration window short."),
     Column("n_requests", INT, required=True),
     Column("n_ok", INT, required=True),

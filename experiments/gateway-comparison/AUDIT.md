@@ -31,5 +31,17 @@ simultâneo.
 Testes dos módulos novos, a partir de `harness/tests`:
 
 ```
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_provenance.py -q
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_provenance.py test_final_protocol.py -q
 ```
+
+O protocolo candidato está em `protocol/rq1-final-candidate.json`. O hash
+desse arquivo é a identidade; o sidecar `.sha256` só a reproduz. `--dry-run`
+imprime 54 células e 4320 s de carga, com o overhead de troca à parte, e
+não amostra o host nem sobe contêiner. A flag
+`--confirm-operational-start` não autoriza a coleta. A admissão de 60 s só
+corre numa execução real, imediatamente antes da primeira carga, e não
+reaproveita a recusa de 2026-11-05. Para ver a imagem local, sem subir
+nada: `docker image inspect gateway-comparison-melis:latest`. O id esperado
+é `sha256:79adb313b5060df96c6e5218bb108a289cd7d17c1f1fa08df9b221a6232c43bb`.
+Depois que um contêiner for criado, o campo Image tem de ser esse id. O
+contêiner parado `gateway-comparison-melis-1` ainda é `f87640f8e886`.

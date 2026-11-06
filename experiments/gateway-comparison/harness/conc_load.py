@@ -196,7 +196,7 @@ DEFAULT_SAFETY_CAP = 2_000_000
 
 def run_cell(base_url, model, mode, concurrency, n_requests, max_tokens, timeout,
              deadline_mono=None, safety_cap=None, on_result=None, collect=None,
-             requested_duration_s=None):
+             requested_duration_s=None, stop_event=None):
     """Run one closed-loop cell.
 
     Admission stops at the first of: ``deadline_mono``, a planned
@@ -234,6 +234,10 @@ def run_cell(base_url, model, mode, concurrency, n_requests, max_tokens, timeout
             if state["reason"] is not None:
                 return None
             now = time.perf_counter()
+            if stop_event is not None and stop_event.is_set():
+                state["reason"] = "safety_stop"
+                state["truncated"] = True
+                return None
             if deadline_mono is not None and now >= deadline_mono:
                 state["reason"] = "deadline"
                 state["truncated"] = False
@@ -437,7 +441,7 @@ def execute_cell(cell):
             deadline_mono=tw + warmup_s, safety_cap=safety_cap,
             requested_duration_s=warmup_s, on_result=_emit(
                 warm_run, warm_pair, "rq1_warmup", "warmup",
-            ), collect=False,
+            ), collect=False, stop_event=cell.get("stop_event"),
         )
         fact_writer.write_row(_fact_row(
             cell, warm_run, block, "rq1_warmup", stream, conc, feature, policy,
@@ -465,7 +469,7 @@ def execute_cell(cell):
             deadline_mono=deadline, safety_cap=safety_cap,
             requested_duration_s=requested,
             on_result=_emit(measured_run, pair, scenario, "measured"),
-            collect=False,
+            collect=False, stop_event=cell.get("stop_event"),
         )
     finally:
         if sampler is not None:
