@@ -8,7 +8,7 @@
   "pilot_episodes_per_scenario": 5,
   "pilot_is_not_part_of_n": true,
   "incomplete_first_pilot_attempt": "The first gateway pass stopped when the readiness check missed the listen line, including two Melis episodes with zero backend calls. That attempt is not in the saved pilot and is not in this collection.",
-  "harness_commit": "1ed8de2e7e0365169e39df8daf3d0f9c2a8a0584",
+  "harness_commit": "f39b46a16e8060c759006b9d5df7ff26a540cd88",
   "seed": 20261106,
   "episodes_per_scenario": 20,
   "gateway_episodes_total": 240,
@@ -143,7 +143,7 @@
     "litellm_config": "litellm/config.rq3-pilot.yaml"
   },
   "frozen_sha256": {
-    "harness": "42a9ea6366d00632aae098513827c743b349aa23bdc5d3380de620629a9fccd9",
+    "harness": "a062c6c04cd76bdd9b7ad0158ba5b10cdeb15c13ee55f63b6cb255f81ac421b3",
     "pilot_harness": "74ff634cc2704c0586b30f3e2a7e268ee0f2f97ea35fe820ebd01b64ec8f525e",
     "mock": "d5f91542294d94bb2b8056457b893b79a5747bf81262e15bcaf86770335f5ea5",
     "melis_config": "5d2393666a0b566722ee63e56650d062486de5486439e308bdaeff09562d7db3",
