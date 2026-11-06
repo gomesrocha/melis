@@ -8,7 +8,7 @@
   "pilot_episodes_per_scenario": 5,
   "pilot_is_not_part_of_n": true,
   "incomplete_first_pilot_attempt": "The first gateway pass stopped when the readiness check missed the listen line, including two Melis episodes with zero backend calls. That attempt is not in the saved pilot and is not in this collection.",
-  "harness_commit": "PENDING",
+  "harness_commit": "1ed8de2e7e0365169e39df8daf3d0f9c2a8a0584",
   "seed": 20261106,
   "episodes_per_scenario": 20,
   "gateway_episodes_total": 240,
